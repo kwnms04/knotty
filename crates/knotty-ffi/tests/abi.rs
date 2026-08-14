@@ -23,6 +23,11 @@ const PALETTE_RED: Rgb = Rgb {
     g: 102,
     b: 102,
 };
+const PALETTE_BRIGHT_RED: Rgb = Rgb {
+    r: 213,
+    g: 78,
+    b: 83,
+};
 const PALETTE_BLUE: Rgb = Rgb {
     r: 129,
     g: 162,
@@ -127,14 +132,19 @@ fn feeding_ascii_puts_it_in_the_grid() {
 
 #[test]
 fn every_colour_source_arrives_as_resolved_rgb() {
-    // Plain, palette 1, true colour, then palette 4 as a background.
-    let row = first_row_of(b"P\x1b[31mR\x1b[38;2;10;20;30mT\x1b[0m\x1b[44mG");
+    // Plain, one of the basic 16, one of the 256, true colour, then a
+    // palette background.
+    let row = first_row_of(b"P\x1b[31mB\x1b[38;5;9mI\x1b[38;2;10;20;30mT\x1b[0m\x1b[44mG");
 
     assert_eq!(row[0].foreground, DEFAULT_FOREGROUND, "unset foreground");
     assert_eq!(row[0].background, DEFAULT_BACKGROUND, "unset background");
     assert_eq!(row[1].foreground, PALETTE_RED, "SGR 31 resolved");
     assert_eq!(
-        row[2].foreground,
+        row[2].foreground, PALETTE_BRIGHT_RED,
+        "SGR 38;5;N resolved out of the 256-colour palette",
+    );
+    assert_eq!(
+        row[3].foreground,
         Rgb {
             r: 10,
             g: 20,
@@ -142,7 +152,7 @@ fn every_colour_source_arrives_as_resolved_rgb() {
         },
         "true colour passes through",
     );
-    assert_eq!(row[3].background, PALETTE_BLUE, "SGR 44 resolved");
+    assert_eq!(row[4].background, PALETTE_BLUE, "SGR 44 resolved");
 }
 
 #[test]

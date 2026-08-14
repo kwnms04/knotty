@@ -142,7 +142,7 @@ pub unsafe extern "C" fn kt_session_feed(
 
 /// Take the latest snapshot, emptying the session's mailbox.
 ///
-/// Returns [`KtStatus::NoValue`] when nothing has been published since the
+/// Returns `KT_STATUS_NO_VALUE` when nothing has been published since the
 /// last take. On success `out` receives an owned handle, to be released with
 /// [`kt_snapshot_free`]; otherwise it receives null.
 ///

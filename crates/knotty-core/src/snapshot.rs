@@ -35,7 +35,7 @@ impl From<libghostty_vt::style::RgbColor> for Rgb {
     }
 }
 
-/// SGR attributes, OR-ed together into [`Cell::attributes`].
+/// SGR attributes, OR-ed together into a cell's `attributes` field.
 ///
 /// Underlining is not here: it has kinds rather than an on/off state, so it
 /// gets its own field.
@@ -77,6 +77,9 @@ pub enum Underline {
     Dotted = 4,
     /// SGR 4:5.
     Dashed = 5,
+    /// Underlined in a way this version of the engine knows and knotty does
+    /// not. Still an underline, but its kind cannot be named.
+    Unknown = 255,
 }
 
 impl From<libghostty_vt::style::Underline> for Underline {
@@ -90,9 +93,10 @@ impl From<libghostty_vt::style::Underline> for Underline {
             Vt::Curly => Self::Curly,
             Vt::Dotted => Self::Dotted,
             Vt::Dashed => Self::Dashed,
-            // The engine's enum is non-exhaustive. A kind we don't know yet is
-            // still an underline, so report the plain one rather than none.
-            _ => Self::Single,
+            // The engine's enum is non-exhaustive. Say so rather than picking
+            // a kind, so an upstream addition shows up instead of hiding
+            // inside one of the kinds we do know.
+            _ => Self::Unknown,
         }
     }
 }
@@ -101,6 +105,10 @@ impl From<libghostty_vt::style::Underline> for Underline {
 ///
 /// Fixed size and POD: the grid is a row-major flat array of these, so a
 /// consumer indexes it without a function call per cell.
+//
+// The fields do not fill the struct, so it carries trailing padding whose
+// contents are not defined. Comparing cells field by field is safe; comparing
+// the grid as raw bytes is not, which the golden harness has to account for.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Cell {
@@ -110,7 +118,7 @@ pub struct Cell {
     pub foreground: Rgb,
     /// Background colour, with the terminal's default already substituted.
     pub background: Rgb,
-    /// [`Attribute`] bits.
+    /// A bit set of `KtAttribute` values.
     pub attributes: u16,
     /// Which underline the cell carries, if any.
     pub underline: Underline,
@@ -144,7 +152,14 @@ pub(crate) fn capture(
     let cols = frame.cols()?;
     let rows = frame.rows()?;
     let defaults = frame.colors()?;
-    let mut cells = vec![Cell::default(); usize::from(cols) * usize::from(rows)];
+    // Any cell the iterators do not reach still has to honour the promise that
+    // its colours are the terminal's defaults.
+    let blank = Cell {
+        foreground: defaults.foreground.into(),
+        background: defaults.background.into(),
+        ..Cell::default()
+    };
+    let mut cells = vec![blank; usize::from(cols) * usize::from(rows)];
 
     let mut row_iter = RowIterator::new()?;
     let mut cell_iter = CellIterator::new()?;

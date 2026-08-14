@@ -80,6 +80,11 @@ enum KtUnderline
    * SGR 4:5.
    */
   KT_UNDERLINE_DASHED = 5,
+  /**
+   * Underlined in a way this version of the engine knows and knotty does
+   * not. Still an underline, but its kind cannot be named.
+   */
+  KT_UNDERLINE_UNKNOWN = 255,
 };
 #ifndef __cplusplus
 #if __STDC_VERSION__ >= 202311L
@@ -90,7 +95,7 @@ typedef uint8_t KtUnderline;
 #endif // __cplusplus
 
 /**
- * SGR attributes, OR-ed together into [`Cell::attributes`].
+ * SGR attributes, OR-ed together into a cell's `attributes` field.
  *
  * Underlining is not here: it has kinds rather than an on/off state, so it
  * gets its own field.
@@ -189,7 +194,7 @@ typedef struct {
    */
   KtRgb background;
   /**
-   * [`Attribute`] bits.
+   * A bit set of `KtAttribute` values.
    */
   uint16_t attributes;
   /**
@@ -269,7 +274,7 @@ KtStatus kt_session_feed(KtSession *session, const uint8_t *bytes, size_t len);
 /**
  * Take the latest snapshot, emptying the session's mailbox.
  *
- * Returns [`KtStatus::NoValue`] when nothing has been published since the
+ * Returns `KT_STATUS_NO_VALUE` when nothing has been published since the
  * last take. On success `out` receives an owned handle, to be released with
  * [`kt_snapshot_free`]; otherwise it receives null.
  *
