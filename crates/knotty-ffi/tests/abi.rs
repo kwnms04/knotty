@@ -8,7 +8,7 @@ use knotty_ffi::{
     Attribute, Cell, Cursor, CursorShape, Dirty, KtSession, KtSnapshot, KtSnapshotView, KtStatus,
     KtText, Rgb, Row, RowFlag, SelectionRange, Underline, kt_abi_version, kt_session_feed,
     kt_session_free, kt_session_new_detached, kt_session_set_selection, kt_session_take_snapshot,
-    kt_snapshot_free, kt_snapshot_view,
+    kt_snapshot_free, kt_snapshot_view, kt_testing_panic,
 };
 
 /// Ghostty's own defaults. A change here is an upstream palette change, not a
@@ -896,6 +896,70 @@ fn taking_before_anything_is_fed_reports_no_value() {
     assert!(snapshot.is_null());
 
     unsafe { kt_session_free(session) };
+}
+
+#[test]
+fn a_panic_inside_the_core_comes_back_as_a_status() {
+    let session = detached(4, 1);
+
+    // Reaching this line at all is most of the point: unwinding into C would
+    // have taken the process with it.
+    assert_eq!(unsafe { kt_testing_panic(session) }, KtStatus::Panicked);
+
+    unsafe { kt_session_free(session) };
+}
+
+#[test]
+fn a_panicked_session_keeps_its_last_good_snapshot() {
+    let session = detached(4, 1);
+    feed(session, b"ok");
+
+    assert_eq!(unsafe { kt_testing_panic(session) }, KtStatus::Panicked);
+
+    let snapshot = take(session);
+    let view = view(snapshot);
+    assert_eq!(codepoint_at(&view, 0, 0), u32::from(b'o'));
+    assert_eq!(codepoint_at(&view, 0, 1), u32::from(b'k'));
+
+    unsafe { kt_snapshot_free(snapshot) };
+    unsafe { kt_session_free(session) };
+}
+
+#[test]
+fn a_panicked_session_takes_no_more_input() {
+    let session = detached(4, 1);
+    assert_eq!(unsafe { kt_testing_panic(session) }, KtStatus::Panicked);
+
+    // Defunct rather than Panicked: nothing blew up this time, the session
+    // is simply already gone.
+    assert_eq!(
+        unsafe { kt_session_feed(session, b"x".as_ptr(), 1) },
+        KtStatus::Defunct,
+    );
+    assert_eq!(
+        set_selection(session, Some(selection((0, 0), (1, 0)))),
+        KtStatus::Defunct,
+    );
+    assert_eq!(unsafe { kt_testing_panic(session) }, KtStatus::Defunct);
+
+    unsafe { kt_session_free(session) };
+}
+
+/// M0 has no session with a PTY behind it, so the only thing to pin is that
+/// the code exists and keeps its value.
+#[test]
+fn the_error_for_feeding_a_pty_session_is_fixed_in_the_header() {
+    let header = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../include/knotty.h"
+    ))
+    .expect("read include/knotty.h");
+
+    assert!(
+        header.contains("KT_STATUS_NOT_DETACHED = 8"),
+        "the header must declare the status a PTY session's feed returns",
+    );
+    assert_eq!(KtStatus::NotDetached as i32, 8);
 }
 
 #[test]

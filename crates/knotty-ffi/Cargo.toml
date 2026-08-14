@@ -13,3 +13,7 @@ knotty-core.workspace = true
 
 [dev-dependencies]
 cbindgen = "0.29"
+knotty-ffi = { path = ".", features = ["testing"] }
+
+[features]
+testing = []

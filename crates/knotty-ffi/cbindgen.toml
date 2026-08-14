@@ -18,6 +18,9 @@ include = ["knotty-core"]
 [export]
 # Bit sets: their fields are plain integers, so no signature refers to them.
 include = ["Attribute", "RowFlag"]
+# Compiled only for knotty's own tests. cbindgen reads through the cfg that
+# gates it, so keep it out of the ABI by name.
+exclude = ["kt_testing_panic"]
 
 [export.rename]
 Attribute = "KtAttribute"

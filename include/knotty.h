@@ -48,6 +48,21 @@ enum KtStatus
    * A coordinate fell outside the terminal.
    */
   KT_STATUS_OUT_OF_RANGE = 5,
+  /**
+   * Something inside the core panicked. The call did nothing useful and
+   * the session it was made on is now defunct.
+   */
+  KT_STATUS_PANICKED = 6,
+  /**
+   * The session already panicked. It keeps its last good snapshot but
+   * takes no more input.
+   */
+  KT_STATUS_DEFUNCT = 7,
+  /**
+   * The call is only for a session with no PTY behind it. No such session
+   * exists yet; the contract is fixed now so it cannot move later.
+   */
+  KT_STATUS_NOT_DETACHED = 8,
 };
 #ifndef __cplusplus
 #if __STDC_VERSION__ >= 202311L
@@ -518,7 +533,8 @@ void kt_session_free(KtSession *session);
  * Feed `len` bytes to a detached session.
  *
  * Processes the whole buffer on the calling thread before returning, and
- * publishes at most one snapshot.
+ * publishes at most one snapshot. A session with a PTY behind it takes its
+ * input from that PTY, so this returns `KT_STATUS_NOT_DETACHED` for one.
  *
  * # Safety
  *
@@ -545,6 +561,9 @@ KtStatus kt_session_set_selection(KtSession *session, const KtSelectionRange *ra
  * Returns `KT_STATUS_NO_VALUE` when nothing has been published since the
  * last take. On success `out` receives an owned handle, to be released with
  * [`kt_snapshot_free`]; otherwise it receives null.
+ *
+ * Works on a defunct session: what it holds is the last state that was
+ * right, and handing that back is the whole point of keeping it.
  *
  * # Safety
  *

@@ -58,6 +58,15 @@ pub enum KtStatus {
     TooLarge = 4,
     /// A coordinate fell outside the terminal.
     OutOfRange = 5,
+    /// Something inside the core panicked. The call did nothing useful and
+    /// the session it was made on is now defunct.
+    Panicked = 6,
+    /// The session already panicked. It keeps its last good snapshot but
+    /// takes no more input.
+    Defunct = 7,
+    /// The call is only for a session with no PTY behind it. No such session
+    /// exists yet; the contract is fixed now so it cannot move later.
+    NotDetached = 8,
 }
 
 impl From<Error> for KtStatus {
@@ -71,7 +80,40 @@ impl From<Error> for KtStatus {
 }
 
 /// Opaque handle to a session.
-pub struct KtSession(Session);
+pub struct KtSession {
+    session: Session,
+    defunct: bool,
+}
+
+impl KtSession {
+    /// Drive the session, and give up on it if the call panics.
+    ///
+    /// A panic means an invariant broke somewhere we cannot see, so there is
+    /// no way to know that carrying on is safe. The session stops taking
+    /// input; its last good snapshot stays where it is, because a screen that
+    /// is stale beats a screen that empties.
+    fn drive(&mut self, call: impl FnOnce(&mut Session) -> Result<(), Error>) -> KtStatus {
+        if self.defunct {
+            return KtStatus::Defunct;
+        }
+
+        let status = guarded(|| match call(&mut self.session) {
+            Ok(()) => KtStatus::Ok,
+            Err(error) => error.into(),
+        });
+        if status == KtStatus::Panicked {
+            self.defunct = true;
+        }
+        status
+    }
+}
+
+/// Run a boundary call, turning a panic into a status.
+///
+/// Unwinding into C is undefined, so nothing may leave here by that route.
+fn guarded(call: impl FnOnce() -> KtStatus) -> KtStatus {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(call)).unwrap_or(KtStatus::Panicked)
+}
 
 /// Opaque handle to a snapshot.
 pub struct KtSnapshot(Snapshot);
@@ -136,13 +178,17 @@ pub unsafe extern "C" fn kt_session_new_detached(
         return KtStatus::NullArgument;
     }
     unsafe { *out = ptr::null_mut() };
-    match Session::new_detached(cols, rows, max_scrollback) {
+    guarded(|| match Session::new_detached(cols, rows, max_scrollback) {
         Ok(session) => {
-            unsafe { *out = Box::into_raw(Box::new(KtSession(session))) };
+            let handle = KtSession {
+                session,
+                defunct: false,
+            };
+            unsafe { *out = Box::into_raw(Box::new(handle)) };
             KtStatus::Ok
         }
         Err(error) => error.into(),
-    }
+    })
 }
 
 /// Release a session. Null is a no-op.
@@ -153,15 +199,19 @@ pub unsafe extern "C" fn kt_session_new_detached(
 /// afterwards.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kt_session_free(session: *mut KtSession) {
-    if !session.is_null() {
-        drop(unsafe { Box::from_raw(session) });
-    }
+    guarded(|| {
+        if !session.is_null() {
+            drop(unsafe { Box::from_raw(session) });
+        }
+        KtStatus::Ok
+    });
 }
 
 /// Feed `len` bytes to a detached session.
 ///
 /// Processes the whole buffer on the calling thread before returning, and
-/// publishes at most one snapshot.
+/// publishes at most one snapshot. A session with a PTY behind it takes its
+/// input from that PTY, so this returns `KT_STATUS_NOT_DETACHED` for one.
 ///
 /// # Safety
 ///
@@ -184,10 +234,7 @@ pub unsafe extern "C" fn kt_session_feed(
         unsafe { std::slice::from_raw_parts(bytes, len) }
     };
 
-    match session.0.feed(bytes) {
-        Ok(()) => KtStatus::Ok,
-        Err(error) => error.into(),
-    }
+    session.drive(|session| session.feed(bytes))
 }
 
 /// Select a range of the viewport, or clear the selection by passing null.
@@ -207,10 +254,8 @@ pub unsafe extern "C" fn kt_session_set_selection(
         return KtStatus::NullArgument;
     };
 
-    match session.0.set_selection(unsafe { range.as_ref() }.copied()) {
-        Ok(()) => KtStatus::Ok,
-        Err(error) => error.into(),
-    }
+    let range = unsafe { range.as_ref() }.copied();
+    session.drive(|session| session.set_selection(range))
 }
 
 /// Take the latest snapshot, emptying the session's mailbox.
@@ -218,6 +263,9 @@ pub unsafe extern "C" fn kt_session_set_selection(
 /// Returns `KT_STATUS_NO_VALUE` when nothing has been published since the
 /// last take. On success `out` receives an owned handle, to be released with
 /// [`kt_snapshot_free`]; otherwise it receives null.
+///
+/// Works on a defunct session: what it holds is the last state that was
+/// right, and handing that back is the whole point of keeping it.
 ///
 /// # Safety
 ///
@@ -236,13 +284,13 @@ pub unsafe extern "C" fn kt_session_take_snapshot(
         return KtStatus::NullArgument;
     };
 
-    match session.0.take_snapshot() {
+    guarded(|| match session.session.take_snapshot() {
         Some(snapshot) => {
             unsafe { *out = Box::into_raw(Box::new(KtSnapshot(snapshot))) };
             KtStatus::Ok
         }
         None => KtStatus::NoValue,
-    }
+    })
 }
 
 /// Release a snapshot. Null is a no-op.
@@ -253,9 +301,12 @@ pub unsafe extern "C" fn kt_session_take_snapshot(
 /// used afterwards.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kt_snapshot_free(snapshot: *mut KtSnapshot) {
-    if !snapshot.is_null() {
-        drop(unsafe { Box::from_raw(snapshot) });
-    }
+    guarded(|| {
+        if !snapshot.is_null() {
+            drop(unsafe { Box::from_raw(snapshot) });
+        }
+        KtStatus::Ok
+    });
 }
 
 /// Fill `out` with a view of the snapshot's contents.
@@ -276,20 +327,42 @@ pub unsafe extern "C" fn kt_snapshot_view(
         return KtStatus::NullArgument;
     };
 
-    unsafe {
-        *out = KtSnapshotView {
-            cols: snapshot.0.cols,
-            rows: snapshot.0.rows,
-            dirty: snapshot.0.dirty,
-            has_selection: snapshot.0.has_selection,
-            cells: snapshot.0.cells.as_ptr(),
-            row_state: snapshot.0.row_state.as_ptr(),
-            graphemes: snapshot.0.graphemes.as_ptr(),
-            grapheme_count: snapshot.0.graphemes.len(),
-            cursor: snapshot.0.screen.cursor,
-            title: snapshot.0.screen.title.as_str().into(),
-            pwd: snapshot.0.screen.pwd.as_str().into(),
-        }
+    guarded(|| {
+        unsafe {
+            *out = KtSnapshotView {
+                cols: snapshot.0.cols,
+                rows: snapshot.0.rows,
+                dirty: snapshot.0.dirty,
+                has_selection: snapshot.0.has_selection,
+                cells: snapshot.0.cells.as_ptr(),
+                row_state: snapshot.0.row_state.as_ptr(),
+                graphemes: snapshot.0.graphemes.as_ptr(),
+                grapheme_count: snapshot.0.graphemes.len(),
+                cursor: snapshot.0.screen.cursor,
+                title: snapshot.0.screen.title.as_str().into(),
+                pwd: snapshot.0.screen.pwd.as_str().into(),
+            }
+        };
+        KtStatus::Ok
+    })
+}
+
+/// Panic on purpose.
+///
+/// Not part of the ABI. It is compiled only for knotty's own tests and never
+/// reaches the header, but a panic has to start somewhere real for the
+/// isolation around every entry point to be tested through the boundary it
+/// protects.
+///
+/// # Safety
+///
+/// `session` must be a live handle.
+#[cfg(feature = "testing")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kt_testing_panic(session: *mut KtSession) -> KtStatus {
+    let Some(session) = (unsafe { session.as_mut() }) else {
+        return KtStatus::NullArgument;
     };
-    KtStatus::Ok
+
+    session.drive(|_| panic!("kt_testing_panic was called"))
 }
