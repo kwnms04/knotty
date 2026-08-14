@@ -39,7 +39,7 @@ knotty-ffi` fails when it drifts from the Rust source; regenerate with
 
 ### Issue tracker
 
-Issues live as markdown files under `.scratch/<feature>/` in this repo.
+Issues live as GitHub issues on `kwnms04/knotty`: a parent issue per feature holding the spec, tickets as its sub-issues.
 See `docs/agents/issue-tracker.md`.
 
 ### Triage labels
