@@ -8,7 +8,9 @@ pub mod session;
 pub mod snapshot;
 
 pub use session::Session;
-pub use snapshot::{Attribute, Cell, Dirty, Rgb, RowFlag, Snapshot, Underline};
+pub use snapshot::{
+    Attribute, Cell, Dirty, Rgb, Row, RowFlag, SelectionRange, Snapshot, Underline,
+};
 
 /// Why a core operation failed.
 ///
@@ -20,6 +22,8 @@ pub enum Error {
     Engine,
     /// The terminal's state is bigger than a snapshot can describe.
     TooLarge,
+    /// A coordinate fell outside the terminal.
+    OutOfRange,
 }
 
 /// Result alias for fallible core operations.

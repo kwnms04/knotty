@@ -2,7 +2,9 @@
 //!
 //! Nothing outside this module names a VT engine type in a signature.
 
-use libghostty_vt::render::{CellIteration, CellIterator, Dirty as VtDirty, RowIterator};
+use libghostty_vt::render::{
+    CellIteration, CellIterator, Dirty as VtDirty, RowIterator, RowSelection,
+};
 use libghostty_vt::screen::{CellContentTag, CellWide};
 use libghostty_vt::{RenderState, Terminal};
 
@@ -134,7 +136,7 @@ impl From<VtDirty> for Dirty {
     }
 }
 
-/// Row state, OR-ed together into one entry of a snapshot's row flags.
+/// Row state, OR-ed together into a row's `flags` field.
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RowFlag {
@@ -143,6 +145,46 @@ pub enum RowFlag {
     /// The row runs on into the next one. It ended because it ran out of
     /// columns, not at a newline.
     Wrapped = 1 << 1,
+    /// Part of the row is selected, and the row's columns say which part.
+    Selected = 1 << 2,
+}
+
+/// What a snapshot says about one row.
+///
+/// Selection lives here rather than in the cells. A renderer's line cache is
+/// keyed on cell contents, so a selection inside a cell would throw the whole
+/// cache away on every drag.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Row {
+    /// A bit set of `KtRowFlag` values.
+    pub flags: u8,
+    /// First selected column, inclusive. Only meaningful with the selected
+    /// flag set.
+    pub selection_start: u16,
+    /// Last selected column, inclusive. Only meaningful with the selected
+    /// flag set.
+    pub selection_end: u16,
+}
+
+/// A selection's two endpoints, in viewport coordinates.
+///
+/// Both ends are inclusive, and either may come first: the pair records which
+/// way the selection was made, not which end is topmost.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SelectionRange {
+    /// Column of the first endpoint.
+    pub start_x: u16,
+    /// Row of the first endpoint.
+    pub start_y: u16,
+    /// Column of the second endpoint.
+    pub end_x: u16,
+    /// Row of the second endpoint.
+    pub end_y: u16,
+    /// Whether the endpoints are opposite corners of a block rather than the
+    /// ends of a run of text.
+    pub rectangle: bool,
 }
 
 /// One terminal cell.
@@ -179,10 +221,16 @@ pub struct Snapshot {
     pub rows: u16,
     /// How much of the screen changed since the last snapshot.
     pub dirty: Dirty,
+    /// Whether a selection exists at all.
+    ///
+    /// This is not the same as no row being selected: a selection scrolled
+    /// out of the viewport still exists, and the two states are told apart
+    /// here rather than by looking at the rows.
+    pub has_selection: bool,
     /// `rows * cols` cells in row-major order.
     pub cells: Vec<Cell>,
-    /// One entry per row, each a bit set of [`RowFlag`] values.
-    pub row_flags: Vec<u8>,
+    /// One entry per row.
+    pub row_state: Vec<Row>,
     /// Codepoints for the cells that did not fit in one, so that the cell
     /// stays a fixed size no matter how long its grapheme cluster is.
     ///
@@ -205,8 +253,8 @@ impl Snapshot {
         if dropped.dirty == Dirty::Full {
             self.dirty = Dirty::Full;
         }
-        for (flags, dropped) in self.row_flags.iter_mut().zip(&dropped.row_flags) {
-            *flags |= dropped & RowFlag::Dirty as u8;
+        for (row, dropped) in self.row_state.iter_mut().zip(&dropped.row_state) {
+            row.flags |= dropped.flags & RowFlag::Dirty as u8;
         }
     }
 }
@@ -219,6 +267,7 @@ impl Snapshot {
 pub(crate) fn capture(
     render: &mut RenderState<'static>,
     terminal: &Terminal<'static, 'static>,
+    has_selection: bool,
 ) -> Result<Option<Snapshot>> {
     let frame = render.update(terminal)?;
     let dirty = Dirty::from(frame.dirty()?);
@@ -237,7 +286,7 @@ pub(crate) fn capture(
         ..Cell::default()
     };
     let mut cells = vec![blank; usize::from(cols) * usize::from(rows)];
-    let mut row_flags = vec![0u8; usize::from(rows)];
+    let mut row_state = vec![Row::default(); usize::from(rows)];
     let mut graphemes = Vec::new();
     let mut cluster = Vec::new();
 
@@ -246,7 +295,7 @@ pub(crate) fn capture(
     let mut rows_iteration = row_iter.update(&frame)?;
     let mut y = 0usize;
     while let Some(row) = rows_iteration.next() {
-        row_flags[y] = row_flags_of(row.dirty()?, row.raw_row()?.is_wrapped()?);
+        row_state[y] = row_state_of(row.dirty()?, row.raw_row()?.is_wrapped()?, row.selection()?);
         // The engine tracks the two dirty layers separately, so clearing the
         // global one leaves these set. Clear them here, while we have the row.
         row.set_dirty(false)?;
@@ -288,13 +337,14 @@ pub(crate) fn capture(
         cols,
         rows,
         dirty,
+        has_selection,
         cells,
-        row_flags,
+        row_state,
         graphemes,
     }))
 }
 
-fn row_flags_of(dirty: bool, wrapped: bool) -> u8 {
+fn row_state_of(dirty: bool, wrapped: bool, selection: Option<RowSelection>) -> Row {
     let mut flags = 0;
     if dirty {
         flags |= RowFlag::Dirty as u8;
@@ -302,7 +352,15 @@ fn row_flags_of(dirty: bool, wrapped: bool) -> u8 {
     if wrapped {
         flags |= RowFlag::Wrapped as u8;
     }
-    flags
+    if selection.is_some() {
+        flags |= RowFlag::Selected as u8;
+    }
+
+    Row {
+        flags,
+        selection_start: selection.map_or(0, |range| range.start_x),
+        selection_end: selection.map_or(0, |range| range.end_x),
+    }
 }
 
 /// Append a cell's codepoints to the grapheme table, returning the index the

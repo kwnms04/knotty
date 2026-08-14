@@ -5,9 +5,10 @@ use std::mem::MaybeUninit;
 use std::ptr;
 
 use knotty_ffi::{
-    Attribute, Cell, Dirty, KtSession, KtSnapshot, KtSnapshotView, KtStatus, Rgb, RowFlag,
-    Underline, kt_abi_version, kt_session_feed, kt_session_free, kt_session_new_detached,
-    kt_session_take_snapshot, kt_snapshot_free, kt_snapshot_view,
+    Attribute, Cell, Dirty, KtSession, KtSnapshot, KtSnapshotView, KtStatus, Rgb, Row, RowFlag,
+    SelectionRange, Underline, kt_abi_version, kt_session_feed, kt_session_free,
+    kt_session_new_detached, kt_session_set_selection, kt_session_take_snapshot, kt_snapshot_free,
+    kt_snapshot_view,
 };
 
 /// Ghostty's own defaults. A change here is an upstream palette change, not a
@@ -35,8 +36,12 @@ const PALETTE_BLUE: Rgb = Rgb {
 };
 
 fn detached(cols: u16, rows: u16) -> *mut KtSession {
+    detached_with_scrollback(cols, rows, 0)
+}
+
+fn detached_with_scrollback(cols: u16, rows: u16, scrollback: usize) -> *mut KtSession {
     let mut session = ptr::null_mut();
-    let status = unsafe { kt_session_new_detached(cols, rows, 0, &mut session) };
+    let status = unsafe { kt_session_new_detached(cols, rows, scrollback, &mut session) };
     assert_eq!(status, KtStatus::Ok);
     assert!(!session.is_null());
     session
@@ -73,17 +78,46 @@ fn codepoint_at(view: &KtSnapshotView, row: u16, col: u16) -> u32 {
     cell_at(view, row, col).codepoint
 }
 
-fn row_flags(view: &KtSnapshotView) -> Vec<u8> {
+fn row_state(view: &KtSnapshotView) -> Vec<Row> {
     (0..usize::from(view.rows))
-        .map(|row| unsafe { *view.row_flags.add(row) })
+        .map(|row| unsafe { *view.row_state.add(row) })
         .collect()
 }
 
 fn rows_with(view: &KtSnapshotView, flag: RowFlag) -> Vec<bool> {
-    row_flags(view)
+    row_state(view)
         .iter()
-        .map(|flags| flags & flag as u8 != 0)
+        .map(|row| row.flags & flag as u8 != 0)
         .collect()
+}
+
+/// Read the selection the way a consumer does: beside the cells, never out of
+/// them.
+fn selected_columns(view: &KtSnapshotView) -> Vec<Option<(u16, u16)>> {
+    row_state(view)
+        .iter()
+        .map(|row| {
+            (row.flags & RowFlag::Selected as u8 != 0)
+                .then_some((row.selection_start, row.selection_end))
+        })
+        .collect()
+}
+
+fn set_selection(session: *mut KtSession, range: Option<SelectionRange>) -> KtStatus {
+    match range {
+        Some(range) => unsafe { kt_session_set_selection(session, &range) },
+        None => unsafe { kt_session_set_selection(session, ptr::null()) },
+    }
+}
+
+fn selection(start: (u16, u16), end: (u16, u16)) -> SelectionRange {
+    SelectionRange {
+        start_x: start.0,
+        start_y: start.1,
+        end_x: end.0,
+        end_y: end.1,
+        rectangle: false,
+    }
 }
 
 /// Read a cell's text the way a consumer does: straight from the cell unless
@@ -457,6 +491,106 @@ fn a_line_that_exactly_fills_a_row_and_then_ends_is_not_wrapped() {
     );
 
     unsafe { kt_snapshot_free(snapshot) };
+    unsafe { kt_session_free(session) };
+}
+
+#[test]
+fn a_selection_spanning_rows_is_carried_beside_the_cells() {
+    let session = detached(6, 3);
+    feed(session, b"abcdef\r\nghijkl\r\nmnopqr");
+    unsafe { kt_snapshot_free(take(session)) };
+
+    // From the middle of row 0 to the middle of row 1: row 0 is selected to
+    // its end, row 1 from its start, row 2 not at all.
+    assert_eq!(
+        set_selection(session, Some(selection((2, 0), (3, 1)))),
+        KtStatus::Ok,
+    );
+
+    let snapshot = take(session);
+    let view = view(snapshot);
+
+    assert!(view.has_selection);
+    assert_eq!(
+        selected_columns(&view),
+        vec![Some((2, 5)), Some((0, 3)), None],
+    );
+
+    unsafe { kt_snapshot_free(snapshot) };
+    unsafe { kt_session_free(session) };
+}
+
+#[test]
+fn selecting_does_not_touch_the_cells() {
+    let session = detached(6, 2);
+    feed(session, b"abcdef\r\nghijkl");
+
+    let before = take(session);
+    let before_view = view(before);
+    let cells: Vec<Cell> = (0..2)
+        .flat_map(|row| (0..6).map(move |col| (row, col)))
+        .map(|(row, col)| cell_at(&before_view, row, col))
+        .collect();
+    unsafe { kt_snapshot_free(before) };
+
+    set_selection(session, Some(selection((0, 0), (5, 1))));
+
+    let after = take(session);
+    let after_view = view(after);
+    let after_cells: Vec<Cell> = (0..2)
+        .flat_map(|row| (0..6).map(move |col| (row, col)))
+        .map(|(row, col)| cell_at(&after_view, row, col))
+        .collect();
+
+    assert_eq!(cells, after_cells, "a selection is not part of a cell");
+    assert!(after_view.has_selection);
+
+    unsafe { kt_snapshot_free(after) };
+    unsafe { kt_session_free(session) };
+}
+
+#[test]
+fn a_selection_with_no_visible_row_is_not_the_same_as_no_selection() {
+    let session = detached_with_scrollback(6, 3, 100);
+    feed(session, b"abcdef\r\nghijkl\r\nmnopqr");
+    unsafe { kt_snapshot_free(take(session)) };
+
+    set_selection(session, Some(selection((2, 0), (3, 1))));
+    let selected = take(session);
+    assert!(view(selected).has_selection);
+    unsafe { kt_snapshot_free(selected) };
+
+    // Push what was selected into the scrollback. The selection is still set,
+    // but no row on screen falls inside it any more.
+    feed(session, b"\r\n\r\n\r\n\r\nzzz");
+    let scrolled = take(session);
+    let scrolled_view = view(scrolled);
+    assert!(scrolled_view.has_selection, "the selection still exists");
+    assert_eq!(selected_columns(&scrolled_view), vec![None, None, None]);
+    unsafe { kt_snapshot_free(scrolled) };
+
+    // Clearing it is a different state again, and the rows look the same.
+    set_selection(session, None);
+    let cleared = take(session);
+    let cleared_view = view(cleared);
+    assert!(!cleared_view.has_selection);
+    assert_eq!(selected_columns(&cleared_view), vec![None, None, None]);
+
+    unsafe { kt_snapshot_free(cleared) };
+    unsafe { kt_session_free(session) };
+}
+
+#[test]
+fn a_selection_endpoint_outside_the_viewport_is_reported_as_such() {
+    let session = detached(4, 2);
+    feed(session, b"ab");
+    unsafe { kt_snapshot_free(take(session)) };
+
+    assert_eq!(
+        set_selection(session, Some(selection((0, 0), (99, 0)))),
+        KtStatus::OutOfRange,
+    );
+
     unsafe { kt_session_free(session) };
 }
 

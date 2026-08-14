@@ -1,10 +1,12 @@
 //! Session lifecycle and the publish path.
 
+use libghostty_vt::selection::Selection;
+use libghostty_vt::terminal::{Point, PointCoordinate};
 use libghostty_vt::{RenderState, Terminal, TerminalOptions};
 
-use crate::Result;
 use crate::mailbox::Mailbox;
-use crate::snapshot::{self, Snapshot};
+use crate::snapshot::{self, SelectionRange, Snapshot};
+use crate::{Error, Result};
 
 /// A terminal session.
 ///
@@ -17,6 +19,9 @@ pub struct Session {
     terminal: Terminal<'static, 'static>,
     render: RenderState<'static>,
     mailbox: Mailbox<Snapshot>,
+    // The engine has no way to ask whether a selection is set, and a snapshot
+    // has to say so even when no visible row falls inside it.
+    has_selection: bool,
 }
 
 impl Session {
@@ -33,14 +38,56 @@ impl Session {
             terminal,
             render,
             mailbox: Mailbox::new(),
+            has_selection: false,
         })
+    }
+
+    /// Select a range of the viewport, or clear the selection with `None`.
+    ///
+    /// Publishes a snapshot: the selection is part of what a consumer draws.
+    pub fn set_selection(&mut self, range: Option<SelectionRange>) -> Result<()> {
+        match range {
+            Some(range) => {
+                let at = |x, y| Point::Viewport(PointCoordinate { x, y: u32::from(y) });
+                let start = self
+                    .terminal
+                    .grid_ref(at(range.start_x, range.start_y))
+                    .map_err(|_| Error::OutOfRange)?;
+                let end = self
+                    .terminal
+                    .grid_ref(at(range.end_x, range.end_y))
+                    .map_err(|_| Error::OutOfRange)?;
+                self.terminal
+                    .set_selection(Some(&Selection::new(start, end, range.rectangle)))?;
+            }
+            None => {
+                self.terminal.set_selection(None)?;
+            }
+        }
+        self.has_selection = range.is_some();
+
+        self.publish()
     }
 
     /// Process `bytes` to completion on the calling thread, publishing at most
     /// one snapshot.
     pub fn feed(&mut self, bytes: &[u8]) -> Result<()> {
         self.terminal.vt_write(bytes);
-        if let Some(mut snapshot) = snapshot::capture(&mut self.render, &self.terminal)? {
+        self.publish()
+    }
+
+    /// Take the latest snapshot, emptying the mailbox.
+    ///
+    /// Returns `None` when nothing has been published since the last take.
+    pub fn take_snapshot(&self) -> Option<Snapshot> {
+        self.mailbox.take()
+    }
+
+    /// Capture the terminal and publish it, unless nothing changed.
+    fn publish(&mut self) -> Result<()> {
+        if let Some(mut snapshot) =
+            snapshot::capture(&mut self.render, &self.terminal, self.has_selection)?
+        {
             // The mailbox keeps only the newest snapshot, so publishing over
             // an unconsumed one drops it. Carry its change marks across, or a
             // consumer that misses a frame is told less changed than did.
@@ -50,12 +97,5 @@ impl Session {
             self.mailbox.publish(snapshot);
         }
         Ok(())
-    }
-
-    /// Take the latest snapshot, emptying the mailbox.
-    ///
-    /// Returns `None` when nothing has been published since the last take.
-    pub fn take_snapshot(&self) -> Option<Snapshot> {
-        self.mailbox.take()
     }
 }

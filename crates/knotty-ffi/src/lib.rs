@@ -9,14 +9,14 @@ use knotty_core::{Error, Session, Snapshot};
 
 /// The snapshot's POD types. A C consumer gets these from the header; this
 /// re-export is how a Rust consumer names the same layouts.
-pub use knotty_core::{Attribute, Cell, Dirty, Rgb, RowFlag, Underline};
+pub use knotty_core::{Attribute, Cell, Dirty, Rgb, Row, RowFlag, SelectionRange, Underline};
 
 /// ABI version of this library.
 ///
 /// A caller reads the constant from the header it compiled against and
 /// compares it with [`kt_abi_version`]. Mismatch means header and library
 /// disagree about layouts, and the caller must not proceed.
-pub const KT_ABI_VERSION: u32 = 4;
+pub const KT_ABI_VERSION: u32 = 5;
 
 /// Outcome of a call across the boundary.
 #[repr(i32)]
@@ -32,6 +32,8 @@ pub enum KtStatus {
     Engine = 3,
     /// The terminal's state is bigger than a snapshot can describe.
     TooLarge = 4,
+    /// A coordinate fell outside the terminal.
+    OutOfRange = 5,
 }
 
 impl From<Error> for KtStatus {
@@ -39,6 +41,7 @@ impl From<Error> for KtStatus {
         match error {
             Error::Engine => Self::Engine,
             Error::TooLarge => Self::TooLarge,
+            Error::OutOfRange => Self::OutOfRange,
         }
     }
 }
@@ -62,10 +65,13 @@ pub struct KtSnapshotView {
     /// How much of the screen changed since the last snapshot. Never
     /// `KT_DIRTY_CLEAN`: an unchanged screen is not published at all.
     pub dirty: Dirty,
+    /// Whether a selection exists. A selection scrolled out of the viewport
+    /// still exists, so this is not the same as no row being selected.
+    pub has_selection: bool,
     /// Row-major grid of `rows * cols` cells.
     pub cells: *const Cell,
-    /// One entry per row, each a bit set of `KtRowFlag` values.
-    pub row_flags: *const u8,
+    /// One entry per row: its flags and, where selected, its columns.
+    pub row_state: *const Row,
     /// Codepoints for cells whose cluster did not fit in one cell. A cell
     /// carrying `KT_ATTRIBUTE_OVERFLOW` holds the index of its run's length
     /// here; the codepoints follow, base first.
@@ -153,6 +159,29 @@ pub unsafe extern "C" fn kt_session_feed(
     }
 }
 
+/// Select a range of the viewport, or clear the selection by passing null.
+///
+/// Publishes a snapshot, since the selection is part of what a consumer draws.
+///
+/// # Safety
+///
+/// `session` must be a live handle, and `range` must be null or point at a
+/// readable `KtSelectionRange`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kt_session_set_selection(
+    session: *mut KtSession,
+    range: *const SelectionRange,
+) -> KtStatus {
+    let Some(session) = (unsafe { session.as_mut() }) else {
+        return KtStatus::NullArgument;
+    };
+
+    match session.0.set_selection(unsafe { range.as_ref() }.copied()) {
+        Ok(()) => KtStatus::Ok,
+        Err(error) => error.into(),
+    }
+}
+
 /// Take the latest snapshot, emptying the session's mailbox.
 ///
 /// Returns `KT_STATUS_NO_VALUE` when nothing has been published since the
@@ -221,8 +250,9 @@ pub unsafe extern "C" fn kt_snapshot_view(
             cols: snapshot.0.cols,
             rows: snapshot.0.rows,
             dirty: snapshot.0.dirty,
+            has_selection: snapshot.0.has_selection,
             cells: snapshot.0.cells.as_ptr(),
-            row_flags: snapshot.0.row_flags.as_ptr(),
+            row_state: snapshot.0.row_state.as_ptr(),
             graphemes: snapshot.0.graphemes.as_ptr(),
             grapheme_count: snapshot.0.graphemes.len(),
         }

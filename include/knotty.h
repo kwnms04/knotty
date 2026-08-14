@@ -5,6 +5,7 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include <stdbool.h>
 
 /**
  * ABI version of this library.
@@ -13,7 +14,7 @@
  * compares it with [`kt_abi_version`]. Mismatch means header and library
  * disagree about layouts, and the caller must not proceed.
  */
-#define KT_ABI_VERSION 4
+#define KT_ABI_VERSION 5
 
 /**
  * Outcome of a call across the boundary.
@@ -43,6 +44,10 @@ enum KtStatus
    * The terminal's state is bigger than a snapshot can describe.
    */
   KT_STATUS_TOO_LARGE = 4,
+  /**
+   * A coordinate fell outside the terminal.
+   */
+  KT_STATUS_OUT_OF_RANGE = 5,
 };
 #ifndef __cplusplus
 #if __STDC_VERSION__ >= 202311L
@@ -196,7 +201,7 @@ typedef uint16_t KtAttribute;
 #endif // __cplusplus
 
 /**
- * Row state, OR-ed together into one entry of a snapshot's row flags.
+ * Row state, OR-ed together into a row's `flags` field.
  */
 enum KtRowFlag
 #if defined(__cplusplus) || __STDC_VERSION__ >= 202311L
@@ -212,6 +217,10 @@ enum KtRowFlag
    * columns, not at a newline.
    */
   KT_ROW_FLAG_WRAPPED = (1 << 1),
+  /**
+   * Part of the row is selected, and the row's columns say which part.
+   */
+  KT_ROW_FLAG_SELECTED = (1 << 2),
 };
 #ifndef __cplusplus
 #if __STDC_VERSION__ >= 202311L
@@ -230,6 +239,36 @@ typedef struct KtSession KtSession;
  * Opaque handle to a snapshot.
  */
 typedef struct KtSnapshot KtSnapshot;
+
+/**
+ * A selection's two endpoints, in viewport coordinates.
+ *
+ * Both ends are inclusive, and either may come first: the pair records which
+ * way the selection was made, not which end is topmost.
+ */
+typedef struct {
+  /**
+   * Column of the first endpoint.
+   */
+  uint16_t start_x;
+  /**
+   * Row of the first endpoint.
+   */
+  uint16_t start_y;
+  /**
+   * Column of the second endpoint.
+   */
+  uint16_t end_x;
+  /**
+   * Row of the second endpoint.
+   */
+  uint16_t end_y;
+  /**
+   * Whether the endpoints are opposite corners of a block rather than the
+   * ends of a run of text.
+   */
+  bool rectangle;
+} KtSelectionRange;
 
 /**
  * A colour, already resolved out of the palette.
@@ -281,6 +320,30 @@ typedef struct {
 } KtCell;
 
 /**
+ * What a snapshot says about one row.
+ *
+ * Selection lives here rather than in the cells. A renderer's line cache is
+ * keyed on cell contents, so a selection inside a cell would throw the whole
+ * cache away on every drag.
+ */
+typedef struct {
+  /**
+   * A bit set of `KtRowFlag` values.
+   */
+  uint8_t flags;
+  /**
+   * First selected column, inclusive. Only meaningful with the selected
+   * flag set.
+   */
+  uint16_t selection_start;
+  /**
+   * Last selected column, inclusive. Only meaningful with the selected
+   * flag set.
+   */
+  uint16_t selection_end;
+} KtRow;
+
+/**
  * Borrowed view of a snapshot's contents.
  *
  * The pointers stay valid until the snapshot is freed.
@@ -300,13 +363,18 @@ typedef struct {
    */
   KtDirty dirty;
   /**
+   * Whether a selection exists. A selection scrolled out of the viewport
+   * still exists, so this is not the same as no row being selected.
+   */
+  bool has_selection;
+  /**
    * Row-major grid of `rows * cols` cells.
    */
   const KtCell *cells;
   /**
-   * One entry per row, each a bit set of `KtRowFlag` values.
+   * One entry per row: its flags and, where selected, its columns.
    */
-  const uint8_t *row_flags;
+  const KtRow *row_state;
   /**
    * Codepoints for cells whose cluster did not fit in one cell. A cell
    * carrying `KT_ATTRIBUTE_OVERFLOW` holds the index of its run's length
@@ -365,6 +433,18 @@ void kt_session_free(KtSession *session);
  * bytes. `bytes` may be null only when `len` is 0.
  */
 KtStatus kt_session_feed(KtSession *session, const uint8_t *bytes, size_t len);
+
+/**
+ * Select a range of the viewport, or clear the selection by passing null.
+ *
+ * Publishes a snapshot, since the selection is part of what a consumer draws.
+ *
+ * # Safety
+ *
+ * `session` must be a live handle, and `range` must be null or point at a
+ * readable `KtSelectionRange`.
+ */
+KtStatus kt_session_set_selection(KtSession *session, const KtSelectionRange *range);
 
 /**
  * Take the latest snapshot, emptying the session's mailbox.

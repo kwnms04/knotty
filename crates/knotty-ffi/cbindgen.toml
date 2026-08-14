@@ -4,7 +4,7 @@ include_guard = "KNOTTY_H"
 cpp_compat = true
 style = "type"
 documentation_style = "doxy"
-sys_includes = ["stdint.h", "stddef.h"]
+sys_includes = ["stdint.h", "stddef.h", "stdbool.h"]
 no_includes = true
 usize_is_size_t = true
 
@@ -24,5 +24,7 @@ Attribute = "KtAttribute"
 Cell = "KtCell"
 Dirty = "KtDirty"
 Rgb = "KtRgb"
+Row = "KtRow"
 RowFlag = "KtRowFlag"
+SelectionRange = "KtSelectionRange"
 Underline = "KtUnderline"
