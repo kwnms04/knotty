@@ -5,10 +5,10 @@ use std::mem::MaybeUninit;
 use std::ptr;
 
 use knotty_ffi::{
-    Attribute, Cell, Dirty, KtSession, KtSnapshot, KtSnapshotView, KtStatus, Rgb, Row, RowFlag,
-    SelectionRange, Underline, kt_abi_version, kt_session_feed, kt_session_free,
-    kt_session_new_detached, kt_session_set_selection, kt_session_take_snapshot, kt_snapshot_free,
-    kt_snapshot_view,
+    Attribute, Cell, Cursor, CursorShape, Dirty, KtSession, KtSnapshot, KtSnapshotView, KtStatus,
+    KtText, Rgb, Row, RowFlag, SelectionRange, Underline, kt_abi_version, kt_session_feed,
+    kt_session_free, kt_session_new_detached, kt_session_set_selection, kt_session_take_snapshot,
+    kt_snapshot_free, kt_snapshot_view,
 };
 
 /// Ghostty's own defaults. A change here is an upstream palette change, not a
@@ -108,6 +108,42 @@ fn set_selection(session: *mut KtSession, range: Option<SelectionRange>) -> KtSt
         Some(range) => unsafe { kt_session_set_selection(session, &range) },
         None => unsafe { kt_session_set_selection(session, ptr::null()) },
     }
+}
+
+/// Read borrowed text the way a consumer does: bytes and a length, no
+/// terminator.
+fn text(text: KtText) -> String {
+    let bytes = unsafe { std::slice::from_raw_parts(text.bytes, text.len) };
+    String::from_utf8(bytes.to_vec()).expect("the boundary promises UTF-8")
+}
+
+/// What a snapshot says outside the grid, copied out so it outlives the
+/// snapshot the view borrows from.
+struct Screen {
+    cursor: Cursor,
+    title: String,
+    pwd: String,
+}
+
+fn screen_of(view: &KtSnapshotView) -> Screen {
+    Screen {
+        cursor: view.cursor,
+        title: text(view.title),
+        pwd: text(view.pwd),
+    }
+}
+
+/// Feed one burst to a fresh session and read back the screen state.
+fn screen_after(bytes: &[u8]) -> Screen {
+    let session = detached(8, 3);
+    feed(session, bytes);
+    let snapshot = take(session);
+
+    let screen = screen_of(&view(snapshot));
+
+    unsafe { kt_snapshot_free(snapshot) };
+    unsafe { kt_session_free(session) };
+    screen
 }
 
 fn selection(start: (u16, u16), end: (u16, u16)) -> SelectionRange {
@@ -577,6 +613,86 @@ fn a_selection_with_no_visible_row_is_not_the_same_as_no_selection() {
     assert_eq!(selected_columns(&cleared_view), vec![None, None, None]);
 
     unsafe { kt_snapshot_free(cleared) };
+    unsafe { kt_session_free(session) };
+}
+
+#[test]
+fn the_cursor_reports_where_it_is_and_how_it_looks() {
+    let fresh = screen_after(b"");
+    assert_eq!((fresh.cursor.x, fresh.cursor.y), (0, 0));
+    assert!(fresh.cursor.visible);
+    assert_eq!(fresh.cursor.shape, CursorShape::Block);
+
+    let moved = screen_after(b"ab\r\ncd");
+    assert_eq!((moved.cursor.x, moved.cursor.y), (2, 1));
+
+    let hidden = screen_after(b"\x1b[?25l");
+    assert!(!hidden.cursor.visible);
+
+    for (sequence, shape) in [
+        ("\x1b[1 q", CursorShape::Block),
+        ("\x1b[3 q", CursorShape::Underline),
+        ("\x1b[5 q", CursorShape::Bar),
+    ] {
+        let screen = screen_after(sequence.as_bytes());
+        assert_eq!(screen.cursor.shape, shape, "DECSCUSR {sequence:?}");
+    }
+}
+
+#[test]
+fn the_title_and_working_directory_are_read_back() {
+    assert_eq!(screen_after(b"\x1b]2;hello\x07").title, "hello");
+    assert_eq!(screen_after(b"\x1b]0;zero\x07").title, "zero");
+
+    // OSC 7 reports a URI; what a consumer wants is the path.
+    assert_eq!(screen_after(b"\x1b]7;file:///tmp/x\x07").pwd, "/tmp/x");
+    assert_eq!(
+        screen_after(b"\x1b]7;file:///tmp/a%20b\x07").pwd,
+        "/tmp/a b"
+    );
+    assert_eq!(
+        screen_after(b"\x1b]7;file://myhost/tmp/x\x07").pwd,
+        "/tmp/x",
+        "the authority is dropped; knotty has no notion of which host it is on",
+    );
+
+    // OSC 1337 reports a bare path, which passes through untouched.
+    assert_eq!(
+        screen_after(b"\x1b]1337;CurrentDir=/tmp/y\x07").pwd,
+        "/tmp/y"
+    );
+}
+
+#[test]
+fn control_characters_never_reach_the_title_or_the_working_directory() {
+    // The engine drops C0 itself, but DEL and C1 reach us intact, and a
+    // percent escape can smuggle a newline past the parser entirely.
+    let screen = screen_after("\x1b]2;a\u{7f}b\u{85}c\x07".as_bytes());
+    assert_eq!(screen.title, "abc");
+
+    let smuggled = screen_after(b"\x1b]7;file:///tmp/a%0Ab%00c\x07");
+    assert_eq!(
+        smuggled.pwd, "/tmp/abc",
+        "decoding happens first, so what it produces is sanitised too",
+    );
+}
+
+#[test]
+fn a_change_outside_the_grid_is_published_on_its_own() {
+    let session = detached(8, 2);
+    feed(session, b"ab");
+    unsafe { kt_snapshot_free(take(session)) };
+
+    // A title sequence leaves every row alone, so the engine reports nothing
+    // dirty. It still has to reach a consumer.
+    feed(session, b"\x1b]2;hello\x07");
+
+    let snapshot = take(session);
+    let view = view(snapshot);
+    assert_eq!(view.dirty, Dirty::Clean, "no row changed");
+    assert_eq!(text(view.title), "hello");
+
+    unsafe { kt_snapshot_free(snapshot) };
     unsafe { kt_session_free(session) };
 }
 

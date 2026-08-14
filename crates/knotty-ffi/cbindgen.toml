@@ -22,6 +22,8 @@ include = ["Attribute", "RowFlag"]
 [export.rename]
 Attribute = "KtAttribute"
 Cell = "KtCell"
+Cursor = "KtCursor"
+CursorShape = "KtCursorShape"
 Dirty = "KtDirty"
 Rgb = "KtRgb"
 Row = "KtRow"

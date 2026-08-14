@@ -3,7 +3,8 @@
 //! Nothing outside this module names a VT engine type in a signature.
 
 use libghostty_vt::render::{
-    CellIteration, CellIterator, Dirty as VtDirty, RowIterator, RowSelection,
+    CellIteration, CellIterator, CursorVisualStyle, Dirty as VtDirty, RowIterator, RowSelection,
+    Snapshot as Frame,
 };
 use libghostty_vt::screen::{CellContentTag, CellWide};
 use libghostty_vt::{RenderState, Terminal};
@@ -117,8 +118,8 @@ impl From<libghostty_vt::style::Underline> for Underline {
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Dirty {
-    /// Nothing changed. A published snapshot never says this, because a
-    /// capture that finds nothing to report is not published at all.
+    /// No row changed. A published snapshot can still say this: something
+    /// outside the grid, such as the title or the cursor, moved instead.
     Clean = 0,
     /// Some rows changed; the row flags say which.
     Partial = 1,
@@ -147,6 +148,68 @@ pub enum RowFlag {
     Wrapped = 1 << 1,
     /// Part of the row is selected, and the row's columns say which part.
     Selected = 1 << 2,
+}
+
+/// What the cursor looks like.
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CursorShape {
+    /// A filled block over the cell.
+    #[default]
+    Block = 0,
+    /// A vertical bar before the cell.
+    Bar = 1,
+    /// A line under the cell.
+    Underline = 2,
+    /// An outlined block, drawn when the terminal is not focused.
+    BlockHollow = 3,
+    /// A shape this version of the engine knows and knotty does not.
+    Unknown = 255,
+}
+
+impl From<CursorVisualStyle> for CursorShape {
+    fn from(style: CursorVisualStyle) -> Self {
+        match style {
+            CursorVisualStyle::Block => Self::Block,
+            CursorVisualStyle::Bar => Self::Bar,
+            CursorVisualStyle::Underline => Self::Underline,
+            CursorVisualStyle::BlockHollow => Self::BlockHollow,
+            // The engine's enum is non-exhaustive; say so rather than picking
+            // a shape, so an upstream addition shows up.
+            _ => Self::Unknown,
+        }
+    }
+}
+
+/// Where the cursor is and how it looks.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Cursor {
+    /// Column, from the left of the viewport.
+    pub x: u16,
+    /// Row, from the top of the viewport.
+    pub y: u16,
+    /// Whether to draw it. False both when the terminal hid it and when it
+    /// sits outside the viewport, since neither is drawable.
+    pub visible: bool,
+    /// Which shape to draw.
+    pub shape: CursorShape,
+}
+
+/// Screen state that is not part of the grid.
+///
+/// The engine's dirty tracking does not cover any of this, so a capture
+/// compares it against the previous one to decide whether a frame that left
+/// the grid alone is still worth publishing.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ScreenState {
+    /// Where the cursor is and how it looks.
+    pub cursor: Cursor,
+    /// Window title, with control characters removed.
+    pub title: String,
+    /// Working directory as an absolute path, with control characters
+    /// removed.
+    pub pwd: String,
 }
 
 /// What a snapshot says about one row.
@@ -207,6 +270,8 @@ pub struct Snapshot {
     /// out of the viewport still exists, and the two states are told apart
     /// here rather than by looking at the rows.
     pub has_selection: bool,
+    /// Cursor, title and working directory.
+    pub screen: ScreenState,
     /// `rows * cols` cells in row-major order.
     pub cells: Vec<Cell>,
     /// One entry per row.
@@ -243,14 +308,18 @@ impl Snapshot {
 ///
 /// Returns `Ok(None)` when nothing changed since the last capture, so a
 /// caller publishes at most once per unit of work and never for a frame that
-/// would be identical.
+/// would be identical. `previous` is the screen state of the last capture:
+/// the engine's dirty tracking does not cover it, so a title or cursor move
+/// on an otherwise still screen would go unpublished without it.
 pub(crate) fn capture(
     render: &mut RenderState<'static>,
     terminal: &Terminal<'static, 'static>,
+    previous: &ScreenState,
 ) -> Result<Option<Snapshot>> {
     let frame = render.update(terminal)?;
     let dirty = Dirty::from(frame.dirty()?);
-    if dirty == Dirty::Clean {
+    let screen = screen_state_of(&frame, terminal)?;
+    if dirty == Dirty::Clean && screen == *previous {
         return Ok(None);
     }
 
@@ -319,6 +388,7 @@ pub(crate) fn capture(
         // The caller fills this in: whether a selection exists is session
         // state, not something the render state can be asked.
         has_selection: false,
+        screen,
         cells,
         row_state,
         graphemes,
@@ -342,6 +412,76 @@ fn row_state_of(dirty: bool, wrapped: bool, selection: Option<RowSelection>) -> 
         selection_start: selection.map_or(0, |range| range.start_x),
         selection_end: selection.map_or(0, |range| range.end_x),
     }
+}
+
+fn screen_state_of(
+    frame: &Frame<'_, '_>,
+    terminal: &Terminal<'static, 'static>,
+) -> Result<ScreenState> {
+    let position = frame.cursor_viewport()?;
+    Ok(ScreenState {
+        cursor: Cursor {
+            x: position.map_or(0, |at| at.x),
+            y: position.map_or(0, |at| at.y),
+            // A cursor outside the viewport cannot be drawn either.
+            visible: position.is_some() && frame.cursor_visible()?,
+            shape: frame.cursor_visual_style()?.into(),
+        },
+        title: without_control_characters(terminal.title()?),
+        pwd: without_control_characters(&path_of(terminal.pwd()?)),
+    })
+}
+
+/// Strip control characters, newlines included.
+///
+/// These values come from the program on the other end, which is untrusted,
+/// and they end up in window titles and restore files.
+fn without_control_characters(text: &str) -> String {
+    text.chars().filter(|c| !c.is_control()).collect()
+}
+
+/// Reduce a working directory report to an absolute path.
+///
+/// OSC 7 reports a `file://` URI; OSC 1337 reports a bare path. Anything that
+/// is not a URI is passed through, so a path stays a path.
+fn path_of(reported: &str) -> String {
+    let Some(after_scheme) = reported.strip_prefix("file://") else {
+        return reported.to_owned();
+    };
+    // Drop the authority. knotty has no notion of which host it is on, so a
+    // path reported by another one is taken at face value.
+    let path = after_scheme
+        .find('/')
+        .map_or("", |authority_end| &after_scheme[authority_end..]);
+
+    percent_decoded(path)
+}
+
+fn percent_decoded(path: &str) -> String {
+    let bytes = path.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        let escape = (bytes[index] == b'%')
+            .then(|| bytes.get(index + 1..index + 3))
+            .flatten()
+            .and_then(|digits| u8::from_str_radix(std::str::from_utf8(digits).ok()?, 16).ok());
+
+        match escape {
+            Some(byte) => {
+                decoded.push(byte);
+                index += 3;
+            }
+            None => {
+                decoded.push(bytes[index]);
+                index += 1;
+            }
+        }
+    }
+
+    // A decoding that does not spell UTF-8 is not a path we can offer, so
+    // hand back what was reported instead of a lossy guess.
+    String::from_utf8(decoded).unwrap_or_else(|_| path.to_owned())
 }
 
 /// Append a cell's codepoints to the grapheme table, returning the index the

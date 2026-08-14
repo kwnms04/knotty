@@ -10,7 +10,10 @@ pub mod session;
 pub mod snapshot;
 
 pub use session::{SelectionRange, Session};
-pub use snapshot::{Attribute, Cell, Dirty, Rgb, Row, RowFlag, Snapshot, Underline};
+pub use snapshot::{
+    Attribute, Cell, Cursor, CursorShape, Dirty, Rgb, Row, RowFlag, ScreenState, Snapshot,
+    Underline,
+};
 
 /// Why a core operation failed.
 ///

@@ -6,7 +6,7 @@ use libghostty_vt::terminal::{Point, PointCoordinate};
 use libghostty_vt::{RenderState, Terminal, TerminalOptions};
 
 use crate::mailbox::Mailbox;
-use crate::snapshot::{self, Snapshot};
+use crate::snapshot::{self, ScreenState, Snapshot};
 use crate::{Error, Result};
 
 /// A selection's two endpoints, in viewport coordinates.
@@ -48,6 +48,9 @@ pub struct Session {
     // So knotty keeps its own record. See `Session::has_selection` for what
     // that costs.
     selection_screen: Option<Screen>,
+    // What the last capture said about the screen outside the grid, so that a
+    // title or cursor change on an otherwise still screen still publishes.
+    last_screen: ScreenState,
 }
 
 impl Session {
@@ -65,6 +68,7 @@ impl Session {
             render,
             mailbox: Mailbox::new(),
             selection_screen: None,
+            last_screen: ScreenState::default(),
         })
     }
 
@@ -130,8 +134,11 @@ impl Session {
     /// Capture the terminal and publish it, unless nothing changed.
     fn publish(&mut self) -> Result<()> {
         let has_selection = self.has_selection()?;
-        if let Some(mut snapshot) = snapshot::capture(&mut self.render, &self.terminal)? {
+        if let Some(mut snapshot) =
+            snapshot::capture(&mut self.render, &self.terminal, &self.last_screen)?
+        {
             snapshot.has_selection = has_selection;
+            self.last_screen = snapshot.screen.clone();
             // The mailbox keeps only the newest snapshot, so publishing over
             // an unconsumed one drops it. Carry its change marks across, or a
             // consumer that misses a frame is told less changed than did.

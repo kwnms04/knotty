@@ -9,14 +9,38 @@ use knotty_core::{Error, Session, Snapshot};
 
 /// The snapshot's POD types. A C consumer gets these from the header; this
 /// re-export is how a Rust consumer names the same layouts.
-pub use knotty_core::{Attribute, Cell, Dirty, Rgb, Row, RowFlag, SelectionRange, Underline};
+pub use knotty_core::{
+    Attribute, Cell, Cursor, CursorShape, Dirty, Rgb, Row, RowFlag, SelectionRange, Underline,
+};
+
+/// Borrowed UTF-8, valid until the snapshot it came from is freed.
+///
+/// Not null-terminated: read `len` bytes. Control characters have already been
+/// removed, so there are no interior nulls either.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct KtText {
+    /// The bytes.
+    pub bytes: *const u8,
+    /// How many of them.
+    pub len: usize,
+}
+
+impl From<&str> for KtText {
+    fn from(text: &str) -> Self {
+        Self {
+            bytes: text.as_ptr(),
+            len: text.len(),
+        }
+    }
+}
 
 /// ABI version of this library.
 ///
 /// A caller reads the constant from the header it compiled against and
 /// compares it with [`kt_abi_version`]. Mismatch means header and library
 /// disagree about layouts, and the caller must not proceed.
-pub const KT_ABI_VERSION: u32 = 5;
+pub const KT_ABI_VERSION: u32 = 6;
 
 /// Outcome of a call across the boundary.
 #[repr(i32)]
@@ -62,8 +86,8 @@ pub struct KtSnapshotView {
     pub cols: u16,
     /// Viewport height in cells.
     pub rows: u16,
-    /// How much of the screen changed since the last snapshot. Never
-    /// `KT_DIRTY_CLEAN`: an unchanged screen is not published at all.
+    /// How much of the grid changed since the last snapshot. Can be
+    /// `KT_DIRTY_CLEAN` when what changed was outside the grid.
     pub dirty: Dirty,
     /// Whether a selection exists. A selection scrolled out of the viewport
     /// still exists, so this is not the same as no row being selected.
@@ -78,6 +102,13 @@ pub struct KtSnapshotView {
     pub graphemes: *const u32,
     /// Number of entries in `graphemes`, lengths included.
     pub grapheme_count: usize,
+    /// Where the cursor is and how it looks.
+    pub cursor: Cursor,
+    /// Window title, control characters already removed.
+    pub title: KtText,
+    /// Working directory as an absolute path, control characters already
+    /// removed.
+    pub pwd: KtText,
 }
 
 /// Return the ABI version this library was built with.
@@ -255,6 +286,9 @@ pub unsafe extern "C" fn kt_snapshot_view(
             row_state: snapshot.0.row_state.as_ptr(),
             graphemes: snapshot.0.graphemes.as_ptr(),
             grapheme_count: snapshot.0.graphemes.len(),
+            cursor: snapshot.0.screen.cursor,
+            title: snapshot.0.screen.title.as_str().into(),
+            pwd: snapshot.0.screen.pwd.as_str().into(),
         }
     };
     KtStatus::Ok

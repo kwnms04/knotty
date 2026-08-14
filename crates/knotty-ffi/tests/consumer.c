@@ -5,10 +5,11 @@
 
 #include <knotty.h>
 #include <stddef.h>
+#include <string.h>
 
 /* Golden snapshot comparison depends on these layouts, so a change here is an
  * ABI change and must come with a version bump. */
-_Static_assert(KT_ABI_VERSION == 5, "ABI version moved without updating this consumer");
+_Static_assert(KT_ABI_VERSION == 6, "ABI version moved without updating this consumer");
 
 _Static_assert(sizeof(KtCell) == 16, "KtCell grew or shrank");
 _Static_assert(offsetof(KtCell, codepoint) == 0, "KtCell fields moved");
@@ -22,7 +23,13 @@ _Static_assert(offsetof(KtRow, flags) == 0, "KtRow fields moved");
 _Static_assert(offsetof(KtRow, selection_start) == 2, "KtRow fields moved");
 _Static_assert(offsetof(KtRow, selection_end) == 4, "KtRow fields moved");
 
-_Static_assert(sizeof(KtSnapshotView) == 40, "KtSnapshotView grew or shrank");
+_Static_assert(sizeof(KtCursor) == 6, "KtCursor grew or shrank");
+_Static_assert(offsetof(KtCursor, x) == 0, "KtCursor fields moved");
+_Static_assert(offsetof(KtCursor, y) == 2, "KtCursor fields moved");
+_Static_assert(offsetof(KtCursor, visible) == 4, "KtCursor fields moved");
+_Static_assert(offsetof(KtCursor, shape) == 5, "KtCursor fields moved");
+
+_Static_assert(sizeof(KtSnapshotView) == 80, "KtSnapshotView grew or shrank");
 _Static_assert(offsetof(KtSnapshotView, cols) == 0, "KtSnapshotView fields moved");
 _Static_assert(offsetof(KtSnapshotView, rows) == 2, "KtSnapshotView fields moved");
 _Static_assert(offsetof(KtSnapshotView, dirty) == 4, "KtSnapshotView fields moved");
@@ -31,6 +38,9 @@ _Static_assert(offsetof(KtSnapshotView, cells) == 8, "KtSnapshotView fields move
 _Static_assert(offsetof(KtSnapshotView, row_state) == 16, "KtSnapshotView fields moved");
 _Static_assert(offsetof(KtSnapshotView, graphemes) == 24, "KtSnapshotView fields moved");
 _Static_assert(offsetof(KtSnapshotView, grapheme_count) == 32, "KtSnapshotView fields moved");
+_Static_assert(offsetof(KtSnapshotView, cursor) == 40, "KtSnapshotView fields moved");
+_Static_assert(offsetof(KtSnapshotView, title) == 48, "KtSnapshotView fields moved");
+_Static_assert(offsetof(KtSnapshotView, pwd) == 64, "KtSnapshotView fields moved");
 
 /* The startup handshake a real consumer performs. */
 int kt_consumer_abi_ok(void) {
@@ -76,6 +86,12 @@ int kt_consumer_needs_redraw(const KtSnapshotView *view, uint16_t row) {
  * not. */
 int kt_consumer_joins_next_row(const KtSnapshotView *view, uint16_t row) {
     return (view->row_state[row].flags & KT_ROW_FLAG_WRAPPED) != 0;
+}
+
+/* Text is a run of bytes with a length, not a null-terminated string. */
+int kt_consumer_title_is(const KtSnapshotView *view, const char *expected) {
+    size_t len = strlen(expected);
+    return view->title.len == len && memcmp(view->title.bytes, expected, len) == 0;
 }
 
 /* Selection is read beside the cells, never out of them, so highlighting a

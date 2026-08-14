@@ -14,7 +14,7 @@
  * compares it with [`kt_abi_version`]. Mismatch means header and library
  * disagree about layouts, and the caller must not proceed.
  */
-#define KT_ABI_VERSION 5
+#define KT_ABI_VERSION 6
 
 /**
  * Outcome of a call across the boundary.
@@ -66,8 +66,8 @@ enum KtDirty
 #endif // defined(__cplusplus) || __STDC_VERSION__ >= 202311L
  {
   /**
-   * Nothing changed. A published snapshot never says this, because a
-   * capture that finds nothing to report is not published at all.
+   * No row changed. A published snapshot can still say this: something
+   * outside the grid, such as the title or the cursor, moved instead.
    */
   KT_DIRTY_CLEAN = 0,
   /**
@@ -130,6 +130,43 @@ enum KtUnderline
 typedef enum KtUnderline KtUnderline;
 #else
 typedef uint8_t KtUnderline;
+#endif // __STDC_VERSION__ >= 202311L
+#endif // __cplusplus
+
+/**
+ * What the cursor looks like.
+ */
+enum KtCursorShape
+#if defined(__cplusplus) || __STDC_VERSION__ >= 202311L
+  : uint8_t
+#endif // defined(__cplusplus) || __STDC_VERSION__ >= 202311L
+ {
+  /**
+   * A filled block over the cell.
+   */
+  KT_CURSOR_SHAPE_BLOCK = 0,
+  /**
+   * A vertical bar before the cell.
+   */
+  KT_CURSOR_SHAPE_BAR = 1,
+  /**
+   * A line under the cell.
+   */
+  KT_CURSOR_SHAPE_UNDERLINE = 2,
+  /**
+   * An outlined block, drawn when the terminal is not focused.
+   */
+  KT_CURSOR_SHAPE_BLOCK_HOLLOW = 3,
+  /**
+   * A shape this version of the engine knows and knotty does not.
+   */
+  KT_CURSOR_SHAPE_UNKNOWN = 255,
+};
+#ifndef __cplusplus
+#if __STDC_VERSION__ >= 202311L
+typedef enum KtCursorShape KtCursorShape;
+#else
+typedef uint8_t KtCursorShape;
 #endif // __STDC_VERSION__ >= 202311L
 #endif // __cplusplus
 
@@ -344,6 +381,46 @@ typedef struct {
 } KtRow;
 
 /**
+ * Where the cursor is and how it looks.
+ */
+typedef struct {
+  /**
+   * Column, from the left of the viewport.
+   */
+  uint16_t x;
+  /**
+   * Row, from the top of the viewport.
+   */
+  uint16_t y;
+  /**
+   * Whether to draw it. False both when the terminal hid it and when it
+   * sits outside the viewport, since neither is drawable.
+   */
+  bool visible;
+  /**
+   * Which shape to draw.
+   */
+  KtCursorShape shape;
+} KtCursor;
+
+/**
+ * Borrowed UTF-8, valid until the snapshot it came from is freed.
+ *
+ * Not null-terminated: read `len` bytes. Control characters have already been
+ * removed, so there are no interior nulls either.
+ */
+typedef struct {
+  /**
+   * The bytes.
+   */
+  const uint8_t *bytes;
+  /**
+   * How many of them.
+   */
+  size_t len;
+} KtText;
+
+/**
  * Borrowed view of a snapshot's contents.
  *
  * The pointers stay valid until the snapshot is freed.
@@ -358,8 +435,8 @@ typedef struct {
    */
   uint16_t rows;
   /**
-   * How much of the screen changed since the last snapshot. Never
-   * `KT_DIRTY_CLEAN`: an unchanged screen is not published at all.
+   * How much of the grid changed since the last snapshot. Can be
+   * `KT_DIRTY_CLEAN` when what changed was outside the grid.
    */
   KtDirty dirty;
   /**
@@ -385,6 +462,19 @@ typedef struct {
    * Number of entries in `graphemes`, lengths included.
    */
   size_t grapheme_count;
+  /**
+   * Where the cursor is and how it looks.
+   */
+  KtCursor cursor;
+  /**
+   * Window title, control characters already removed.
+   */
+  KtText title;
+  /**
+   * Working directory as an absolute path, control characters already
+   * removed.
+   */
+  KtText pwd;
 } KtSnapshotView;
 
 #ifdef __cplusplus
