@@ -60,3 +60,12 @@ fn tmux() {
 fn htop() {
     check("htop");
 }
+
+/// vim over a file of CJK, combining marks and ZWJ emoji. The three
+/// application recordings above are all ASCII, so without this the wide-cell
+/// flags and the grapheme table — the parts of the snapshot most likely to
+/// move when the engine does — would go unwatched.
+#[test]
+fn unicode() {
+    check("unicode");
+}

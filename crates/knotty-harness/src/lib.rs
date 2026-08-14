@@ -69,8 +69,7 @@ fn check(call: &str, status: KtStatus) -> Result<(), String> {
 }
 
 /// Write out everything the snapshot says.
-#[must_use]
-pub fn describe(view: &KtSnapshotView) -> String {
+fn describe(view: &KtSnapshotView) -> String {
     let mut out = String::new();
 
     let _ = writeln!(out, "{FORMAT}");
@@ -137,11 +136,7 @@ fn describe_row(out: &mut String, view: &KtSnapshotView, row: u16) {
     let _ = writeln!(out, "text {}", quoted(row_text(view, row)));
 
     for col in 0..view.cols {
-        let cell = unsafe {
-            *view
-                .cells
-                .add(usize::from(row) * usize::from(view.cols) + usize::from(col))
-        };
+        let cell = cell_at(view, row, col);
         let codepoints: Vec<String> = codepoints_of(view, &cell)
             .iter()
             .map(|codepoint| format!("{codepoint:04X}"))
@@ -158,15 +153,20 @@ fn describe_row(out: &mut String, view: &KtSnapshotView, row: u16) {
     }
 }
 
+/// The grid is a flat row-major array, so a cell costs an index.
+fn cell_at(view: &KtSnapshotView, row: u16, col: u16) -> Cell {
+    unsafe {
+        *view
+            .cells
+            .add(usize::from(row) * usize::from(view.cols) + usize::from(col))
+    }
+}
+
 /// The characters of a row, with anything unprintable shown as a dot.
 fn row_text(view: &KtSnapshotView, row: u16) -> String {
     (0..view.cols)
         .map(|col| {
-            let cell = unsafe {
-                *view
-                    .cells
-                    .add(usize::from(row) * usize::from(view.cols) + usize::from(col))
-            };
+            let cell = cell_at(view, row, col);
             match codepoints_of(view, &cell)
                 .first()
                 .and_then(|c| char::from_u32(*c))
@@ -198,12 +198,14 @@ fn codepoints_of(view: &KtSnapshotView, cell: &Cell) -> Vec<u32> {
         .collect()
 }
 
-fn text_of(text: KtText) -> &'static str {
+fn text_of(text: KtText) -> String {
     if text.len == 0 {
-        return "";
+        return String::new();
     }
     let bytes = unsafe { std::slice::from_raw_parts(text.bytes, text.len) };
-    std::str::from_utf8(bytes).expect("the boundary promises UTF-8")
+    std::str::from_utf8(bytes)
+        .expect("the boundary promises UTF-8")
+        .to_owned()
 }
 
 fn quoted(text: impl AsRef<str>) -> String {
@@ -256,29 +258,38 @@ pub fn diff(golden: &str, produced: &str) -> Option<String> {
         return None;
     }
 
+    let want: Vec<&str> = golden.lines().collect();
+    let got: Vec<&str> = produced.lines().collect();
+
+    // A golden written by an older encoding differs on every line, which says
+    // nothing useful. Its first line says which encoding wrote it.
+    if want.first() != got.first() {
+        return Some(format!(
+            "the golden was written in a different format\n  golden   {}\n  produced {}\n",
+            want.first().unwrap_or(&"<empty>"),
+            got.first().unwrap_or(&"<empty>"),
+        ));
+    }
+
     const SHOWN: usize = 12;
     let mut report = String::from("the screen does not match the golden\n");
     let mut differing = 0;
 
-    for (number, (want, got)) in golden.lines().zip(produced.lines()).enumerate() {
+    for number in 0..want.len().max(got.len()) {
+        let (want, got) = (want.get(number), got.get(number));
         if want == got {
             continue;
         }
         differing += 1;
         if differing <= SHOWN {
             let _ = writeln!(report, "  line {}:", number + 1);
-            let _ = writeln!(report, "    golden   {want}");
-            let _ = writeln!(report, "    produced {got}");
+            let _ = writeln!(report, "    golden   {}", want.unwrap_or(&"<missing>"));
+            let _ = writeln!(report, "    produced {}", got.unwrap_or(&"<missing>"));
         }
     }
 
     if differing > SHOWN {
         let _ = writeln!(report, "  ... and {} more lines", differing - SHOWN);
-    }
-
-    let (want, got) = (golden.lines().count(), produced.lines().count());
-    if want != got {
-        let _ = writeln!(report, "  golden has {want} lines, produced has {got}");
     }
     Some(report)
 }
@@ -289,32 +300,48 @@ mod tests {
 
     #[test]
     fn identical_descriptions_do_not_differ() {
-        assert!(diff("size 2 1\ncell 0 0 x\n", "size 2 1\ncell 0 0 x\n").is_none());
+        let same = "knotty-golden 1\nsize 2 1\ncell 0 0 x\n";
+        assert!(diff(same, same).is_none());
     }
 
     #[test]
     fn a_report_names_the_line_and_shows_both_sides() {
-        let report = diff("size 2 1\ncell 0 1 x\n", "size 2 1\ncell 0 1 y\n")
-            .expect("the descriptions differ");
+        let report = diff(
+            "knotty-golden 1\nsize 2 1\ncell 0 1 x\n",
+            "knotty-golden 1\nsize 2 1\ncell 0 1 y\n",
+        )
+        .expect("the descriptions differ");
 
-        assert!(report.contains("line 2:"), "{report}");
+        assert!(report.contains("line 3:"), "{report}");
         assert!(report.contains("golden   cell 0 1 x"), "{report}");
         assert!(report.contains("produced cell 0 1 y"), "{report}");
     }
 
     #[test]
-    fn a_report_says_when_one_side_is_longer() {
-        let report = diff("a\nb\n", "a\n").expect("the descriptions differ");
-        assert!(
-            report.contains("golden has 2 lines, produced has 1"),
-            "{report}"
-        );
+    fn a_report_shows_a_line_only_one_side_has() {
+        let report = diff("same\nextra\n", "same\n").expect("the descriptions differ");
+
+        assert!(report.contains("line 2:"), "{report}");
+        assert!(report.contains("golden   extra"), "{report}");
+        assert!(report.contains("produced <missing>"), "{report}");
+    }
+
+    #[test]
+    fn a_golden_from_another_encoding_says_so_instead_of_diffing() {
+        let report =
+            diff("knotty-golden 0\nsize 2 1\n", "knotty-golden 1\nsize 2 1\n").expect("differ");
+
+        assert!(report.contains("different format"), "{report}");
+        assert!(!report.contains("line 2"), "{report}");
     }
 
     #[test]
     fn a_report_stops_listing_and_says_how_many_are_left() {
-        let golden: String = (0..40).map(|line| format!("line {line}\n")).collect();
-        let produced: String = (0..40).map(|line| format!("other {line}\n")).collect();
+        let head = "knotty-golden 1\n";
+        let golden: String =
+            head.to_owned() + &(0..40).map(|l| format!("line {l}\n")).collect::<String>();
+        let produced: String =
+            head.to_owned() + &(0..40).map(|l| format!("other {l}\n")).collect::<String>();
 
         let report = diff(&golden, &produced).expect("the descriptions differ");
         assert!(report.contains("and 28 more lines"), "{report}");
