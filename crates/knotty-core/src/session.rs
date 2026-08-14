@@ -1,12 +1,33 @@
 //! Session lifecycle and the publish path.
 
+use libghostty_vt::screen::Screen;
 use libghostty_vt::selection::Selection;
 use libghostty_vt::terminal::{Point, PointCoordinate};
 use libghostty_vt::{RenderState, Terminal, TerminalOptions};
 
 use crate::mailbox::Mailbox;
-use crate::snapshot::{self, SelectionRange, Snapshot};
+use crate::snapshot::{self, Snapshot};
 use crate::{Error, Result};
+
+/// A selection's two endpoints, in viewport coordinates.
+///
+/// Both ends are inclusive, and either may come first: the pair records which
+/// way the selection was made, not which end is topmost.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SelectionRange {
+    /// Column of the first endpoint.
+    pub start_x: u16,
+    /// Row of the first endpoint.
+    pub start_y: u16,
+    /// Column of the second endpoint.
+    pub end_x: u16,
+    /// Row of the second endpoint.
+    pub end_y: u16,
+    /// Whether the endpoints are opposite corners of a block rather than the
+    /// ends of a run of text.
+    pub rectangle: bool,
+}
 
 /// A terminal session.
 ///
@@ -19,9 +40,14 @@ pub struct Session {
     terminal: Terminal<'static, 'static>,
     render: RenderState<'static>,
     mailbox: Mailbox<Snapshot>,
-    // The engine has no way to ask whether a selection is set, and a snapshot
-    // has to say so even when no visible row falls inside it.
-    has_selection: bool,
+    // Which screen the selection was made on, or None when there is none.
+    //
+    // A snapshot has to say whether a selection exists even when no visible
+    // row falls inside one, and the engine's own answer is out of reach: the
+    // C API has it, but the pinned safe wrapper keeps the raw handle private.
+    // So knotty keeps its own record. See `Session::has_selection` for what
+    // that costs.
+    selection_screen: Option<Screen>,
 }
 
 impl Session {
@@ -38,7 +64,7 @@ impl Session {
             terminal,
             render,
             mailbox: Mailbox::new(),
-            has_selection: false,
+            selection_screen: None,
         })
     }
 
@@ -64,9 +90,27 @@ impl Session {
                 self.terminal.set_selection(None)?;
             }
         }
-        self.has_selection = range.is_some();
+        self.selection_screen = match range {
+            Some(_) => Some(self.terminal.active_screen()?),
+            None => None,
+        };
 
         self.publish()
+    }
+
+    /// Whether a selection exists.
+    ///
+    /// The engine's selection belongs to the active screen and is dropped when
+    /// that changes, so knotty's record only holds while the screen does. A
+    /// sequence that resets the terminal outright also drops the selection and
+    /// is not detectable here, so this can read true for a while after such a
+    /// reset. Exposing the engine's own answer needs the wrapper to hand out
+    /// the raw handle.
+    fn has_selection(&self) -> Result<bool> {
+        Ok(match self.selection_screen {
+            Some(screen) => screen == self.terminal.active_screen()?,
+            None => false,
+        })
     }
 
     /// Process `bytes` to completion on the calling thread, publishing at most
@@ -85,9 +129,9 @@ impl Session {
 
     /// Capture the terminal and publish it, unless nothing changed.
     fn publish(&mut self) -> Result<()> {
-        if let Some(mut snapshot) =
-            snapshot::capture(&mut self.render, &self.terminal, self.has_selection)?
-        {
+        let has_selection = self.has_selection()?;
+        if let Some(mut snapshot) = snapshot::capture(&mut self.render, &self.terminal)? {
+            snapshot.has_selection = has_selection;
             // The mailbox keeps only the newest snapshot, so publishing over
             // an unconsumed one drops it. Carry its change marks across, or a
             // consumer that misses a frame is told less changed than did.

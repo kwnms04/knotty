@@ -167,26 +167,6 @@ pub struct Row {
     pub selection_end: u16,
 }
 
-/// A selection's two endpoints, in viewport coordinates.
-///
-/// Both ends are inclusive, and either may come first: the pair records which
-/// way the selection was made, not which end is topmost.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct SelectionRange {
-    /// Column of the first endpoint.
-    pub start_x: u16,
-    /// Row of the first endpoint.
-    pub start_y: u16,
-    /// Column of the second endpoint.
-    pub end_x: u16,
-    /// Row of the second endpoint.
-    pub end_y: u16,
-    /// Whether the endpoints are opposite corners of a block rather than the
-    /// ends of a run of text.
-    pub rectangle: bool,
-}
-
 /// One terminal cell.
 ///
 /// Fixed size and POD: the grid is a row-major flat array of these, so a
@@ -267,7 +247,6 @@ impl Snapshot {
 pub(crate) fn capture(
     render: &mut RenderState<'static>,
     terminal: &Terminal<'static, 'static>,
-    has_selection: bool,
 ) -> Result<Option<Snapshot>> {
     let frame = render.update(terminal)?;
     let dirty = Dirty::from(frame.dirty()?);
@@ -337,7 +316,9 @@ pub(crate) fn capture(
         cols,
         rows,
         dirty,
-        has_selection,
+        // The caller fills this in: whether a selection exists is session
+        // state, not something the render state can be asked.
+        has_selection: false,
         cells,
         row_state,
         graphemes,

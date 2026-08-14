@@ -1,16 +1,16 @@
 //! Terminal session state, snapshot conversion, and the snapshot mailbox.
 //!
-//! The VT engine lives behind this crate: its types appear only in
-//! [`snapshot`], the single conversion point (C3).
+//! The VT engine lives behind this crate. Reading it into a snapshot happens
+//! in [`snapshot`] and nowhere else, which is the conversion the boundary
+//! depends on; [`session`] also names engine types where it drives the engine.
+//! No engine type appears in any signature outside those two modules.
 
 pub mod mailbox;
 pub mod session;
 pub mod snapshot;
 
-pub use session::Session;
-pub use snapshot::{
-    Attribute, Cell, Dirty, Rgb, Row, RowFlag, SelectionRange, Snapshot, Underline,
-};
+pub use session::{SelectionRange, Session};
+pub use snapshot::{Attribute, Cell, Dirty, Rgb, Row, RowFlag, Snapshot, Underline};
 
 /// Why a core operation failed.
 ///

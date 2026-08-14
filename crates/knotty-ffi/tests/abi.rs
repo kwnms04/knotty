@@ -581,6 +581,62 @@ fn a_selection_with_no_visible_row_is_not_the_same_as_no_selection() {
 }
 
 #[test]
+fn a_rectangular_selection_covers_the_same_columns_on_every_row() {
+    let session = detached(6, 2);
+    feed(session, b"abcdef\r\nghijkl");
+    unsafe { kt_snapshot_free(take(session)) };
+
+    set_selection(
+        session,
+        Some(SelectionRange {
+            rectangle: true,
+            ..selection((1, 0), (3, 1))
+        }),
+    );
+    let block = take(session);
+    assert_eq!(
+        selected_columns(&view(block)),
+        vec![Some((1, 3)), Some((1, 3))],
+    );
+    unsafe { kt_snapshot_free(block) };
+
+    // The same endpoints read as a run of text instead: row 0 to its end,
+    // row 1 from its start.
+    set_selection(session, Some(selection((1, 0), (3, 1))));
+    let linear = take(session);
+    assert_eq!(
+        selected_columns(&view(linear)),
+        vec![Some((1, 5)), Some((0, 3))],
+    );
+
+    unsafe { kt_snapshot_free(linear) };
+    unsafe { kt_session_free(session) };
+}
+
+#[test]
+fn switching_screens_takes_the_selection_with_it() {
+    let session = detached(6, 2);
+    feed(session, b"abcdef\r\nghijkl");
+    unsafe { kt_snapshot_free(take(session)) };
+
+    set_selection(session, Some(selection((1, 0), (3, 0))));
+    unsafe { kt_snapshot_free(take(session)) };
+
+    // The engine's selection belongs to the active screen, so switching drops
+    // it. Reporting it as still there would look like a selection scrolled out
+    // of view, which is the one thing has_selection exists to rule out.
+    feed(session, b"\x1b[?1049h");
+
+    let snapshot = take(session);
+    let view = view(snapshot);
+    assert!(!view.has_selection);
+    assert_eq!(selected_columns(&view), vec![None, None]);
+
+    unsafe { kt_snapshot_free(snapshot) };
+    unsafe { kt_session_free(session) };
+}
+
+#[test]
 fn a_selection_endpoint_outside_the_viewport_is_reported_as_such() {
     let session = detached(4, 2);
     feed(session, b"ab");
