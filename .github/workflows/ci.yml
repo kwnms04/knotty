@@ -1,9 +1,13 @@
 name: CI
 
+# Markdown is the whole of docs/ and no crate pulls it in with include_str!, so
+# a markdown-only change cannot alter what fmt, clippy or the tests see.
 on:
   push:
     branches: [main]
+    paths-ignore: ['**/*.md']
   pull_request:
+    paths-ignore: ['**/*.md']
 
 env:
   CARGO_TERM_COLOR: always
