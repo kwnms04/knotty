@@ -7,7 +7,7 @@
 
 Swift 없이 knotty-core와 하네스만 만듭니다.
 
-스펙과 티켓이 발행되어 있습니다: `.scratch/m0-headless-core/`
+스펙과 티켓: [#1](https://github.com/kwnms04/knotty/issues/1) 및 그 하위 이슈 (#2~#9)
 
 - detached 세션 + `feed` + 메일박스 + 평탄 POD 스냅샷 변환
 - 헤더 생성, ABI 핸드셰이크, 불투명 핸들, 패닉 격리
