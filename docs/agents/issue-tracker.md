@@ -9,15 +9,25 @@ Issues and specs for this repo live as GitHub issues on `kwnms04/knotty`. Drive 
 - Triage state is a **label** (see `triage-labels.md`), not a line in the body.
 - Blocking is a **native dependency**, not prose. A ticket is workable when every issue in its `blockedBy` list is closed.
 - Conversation is issue comments.
+- Every issue carries a **milestone** — the M0…M5 axis. Create a milestone when its work starts, not upfront: `docs/08-milestones.md` is the roadmap and the milestone is only the grouping, so mirroring all six here would just be a second roadmap to keep in sync.
 
-Do not restate a label or a dependency inside the issue body — the tracker owns both, and a copy in the text goes stale.
+Do not restate a label, a dependency, or a milestone's exit criteria inside the issue body — the tracker owns the first two and the chapter owns the third, and a copy in the text goes stale.
+
+**GitHub Projects are deliberately unused.** Nothing in this flow reads a board: "which tickets are workable" is the dependency query below, not a column. Reach for a Project when a question comes up that the issue list genuinely cannot answer.
 
 ## When a skill says "publish to the issue tracker"
 
 Create the issue, then attach it:
 
 ```
-gh issue create -R kwnms04/knotty --title "<title>" --body-file <path> --label ready-for-agent
+gh issue create -R kwnms04/knotty --title "<title>" --body-file <path> \
+  --label ready-for-agent --milestone "<milestone title>"
+```
+
+Create the milestone first if this is the first issue in it:
+
+```
+gh api repos/kwnms04/knotty/milestones -f title="<title>" -f description="<one line + spec link>"
 ```
 
 Sub-issue and dependency edges have no `gh issue` subcommand yet, so they go through GraphQL. Resolve node IDs first:
@@ -55,7 +65,7 @@ The user will normally pass the number or the URL directly.
 List candidates, then drop the ones still blocked:
 
 ```
-gh issue list -R kwnms04/knotty --label ready-for-agent --state open
+gh issue list -R kwnms04/knotty --label ready-for-agent --state open --milestone "<milestone title>"
 
 gh api graphql -f query='
   query($n:Int!){ repository(owner:"kwnms04",name:"knotty"){ issue(number:$n){
