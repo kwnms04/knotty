@@ -59,6 +59,9 @@ typedef int32_t KtStatus;
 
 /**
  * How much of the screen changed since the last snapshot was taken.
+ *
+ * The variants are ordered by how much they cover, so the larger of two is
+ * the one that describes both.
  */
 enum KtDirty
 #if defined(__cplusplus) || __STDC_VERSION__ >= 202311L

@@ -115,8 +115,11 @@ impl From<libghostty_vt::style::Underline> for Underline {
 }
 
 /// How much of the screen changed since the last snapshot was taken.
+///
+/// The variants are ordered by how much they cover, so the larger of two is
+/// the one that describes both.
 #[repr(u8)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Dirty {
     /// No row changed. A published snapshot can still say this: something
     /// outside the grid, such as the title or the cursor, moved instead.
@@ -295,9 +298,10 @@ impl Snapshot {
     /// be told less changed than really did. Cell contents need no such care:
     /// each snapshot already holds the whole screen.
     pub(crate) fn absorb_marks_of(&mut self, dropped: &Self) {
-        if dropped.dirty == Dirty::Full {
-            self.dirty = Dirty::Full;
-        }
+        // Both layers have to move together. Taking on rows while leaving the
+        // global level clean would tell a consumer that reads only that level
+        // to skip a redraw those rows are asking for.
+        self.dirty = self.dirty.max(dropped.dirty);
         for (row, dropped) in self.row_state.iter_mut().zip(&dropped.row_state) {
             row.flags |= dropped.flags & RowFlag::Dirty as u8;
         }
@@ -442,29 +446,40 @@ fn without_control_characters(text: &str) -> String {
 
 /// Reduce a working directory report to an absolute path.
 ///
-/// OSC 7 reports a `file://` URI; OSC 1337 reports a bare path. Anything that
-/// is not a URI is passed through, so a path stays a path.
+/// The field promises an absolute path, so a report that does not yield one —
+/// a relative directory, a URI with no path, an escape that does not spell
+/// UTF-8 — publishes nothing rather than something a consumer would have to
+/// second-guess.
 fn path_of(reported: &str) -> String {
+    decoded_path(reported)
+        .filter(|path| path.starts_with('/'))
+        .unwrap_or_default()
+}
+
+/// OSC 7 reports a `file://` URI; OSC 1337 reports a bare path, which needs
+/// no undoing.
+fn decoded_path(reported: &str) -> Option<String> {
     let Some(after_scheme) = reported.strip_prefix("file://") else {
-        return reported.to_owned();
+        return Some(reported.to_owned());
     };
     // Drop the authority. knotty has no notion of which host it is on, so a
     // path reported by another one is taken at face value.
-    let path = after_scheme
-        .find('/')
-        .map_or("", |authority_end| &after_scheme[authority_end..]);
+    let encoded = &after_scheme[after_scheme.find('/')?..];
 
-    percent_decoded(path)
+    percent_decoded(encoded)
 }
 
-fn percent_decoded(path: &str) -> String {
-    let bytes = path.as_bytes();
+fn percent_decoded(encoded: &str) -> Option<String> {
+    let bytes = encoded.as_bytes();
     let mut decoded = Vec::with_capacity(bytes.len());
     let mut index = 0;
     while index < bytes.len() {
         let escape = (bytes[index] == b'%')
             .then(|| bytes.get(index + 1..index + 3))
             .flatten()
+            // from_str_radix takes a leading sign, so `%+A` would decode as
+            // one. Only two hex digits are an escape.
+            .filter(|digits| digits.iter().all(u8::is_ascii_hexdigit))
             .and_then(|digits| u8::from_str_radix(std::str::from_utf8(digits).ok()?, 16).ok());
 
         match escape {
@@ -479,9 +494,9 @@ fn percent_decoded(path: &str) -> String {
         }
     }
 
-    // A decoding that does not spell UTF-8 is not a path we can offer, so
-    // hand back what was reported instead of a lossy guess.
-    String::from_utf8(decoded).unwrap_or_else(|_| path.to_owned())
+    // A decoding that does not spell UTF-8 is not a path we can offer, and
+    // handing back the still-encoded text would be a different lie.
+    String::from_utf8(decoded).ok()
 }
 
 /// Append a cell's codepoints to the grapheme table, returning the index the

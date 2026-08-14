@@ -661,6 +661,54 @@ fn the_title_and_working_directory_are_read_back() {
         screen_after(b"\x1b]1337;CurrentDir=/tmp/y\x07").pwd,
         "/tmp/y"
     );
+
+    // Anything that is not two hex digits is not an escape.
+    assert_eq!(
+        screen_after(b"\x1b]7;file:///tmp/100%25\x07").pwd,
+        "/tmp/100%"
+    );
+    assert_eq!(
+        screen_after(b"\x1b]7;file:///tmp/a%zz%2\x07").pwd,
+        "/tmp/a%zz%2"
+    );
+    assert_eq!(
+        screen_after(b"\x1b]7;file:///tmp/a%+A\x07").pwd,
+        "/tmp/a%+A"
+    );
+
+    // A report that yields no absolute path publishes none.
+    for report in [
+        &b"\x1b]7;file://myhost\x07"[..],
+        &b"\x1b]1337;CurrentDir=relative/dir\x07"[..],
+        &b"\x1b]7;file:///tmp/%FF\x07"[..],
+    ] {
+        assert_eq!(screen_after(report).pwd, "", "{report:?}");
+    }
+}
+
+#[test]
+fn a_dropped_snapshot_hands_over_both_dirty_layers() {
+    let session = detached(8, 2);
+    // Get the opening full frame out of the way.
+    feed(session, b"x");
+    unsafe { kt_snapshot_free(take(session)) };
+
+    // A grid change nobody took, then a title change that leaves the grid
+    // alone. The rows the first one marked must still be marked, and the
+    // global level has to agree — a consumer reading only that level would
+    // otherwise skip the redraw those rows are asking for.
+    feed(session, b"ab");
+    feed(session, b"\x1b]2;hello\x07");
+
+    let snapshot = take(session);
+    let view = view(snapshot);
+
+    assert_eq!(view.dirty, Dirty::Partial);
+    assert_eq!(rows_with(&view, RowFlag::Dirty), vec![true, false]);
+    assert_eq!(text(view.title), "hello");
+
+    unsafe { kt_snapshot_free(snapshot) };
+    unsafe { kt_session_free(session) };
 }
 
 #[test]
