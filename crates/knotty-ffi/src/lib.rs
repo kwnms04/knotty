@@ -30,12 +30,15 @@ pub enum KtStatus {
     NullArgument = 2,
     /// The VT engine rejected the operation.
     Engine = 3,
+    /// The terminal's state is bigger than a snapshot can describe.
+    TooLarge = 4,
 }
 
 impl From<Error> for KtStatus {
     fn from(error: Error) -> Self {
         match error {
             Error::Engine => Self::Engine,
+            Error::TooLarge => Self::TooLarge,
         }
     }
 }

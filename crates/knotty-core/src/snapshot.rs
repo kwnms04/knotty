@@ -63,7 +63,7 @@ pub enum Attribute {
     /// The leading cell of a character two columns wide.
     Wide = 1 << 8,
     /// The trailing cell of a character two columns wide. It holds no text of
-    /// its own and must not be drawn.
+    /// its own; the leading cell carries the whole character.
     WideTail = 1 << 9,
     /// The cell's `codepoint` is an index into the snapshot's grapheme table
     /// rather than a codepoint.
@@ -192,13 +192,14 @@ pub(crate) fn capture(
         while let Some(cell) = cells_iteration.next() {
             let style = cell.style()?;
             let raw = cell.raw_cell()?;
-            let mut attributes = attributes_of(&style) | structure_of(raw.wide()?);
 
-            let codepoint = if raw.content_tag()? == CellContentTag::CodepointGrapheme {
-                attributes |= Attribute::Overflow as u16;
-                spill(cell, &mut graphemes, &mut cluster)?
+            let (codepoint, overflow) = if raw.content_tag()? == CellContentTag::CodepointGrapheme {
+                (
+                    spill(cell, &mut graphemes, &mut cluster)?,
+                    Attribute::Overflow as u16,
+                )
             } else {
-                raw.codepoint()?
+                (raw.codepoint()?, 0)
             };
 
             cells[y * usize::from(cols) + x] = Cell {
@@ -207,7 +208,7 @@ pub(crate) fn capture(
                 // falls back to the terminal's current default.
                 foreground: cell.fg_color()?.unwrap_or(defaults.foreground).into(),
                 background: cell.bg_color()?.unwrap_or(defaults.background).into(),
-                attributes,
+                attributes: attributes_of(&style) | structure_of(raw.wide()?) | overflow,
                 underline: style.underline.into(),
             };
             x += 1;
@@ -229,19 +230,23 @@ pub(crate) fn capture(
 
 /// Append a cell's codepoints to the grapheme table, returning the index the
 /// cell should carry.
+///
+/// `cluster` is scratch space the caller keeps across cells so that spilling
+/// one does not allocate.
 fn spill(
     cell: &CellIteration<'_, '_>,
     graphemes: &mut Vec<u32>,
     cluster: &mut Vec<char>,
 ) -> Result<u32> {
-    // The table is addressed by a u32 field, so a grid large enough to
-    // overrun that cannot be represented.
-    let index = u32::try_from(graphemes.len()).map_err(|_| Error::Engine)?;
+    // Nothing bounds the table: a cell contributes its whole cluster, and
+    // there is no ceiling on either the cluster length or the cell count. The
+    // cell addresses the table with a u32, so refuse rather than truncate.
+    let index = u32::try_from(graphemes.len()).map_err(|_| Error::TooLarge)?;
 
     cluster.resize(cell.graphemes_len()?, '\0');
     cell.graphemes_buf(cluster)?;
 
-    let len = u32::try_from(cluster.len()).map_err(|_| Error::Engine)?;
+    let len = u32::try_from(cluster.len()).map_err(|_| Error::TooLarge)?;
     graphemes.push(len);
     graphemes.extend(cluster.iter().map(|codepoint| *codepoint as u32));
 

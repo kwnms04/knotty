@@ -6,15 +6,23 @@
 #include <knotty.h>
 #include <stddef.h>
 
-/* The M0 layout is frozen; golden snapshot comparison depends on it. A change
- * here is an ABI change and must come with a version bump. */
+/* Golden snapshot comparison depends on these layouts, so a change here is an
+ * ABI change and must come with a version bump. */
 _Static_assert(KT_ABI_VERSION == 3, "ABI version moved without updating this consumer");
+
 _Static_assert(sizeof(KtCell) == 16, "KtCell grew or shrank");
 _Static_assert(offsetof(KtCell, codepoint) == 0, "KtCell fields moved");
 _Static_assert(offsetof(KtCell, foreground) == 4, "KtCell fields moved");
 _Static_assert(offsetof(KtCell, background) == 7, "KtCell fields moved");
 _Static_assert(offsetof(KtCell, attributes) == 10, "KtCell fields moved");
 _Static_assert(offsetof(KtCell, underline) == 12, "KtCell fields moved");
+
+_Static_assert(sizeof(KtSnapshotView) == 32, "KtSnapshotView grew or shrank");
+_Static_assert(offsetof(KtSnapshotView, cols) == 0, "KtSnapshotView fields moved");
+_Static_assert(offsetof(KtSnapshotView, rows) == 2, "KtSnapshotView fields moved");
+_Static_assert(offsetof(KtSnapshotView, cells) == 8, "KtSnapshotView fields moved");
+_Static_assert(offsetof(KtSnapshotView, graphemes) == 16, "KtSnapshotView fields moved");
+_Static_assert(offsetof(KtSnapshotView, grapheme_count) == 24, "KtSnapshotView fields moved");
 
 /* The startup handshake a real consumer performs. */
 int kt_consumer_abi_ok(void) {
@@ -44,7 +52,7 @@ const uint32_t *kt_consumer_text_of(const KtSnapshotView *view, const KtCell *ce
     return run + 1;
 }
 
-/* The trailing cell of a wide character draws as nothing. */
-int kt_consumer_is_drawable(const KtCell *cell) {
-    return (cell->attributes & KT_ATTRIBUTE_WIDE_TAIL) == 0;
+/* The two halves of a wide character are told apart by their flags. */
+int kt_consumer_is_wide_tail(const KtCell *cell) {
+    return (cell->attributes & KT_ATTRIBUTE_WIDE_TAIL) != 0;
 }

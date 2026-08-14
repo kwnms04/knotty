@@ -93,9 +93,13 @@ fn text_of(view: &KtSnapshotView, cell: &Cell) -> Vec<u32> {
         .collect()
 }
 
-/// Feed one burst to a fresh session and read back the first row, along with
-/// each cell's text.
-fn first_row_of(bytes: &[u8]) -> (Vec<Cell>, Vec<Vec<u32>>) {
+/// Feed one burst to a fresh session and read back the first row.
+fn first_row_of(bytes: &[u8]) -> Vec<Cell> {
+    first_row_and_text_of(bytes).0
+}
+
+/// The same, plus each cell's text resolved through the grapheme table.
+fn first_row_and_text_of(bytes: &[u8]) -> (Vec<Cell>, Vec<Vec<u32>>) {
     let session = detached(12, 1);
     feed(session, bytes);
     let snapshot = take(session);
@@ -156,7 +160,7 @@ fn feeding_ascii_puts_it_in_the_grid() {
 fn every_colour_source_arrives_as_resolved_rgb() {
     // Plain, one of the basic 16, one of the 256, true colour, then a
     // palette background.
-    let (row, _) = first_row_of(b"P\x1b[31mB\x1b[38;5;9mI\x1b[38;2;10;20;30mT\x1b[0m\x1b[44mG");
+    let row = first_row_of(b"P\x1b[31mB\x1b[38;5;9mI\x1b[38;2;10;20;30mT\x1b[0m\x1b[44mG");
 
     assert_eq!(row[0].foreground, DEFAULT_FOREGROUND, "unset foreground");
     assert_eq!(row[0].background, DEFAULT_BACKGROUND, "unset background");
@@ -189,12 +193,12 @@ fn each_sgr_attribute_lands_in_its_own_bit() {
         ("9", Attribute::Strikethrough),
         ("53", Attribute::Overline),
     ] {
-        let (row, _) = first_row_of(format!("\x1b[{sgr}mX").as_bytes());
+        let row = first_row_of(format!("\x1b[{sgr}mX").as_bytes());
         assert_eq!(row[0].attributes, attribute as u16, "SGR {sgr} alone");
     }
 
     // All at once: the bits must not tread on each other.
-    let (row, _) = first_row_of(b"\x1b[1;2;3;5;7;8;9;53mX");
+    let row = first_row_of(b"\x1b[1;2;3;5;7;8;9;53mX");
     assert_eq!(row[0].attributes, 0b1111_1111);
 }
 
@@ -208,14 +212,14 @@ fn underline_styles_are_distinguished() {
         ("4:5", Underline::Dashed),
         ("4;24", Underline::None),
     ] {
-        let (row, _) = first_row_of(format!("\x1b[{sgr}mX").as_bytes());
+        let row = first_row_of(format!("\x1b[{sgr}mX").as_bytes());
         assert_eq!(row[0].underline, expected, "SGR {sgr}");
     }
 }
 
 #[test]
 fn a_single_codepoint_stays_in_the_cell() {
-    let (row, text) = first_row_of("a".as_bytes());
+    let (row, text) = first_row_and_text_of("a".as_bytes());
 
     assert_eq!(row[0].attributes & Attribute::Overflow as u16, 0);
     assert_eq!(row[0].codepoint, u32::from('a'));
@@ -226,7 +230,7 @@ fn a_single_codepoint_stays_in_the_cell() {
 fn clusters_that_do_not_fit_move_to_the_grapheme_table() {
     // A combining acute, then a ZWJ sequence. Ghostty gives each emoji of the
     // sequence its own wide cell, so the first carries man + ZWJ.
-    let (row, text) = first_row_of("e\u{301}\u{1F468}\u{200D}\u{1F469}".as_bytes());
+    let (row, text) = first_row_and_text_of("e\u{301}\u{1F468}\u{200D}\u{1F469}".as_bytes());
 
     assert_ne!(
         row[0].attributes & Attribute::Overflow as u16,
@@ -238,13 +242,22 @@ fn clusters_that_do_not_fit_move_to_the_grapheme_table() {
     assert_ne!(row[1].attributes & Attribute::Overflow as u16, 0, "ZWJ");
     assert_eq!(text[1], vec![0x1F468, 0x200D]);
 
+    // That cell is wide as well as overflowing: the two are independent, and
+    // its spacer is neither.
+    assert_ne!(row[1].attributes & Attribute::Wide as u16, 0);
+    assert_eq!(
+        row[2].attributes,
+        Attribute::WideTail as u16,
+        "a spacer carries no cluster of its own",
+    );
+
     // The index in the cell is an index, not a codepoint that happens to fit.
     assert_ne!(row[0].codepoint, row[1].codepoint);
 }
 
 #[test]
 fn a_wide_character_marks_its_two_cells_differently() {
-    let (row, text) = first_row_of("\u{D55C}a".as_bytes());
+    let (row, text) = first_row_and_text_of("\u{D55C}a".as_bytes());
 
     assert_ne!(
         row[0].attributes & Attribute::Wide as u16,

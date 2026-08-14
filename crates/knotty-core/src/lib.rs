@@ -18,6 +18,8 @@ pub use snapshot::{Attribute, Cell, Rgb, Snapshot, Underline};
 pub enum Error {
     /// The VT engine rejected an operation.
     Engine,
+    /// The terminal's state is bigger than a snapshot can describe.
+    TooLarge,
 }
 
 /// Result alias for fallible core operations.

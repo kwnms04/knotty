@@ -39,6 +39,10 @@ enum KtStatus
    * The VT engine rejected the operation.
    */
   KT_STATUS_ENGINE = 3,
+  /**
+   * The terminal's state is bigger than a snapshot can describe.
+   */
+  KT_STATUS_TOO_LARGE = 4,
 };
 #ifndef __cplusplus
 #if __STDC_VERSION__ >= 202311L
@@ -144,7 +148,7 @@ enum KtAttribute
   KT_ATTRIBUTE_WIDE = (1 << 8),
   /**
    * The trailing cell of a character two columns wide. It holds no text of
-   * its own and must not be drawn.
+   * its own; the leading cell carries the whole character.
    */
   KT_ATTRIBUTE_WIDE_TAIL = (1 << 9),
   /**
