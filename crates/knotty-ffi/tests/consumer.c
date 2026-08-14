@@ -101,3 +101,7 @@ int kt_consumer_is_selected(const KtSnapshotView *view, uint16_t row, uint16_t c
     return (state->flags & KT_ROW_FLAG_SELECTED) != 0 && col >= state->selection_start &&
            col <= state->selection_end;
 }
+
+/* M0 has no session with a PTY behind it, so the only thing to pin is that
+ * the code a PTY session's feed returns exists and keeps its value. */
+_Static_assert(KT_STATUS_NOT_DETACHED == 8, "the PTY feed contract moved");

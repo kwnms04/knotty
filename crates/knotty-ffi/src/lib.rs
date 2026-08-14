@@ -86,33 +86,39 @@ pub struct KtSession {
 }
 
 impl KtSession {
-    /// Drive the session, and give up on it if the call panics.
+    /// Run a call on the session, giving up on it if the call panics.
     ///
     /// A panic means an invariant broke somewhere we cannot see, so there is
-    /// no way to know that carrying on is safe. The session stops taking
-    /// input; its last good snapshot stays where it is, because a screen that
-    /// is stale beats a screen that empties.
-    fn drive(&mut self, call: impl FnOnce(&mut Session) -> Result<(), Error>) -> KtStatus {
-        if self.defunct {
-            return KtStatus::Defunct;
-        }
-
-        let status = guarded(|| match call(&mut self.session) {
-            Ok(()) => KtStatus::Ok,
-            Err(error) => error.into(),
-        });
+    /// no way to know that carrying on is safe. What the session has already
+    /// published stays where it is, because a screen that is stale beats a
+    /// screen that empties.
+    fn guard(&mut self, call: impl FnOnce(&mut Session) -> KtStatus) -> KtStatus {
+        let status = guarded(KtStatus::Panicked, || call(&mut self.session));
         if status == KtStatus::Panicked {
             self.defunct = true;
         }
         status
     }
+
+    /// The same, for a call that gives the session input — which a defunct
+    /// session no longer takes.
+    fn drive(&mut self, call: impl FnOnce(&mut Session) -> Result<(), Error>) -> KtStatus {
+        if self.defunct {
+            return KtStatus::Defunct;
+        }
+
+        self.guard(|session| match call(session) {
+            Ok(()) => KtStatus::Ok,
+            Err(error) => error.into(),
+        })
+    }
 }
 
-/// Run a boundary call, turning a panic into a status.
+/// Run a boundary call, returning `fallback` if it panics.
 ///
 /// Unwinding into C is undefined, so nothing may leave here by that route.
-fn guarded(call: impl FnOnce() -> KtStatus) -> KtStatus {
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(call)).unwrap_or(KtStatus::Panicked)
+fn guarded<T>(fallback: T, call: impl FnOnce() -> T) -> T {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(call)).unwrap_or(fallback)
 }
 
 /// Opaque handle to a snapshot.
@@ -154,6 +160,7 @@ pub struct KtSnapshotView {
 }
 
 /// Return the ABI version this library was built with.
+// Not guarded: reading a constant is the one thing here that cannot panic.
 #[unsafe(no_mangle)]
 pub extern "C" fn kt_abi_version() -> u32 {
     KT_ABI_VERSION
@@ -178,16 +185,18 @@ pub unsafe extern "C" fn kt_session_new_detached(
         return KtStatus::NullArgument;
     }
     unsafe { *out = ptr::null_mut() };
-    guarded(|| match Session::new_detached(cols, rows, max_scrollback) {
-        Ok(session) => {
-            let handle = KtSession {
-                session,
-                defunct: false,
-            };
-            unsafe { *out = Box::into_raw(Box::new(handle)) };
-            KtStatus::Ok
+    guarded(KtStatus::Panicked, || {
+        match Session::new_detached(cols, rows, max_scrollback) {
+            Ok(session) => {
+                let handle = KtSession {
+                    session,
+                    defunct: false,
+                };
+                unsafe { *out = Box::into_raw(Box::new(handle)) };
+                KtStatus::Ok
+            }
+            Err(error) => error.into(),
         }
-        Err(error) => error.into(),
     })
 }
 
@@ -199,11 +208,10 @@ pub unsafe extern "C" fn kt_session_new_detached(
 /// afterwards.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kt_session_free(session: *mut KtSession) {
-    guarded(|| {
+    guarded((), || {
         if !session.is_null() {
             drop(unsafe { Box::from_raw(session) });
         }
-        KtStatus::Ok
     });
 }
 
@@ -280,11 +288,13 @@ pub unsafe extern "C" fn kt_session_take_snapshot(
         return KtStatus::NullArgument;
     }
     unsafe { *out = ptr::null_mut() };
-    let Some(session) = (unsafe { session.as_ref() }) else {
+    let Some(session) = (unsafe { session.as_mut() }) else {
         return KtStatus::NullArgument;
     };
 
-    guarded(|| match session.session.take_snapshot() {
+    // Guarded rather than driven: a defunct session still hands back what it
+    // last published, which is the whole reason for keeping it.
+    session.guard(|session| match session.take_snapshot() {
         Some(snapshot) => {
             unsafe { *out = Box::into_raw(Box::new(KtSnapshot(snapshot))) };
             KtStatus::Ok
@@ -301,11 +311,10 @@ pub unsafe extern "C" fn kt_session_take_snapshot(
 /// used afterwards.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kt_snapshot_free(snapshot: *mut KtSnapshot) {
-    guarded(|| {
+    guarded((), || {
         if !snapshot.is_null() {
             drop(unsafe { Box::from_raw(snapshot) });
         }
-        KtStatus::Ok
     });
 }
 
@@ -327,7 +336,7 @@ pub unsafe extern "C" fn kt_snapshot_view(
         return KtStatus::NullArgument;
     };
 
-    guarded(|| {
+    guarded(KtStatus::Panicked, || {
         unsafe {
             *out = KtSnapshotView {
                 cols: snapshot.0.cols,
@@ -347,22 +356,81 @@ pub unsafe extern "C" fn kt_snapshot_view(
     })
 }
 
-/// Panic on purpose.
-///
-/// Not part of the ABI. It is compiled only for knotty's own tests and never
-/// reaches the header, but a panic has to start somewhere real for the
-/// isolation around every entry point to be tested through the boundary it
-/// protects.
-///
-/// # Safety
-///
-/// `session` must be a live handle.
-#[cfg(feature = "testing")]
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn kt_testing_panic(session: *mut KtSession) -> KtStatus {
-    let Some(session) = (unsafe { session.as_mut() }) else {
-        return KtStatus::NullArgument;
-    };
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    session.drive(|_| panic!("kt_testing_panic was called"))
+    /// A panic has to start somewhere real. `guard` is where every call that
+    /// touches a session goes through, so panicking there is the same thing
+    /// happening to a session that a bug in the core would do.
+    fn panic_in(session: *mut KtSession) -> KtStatus {
+        unsafe { &mut *session }.guard(|_| panic!("on purpose"))
+    }
+
+    fn detached() -> *mut KtSession {
+        let mut session = ptr::null_mut();
+        assert_eq!(
+            unsafe { kt_session_new_detached(4, 1, 0, &mut session) },
+            KtStatus::Ok,
+        );
+        session
+    }
+
+    #[test]
+    fn a_panic_comes_back_as_a_status() {
+        let session = detached();
+
+        // Reaching the next line at all is most of the point: unwinding into
+        // C would have taken the process with it.
+        assert_eq!(panic_in(session), KtStatus::Panicked);
+
+        unsafe { kt_session_free(session) };
+    }
+
+    #[test]
+    fn a_panicked_session_keeps_its_last_good_snapshot() {
+        let session = detached();
+        assert_eq!(
+            unsafe { kt_session_feed(session, b"ok".as_ptr(), 2) },
+            KtStatus::Ok,
+        );
+        assert_eq!(panic_in(session), KtStatus::Panicked);
+
+        let mut snapshot = ptr::null_mut();
+        assert_eq!(
+            unsafe { kt_session_take_snapshot(session, &mut snapshot) },
+            KtStatus::Ok,
+            "a defunct session still hands back what it last published",
+        );
+
+        let mut view = std::mem::MaybeUninit::<KtSnapshotView>::uninit();
+        assert_eq!(
+            unsafe { kt_snapshot_view(snapshot, view.as_mut_ptr()) },
+            KtStatus::Ok,
+        );
+        let view = unsafe { view.assume_init() };
+        assert_eq!(unsafe { (*view.cells).codepoint }, u32::from(b'o'));
+
+        unsafe { kt_snapshot_free(snapshot) };
+        unsafe { kt_session_free(session) };
+    }
+
+    #[test]
+    fn a_panicked_session_takes_no_more_input() {
+        let session = detached();
+        assert_eq!(panic_in(session), KtStatus::Panicked);
+
+        // Defunct rather than Panicked: nothing blew up this time, the
+        // session is simply already gone.
+        assert_eq!(
+            unsafe { kt_session_feed(session, b"x".as_ptr(), 1) },
+            KtStatus::Defunct,
+        );
+        assert_eq!(
+            unsafe { kt_session_set_selection(session, ptr::null()) },
+            KtStatus::Defunct,
+        );
+
+        unsafe { kt_session_free(session) };
+    }
 }

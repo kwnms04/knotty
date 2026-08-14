@@ -1,0 +1,11 @@
+[package]
+name = "knotty-harness"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+version.workspace = true
+
+# Only knotty-ffi. The harness verifies the path a consumer takes, so it may
+# not reach for anything the public C ABI does not offer.
+[dependencies]
+knotty-ffi = { path = "../knotty-ffi" }
