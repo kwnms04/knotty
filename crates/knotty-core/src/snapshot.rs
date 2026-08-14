@@ -113,11 +113,10 @@ impl From<libghostty_vt::style::Underline> for Underline {
 
 /// How much of the screen changed since the last snapshot was taken.
 #[repr(u8)]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Dirty {
     /// Nothing changed. A published snapshot never says this, because a
     /// capture that finds nothing to report is not published at all.
-    #[default]
     Clean = 0,
     /// Some rows changed; the row flags say which.
     Partial = 1,
@@ -191,6 +190,25 @@ pub struct Snapshot {
     /// length; the codepoints follow, base first. The table is rebuilt every
     /// snapshot and never refers to an earlier one.
     pub graphemes: Vec<u32>,
+}
+
+impl Snapshot {
+    /// Take on the change marks of a snapshot that was published but never
+    /// consumed.
+    ///
+    /// The engine's marks are cleared as each snapshot is built, so they only
+    /// describe what happened since the one before. When the mailbox drops an
+    /// unconsumed snapshot, its marks would go with it and the consumer would
+    /// be told less changed than really did. Cell contents need no such care:
+    /// each snapshot already holds the whole screen.
+    pub(crate) fn absorb_marks_of(&mut self, dropped: &Self) {
+        if dropped.dirty == Dirty::Full {
+            self.dirty = Dirty::Full;
+        }
+        for (flags, dropped) in self.row_flags.iter_mut().zip(&dropped.row_flags) {
+            *flags |= dropped & RowFlag::Dirty as u8;
+        }
+    }
 }
 
 /// Flatten the terminal's render state into a snapshot.

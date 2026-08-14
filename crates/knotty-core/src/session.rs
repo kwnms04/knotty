@@ -40,7 +40,13 @@ impl Session {
     /// one snapshot.
     pub fn feed(&mut self, bytes: &[u8]) -> Result<()> {
         self.terminal.vt_write(bytes);
-        if let Some(snapshot) = snapshot::capture(&mut self.render, &self.terminal)? {
+        if let Some(mut snapshot) = snapshot::capture(&mut self.render, &self.terminal)? {
+            // The mailbox keeps only the newest snapshot, so publishing over
+            // an unconsumed one drops it. Carry its change marks across, or a
+            // consumer that misses a frame is told less changed than did.
+            if let Some(dropped) = self.mailbox.take() {
+                snapshot.absorb_marks_of(&dropped);
+            }
             self.mailbox.publish(snapshot);
         }
         Ok(())

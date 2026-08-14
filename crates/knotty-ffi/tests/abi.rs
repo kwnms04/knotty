@@ -79,17 +79,10 @@ fn row_flags(view: &KtSnapshotView) -> Vec<u8> {
         .collect()
 }
 
-fn dirty_rows(view: &KtSnapshotView) -> Vec<bool> {
+fn rows_with(view: &KtSnapshotView, flag: RowFlag) -> Vec<bool> {
     row_flags(view)
         .iter()
-        .map(|flags| flags & RowFlag::Dirty as u8 != 0)
-        .collect()
-}
-
-fn wrapped_rows(view: &KtSnapshotView) -> Vec<bool> {
-    row_flags(view)
-        .iter()
-        .map(|flags| flags & RowFlag::Wrapped as u8 != 0)
+        .map(|flags| flags & flag as u8 != 0)
         .collect()
 }
 
@@ -337,7 +330,7 @@ fn a_change_to_some_rows_is_reported_as_partial_and_names_them() {
     feed(session, b"one");
     let first = take(session);
     assert_eq!(view(first).dirty, Dirty::Full);
-    assert_eq!(dirty_rows(&view(first)), vec![true; 4]);
+    assert_eq!(rows_with(&view(first), RowFlag::Dirty), vec![true; 4]);
     unsafe { kt_snapshot_free(first) };
 
     // Jump to row 2 and write there. Row 0 is dirty too because the cursor
@@ -348,7 +341,10 @@ fn a_change_to_some_rows_is_reported_as_partial_and_names_them() {
     let second_view = view(second);
 
     assert_eq!(second_view.dirty, Dirty::Partial);
-    assert_eq!(dirty_rows(&second_view), vec![true, false, true, false]);
+    assert_eq!(
+        rows_with(&second_view, RowFlag::Dirty),
+        vec![true, false, true, false]
+    );
 
     unsafe { kt_snapshot_free(second) };
     unsafe { kt_session_free(session) };
@@ -363,7 +359,37 @@ fn switching_to_the_alternate_screen_is_reported_as_full() {
     feed(session, b"\x1b[?1049h");
 
     let snapshot = take(session);
-    assert_eq!(view(snapshot).dirty, Dirty::Full);
+    let view = view(snapshot);
+    assert_eq!(view.dirty, Dirty::Full);
+    assert_eq!(
+        rows_with(&view, RowFlag::Dirty),
+        vec![true; 3],
+        "a full frame marks its rows too, so a consumer reading either layer redraws",
+    );
+
+    unsafe { kt_snapshot_free(snapshot) };
+    unsafe { kt_session_free(session) };
+}
+
+#[test]
+fn a_snapshot_dropped_before_anyone_saw_it_hands_over_its_dirty_rows() {
+    let session = detached(8, 4);
+    feed(session, b"one");
+    unsafe { kt_snapshot_free(take(session)) };
+
+    // Two feeds, one take. The first snapshot is overwritten before anyone
+    // sees it, so the rows it marked have to show up in the one that replaced
+    // it — the consumer never got a chance to redraw them.
+    feed(session, b"\x1b[2;1Htwo");
+    feed(session, b"\x1b[4;1Hfour");
+
+    let snapshot = take(session);
+    let view = view(snapshot);
+
+    assert_eq!(
+        rows_with(&view, RowFlag::Dirty),
+        vec![true, true, false, true],
+    );
 
     unsafe { kt_snapshot_free(snapshot) };
     unsafe { kt_session_free(session) };
@@ -385,7 +411,10 @@ fn dirty_marks_do_not_carry_into_the_next_snapshot() {
     let snapshot = take(session);
     let view = view(snapshot);
 
-    assert_eq!(dirty_rows(&view), vec![false, false, true, false]);
+    assert_eq!(
+        rows_with(&view, RowFlag::Dirty),
+        vec![false, false, true, false]
+    );
 
     unsafe { kt_snapshot_free(snapshot) };
     unsafe { kt_session_free(session) };
@@ -403,7 +432,7 @@ fn a_row_says_whether_it_runs_on_into_the_next() {
     let view = view(snapshot);
 
     assert_eq!(
-        wrapped_rows(&view),
+        rows_with(&view, RowFlag::Wrapped),
         vec![true, false, false],
         "only the row that ran out of columns is marked",
     );
@@ -422,7 +451,7 @@ fn a_line_that_exactly_fills_a_row_and_then_ends_is_not_wrapped() {
     let view = view(snapshot);
 
     assert_eq!(
-        wrapped_rows(&view),
+        rows_with(&view, RowFlag::Wrapped),
         vec![false, false],
         "filling the row is not the same as running past it",
     );
