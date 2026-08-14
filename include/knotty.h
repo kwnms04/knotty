@@ -13,7 +13,7 @@
  * compares it with [`kt_abi_version`]. Mismatch means header and library
  * disagree about layouts, and the caller must not proceed.
  */
-#define KT_ABI_VERSION 2
+#define KT_ABI_VERSION 3
 
 /**
  * Outcome of a call across the boundary.
@@ -95,10 +95,11 @@ typedef uint8_t KtUnderline;
 #endif // __cplusplus
 
 /**
- * SGR attributes, OR-ed together into a cell's `attributes` field.
+ * Cell attributes, OR-ed together into a cell's `attributes` field.
  *
- * Underlining is not here: it has kinds rather than an on/off state, so it
- * gets its own field.
+ * The low byte is SGR state, the high byte is structure. Underlining is in
+ * neither: it has kinds rather than an on/off state, so it gets its own
+ * field.
  */
 enum KtAttribute
 #if defined(__cplusplus) || __STDC_VERSION__ >= 202311L
@@ -137,6 +138,20 @@ enum KtAttribute
    * SGR 53.
    */
   KT_ATTRIBUTE_OVERLINE = (1 << 7),
+  /**
+   * The leading cell of a character two columns wide.
+   */
+  KT_ATTRIBUTE_WIDE = (1 << 8),
+  /**
+   * The trailing cell of a character two columns wide. It holds no text of
+   * its own and must not be drawn.
+   */
+  KT_ATTRIBUTE_WIDE_TAIL = (1 << 9),
+  /**
+   * The cell's `codepoint` is an index into the snapshot's grapheme table
+   * rather than a codepoint.
+   */
+  KT_ATTRIBUTE_OVERFLOW = (1 << 10),
 };
 #ifndef __cplusplus
 #if __STDC_VERSION__ >= 202311L
@@ -182,7 +197,9 @@ typedef struct {
  */
 typedef struct {
   /**
-   * The grapheme's base codepoint, or 0 when the cell holds no text.
+   * The cell's codepoint, or 0 when it holds no text. When the cell has
+   * the overflow attribute this is an index into the snapshot's grapheme
+   * table instead.
    */
   uint32_t codepoint;
   /**
@@ -206,8 +223,7 @@ typedef struct {
 /**
  * Borrowed view of a snapshot's contents.
  *
- * `cells` points at `rows * cols` cells in row-major order and stays valid
- * until the snapshot is freed.
+ * The pointers stay valid until the snapshot is freed.
  */
 typedef struct {
   /**
@@ -222,6 +238,16 @@ typedef struct {
    * Row-major grid of `rows * cols` cells.
    */
   const KtCell *cells;
+  /**
+   * Codepoints for cells whose cluster did not fit in one cell. A cell
+   * carrying `KT_ATTRIBUTE_OVERFLOW` holds the index of its run's length
+   * here; the codepoints follow, base first.
+   */
+  const uint32_t *graphemes;
+  /**
+   * Number of entries in `graphemes`, lengths included.
+   */
+  size_t grapheme_count;
 } KtSnapshotView;
 
 #ifdef __cplusplus

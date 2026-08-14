@@ -16,7 +16,7 @@ pub use knotty_core::{Attribute, Cell, Rgb, Underline};
 /// A caller reads the constant from the header it compiled against and
 /// compares it with [`kt_abi_version`]. Mismatch means header and library
 /// disagree about layouts, and the caller must not proceed.
-pub const KT_ABI_VERSION: u32 = 2;
+pub const KT_ABI_VERSION: u32 = 3;
 
 /// Outcome of a call across the boundary.
 #[repr(i32)]
@@ -48,8 +48,7 @@ pub struct KtSnapshot(Snapshot);
 
 /// Borrowed view of a snapshot's contents.
 ///
-/// `cells` points at `rows * cols` cells in row-major order and stays valid
-/// until the snapshot is freed.
+/// The pointers stay valid until the snapshot is freed.
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct KtSnapshotView {
@@ -59,6 +58,12 @@ pub struct KtSnapshotView {
     pub rows: u16,
     /// Row-major grid of `rows * cols` cells.
     pub cells: *const Cell,
+    /// Codepoints for cells whose cluster did not fit in one cell. A cell
+    /// carrying `KT_ATTRIBUTE_OVERFLOW` holds the index of its run's length
+    /// here; the codepoints follow, base first.
+    pub graphemes: *const u32,
+    /// Number of entries in `graphemes`, lengths included.
+    pub grapheme_count: usize,
 }
 
 /// Return the ABI version this library was built with.
@@ -208,6 +213,8 @@ pub unsafe extern "C" fn kt_snapshot_view(
             cols: snapshot.0.cols,
             rows: snapshot.0.rows,
             cells: snapshot.0.cells.as_ptr(),
+            graphemes: snapshot.0.graphemes.as_ptr(),
+            grapheme_count: snapshot.0.graphemes.len(),
         }
     };
     KtStatus::Ok

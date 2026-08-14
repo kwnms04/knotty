@@ -73,18 +73,40 @@ fn codepoint_at(view: &KtSnapshotView, row: u16, col: u16) -> u32 {
     cell_at(view, row, col).codepoint
 }
 
-/// Feed one burst to a fresh session and read back the first row.
-fn first_row_of(bytes: &[u8]) -> Vec<Cell> {
-    let session = detached(8, 1);
+/// Read a cell's text the way a consumer does: straight from the cell unless
+/// it says its codepoint is really an index into the grapheme table.
+fn text_of(view: &KtSnapshotView, cell: &Cell) -> Vec<u32> {
+    if cell.attributes & Attribute::Overflow as u16 == 0 {
+        return vec![cell.codepoint];
+    }
+
+    let index = cell.codepoint as usize;
+    assert!(index < view.grapheme_count);
+    let len = unsafe { *view.graphemes.add(index) } as usize;
+    assert!(
+        index + 1 + len <= view.grapheme_count,
+        "run runs off the table"
+    );
+
+    (0..len)
+        .map(|offset| unsafe { *view.graphemes.add(index + 1 + offset) })
+        .collect()
+}
+
+/// Feed one burst to a fresh session and read back the first row, along with
+/// each cell's text.
+fn first_row_of(bytes: &[u8]) -> (Vec<Cell>, Vec<Vec<u32>>) {
+    let session = detached(12, 1);
     feed(session, bytes);
     let snapshot = take(session);
     let view = view(snapshot);
 
-    let cells = (0..view.cols).map(|col| cell_at(&view, 0, col)).collect();
+    let cells: Vec<Cell> = (0..view.cols).map(|col| cell_at(&view, 0, col)).collect();
+    let text = cells.iter().map(|cell| text_of(&view, cell)).collect();
 
     unsafe { kt_snapshot_free(snapshot) };
     unsafe { kt_session_free(session) };
-    cells
+    (cells, text)
 }
 
 /// The handshake a consumer performs at startup, against the header text it
@@ -134,7 +156,7 @@ fn feeding_ascii_puts_it_in_the_grid() {
 fn every_colour_source_arrives_as_resolved_rgb() {
     // Plain, one of the basic 16, one of the 256, true colour, then a
     // palette background.
-    let row = first_row_of(b"P\x1b[31mB\x1b[38;5;9mI\x1b[38;2;10;20;30mT\x1b[0m\x1b[44mG");
+    let (row, _) = first_row_of(b"P\x1b[31mB\x1b[38;5;9mI\x1b[38;2;10;20;30mT\x1b[0m\x1b[44mG");
 
     assert_eq!(row[0].foreground, DEFAULT_FOREGROUND, "unset foreground");
     assert_eq!(row[0].background, DEFAULT_BACKGROUND, "unset background");
@@ -167,12 +189,12 @@ fn each_sgr_attribute_lands_in_its_own_bit() {
         ("9", Attribute::Strikethrough),
         ("53", Attribute::Overline),
     ] {
-        let row = first_row_of(format!("\x1b[{sgr}mX").as_bytes());
+        let (row, _) = first_row_of(format!("\x1b[{sgr}mX").as_bytes());
         assert_eq!(row[0].attributes, attribute as u16, "SGR {sgr} alone");
     }
 
     // All at once: the bits must not tread on each other.
-    let row = first_row_of(b"\x1b[1;2;3;5;7;8;9;53mX");
+    let (row, _) = first_row_of(b"\x1b[1;2;3;5;7;8;9;53mX");
     assert_eq!(row[0].attributes, 0b1111_1111);
 }
 
@@ -186,9 +208,92 @@ fn underline_styles_are_distinguished() {
         ("4:5", Underline::Dashed),
         ("4;24", Underline::None),
     ] {
-        let row = first_row_of(format!("\x1b[{sgr}mX").as_bytes());
+        let (row, _) = first_row_of(format!("\x1b[{sgr}mX").as_bytes());
         assert_eq!(row[0].underline, expected, "SGR {sgr}");
     }
+}
+
+#[test]
+fn a_single_codepoint_stays_in_the_cell() {
+    let (row, text) = first_row_of("a".as_bytes());
+
+    assert_eq!(row[0].attributes & Attribute::Overflow as u16, 0);
+    assert_eq!(row[0].codepoint, u32::from('a'));
+    assert_eq!(text[0], vec![u32::from('a')]);
+}
+
+#[test]
+fn clusters_that_do_not_fit_move_to_the_grapheme_table() {
+    // A combining acute, then a ZWJ sequence. Ghostty gives each emoji of the
+    // sequence its own wide cell, so the first carries man + ZWJ.
+    let (row, text) = first_row_of("e\u{301}\u{1F468}\u{200D}\u{1F469}".as_bytes());
+
+    assert_ne!(
+        row[0].attributes & Attribute::Overflow as u16,
+        0,
+        "combining"
+    );
+    assert_eq!(text[0], vec![u32::from('e'), 0x0301]);
+
+    assert_ne!(row[1].attributes & Attribute::Overflow as u16, 0, "ZWJ");
+    assert_eq!(text[1], vec![0x1F468, 0x200D]);
+
+    // The index in the cell is an index, not a codepoint that happens to fit.
+    assert_ne!(row[0].codepoint, row[1].codepoint);
+}
+
+#[test]
+fn a_wide_character_marks_its_two_cells_differently() {
+    let (row, text) = first_row_of("\u{D55C}a".as_bytes());
+
+    assert_ne!(
+        row[0].attributes & Attribute::Wide as u16,
+        0,
+        "leading cell"
+    );
+    assert_eq!(row[0].attributes & Attribute::WideTail as u16, 0);
+    assert_eq!(text[0], vec![0xD55C]);
+
+    assert_ne!(
+        row[1].attributes & Attribute::WideTail as u16,
+        0,
+        "trailing"
+    );
+    assert_eq!(row[1].attributes & Attribute::Wide as u16, 0);
+    assert_eq!(row[1].codepoint, 0, "the trailing cell holds no text");
+
+    // The next character starts after both cells of the wide one.
+    assert_eq!(row[2].codepoint, u32::from('a'));
+    assert_eq!(
+        row[2].attributes & (Attribute::Wide as u16 | Attribute::WideTail as u16),
+        0
+    );
+}
+
+#[test]
+fn the_grapheme_table_is_rebuilt_for_every_snapshot() {
+    let session = detached(4, 1);
+
+    feed(session, "e\u{301}".as_bytes());
+    let first = take(session);
+    let first_view = view(first);
+    let first_count = first_view.grapheme_count;
+    assert_ne!(first_count, 0);
+    unsafe { kt_snapshot_free(first) };
+
+    // A second snapshot holding the same one cluster must be the same size,
+    // not the first snapshot's table with more appended to it.
+    feed(session, "\ra\u{301}".as_bytes());
+    let second = take(session);
+    let second_view = view(second);
+    assert_eq!(second_view.grapheme_count, first_count);
+    assert_eq!(
+        text_of(&second_view, &cell_at(&second_view, 0, 0)),
+        vec![u32::from('a'), 0x0301],
+    );
+
+    unsafe { kt_snapshot_free(second) };
+    unsafe { kt_session_free(session) };
 }
 
 #[test]

@@ -2,7 +2,8 @@
 //!
 //! Nothing outside this module names a VT engine type in a signature.
 
-use libghostty_vt::render::{CellIterator, Dirty, RowIterator};
+use libghostty_vt::render::{CellIteration, CellIterator, Dirty, RowIterator};
+use libghostty_vt::screen::{CellContentTag, CellWide};
 use libghostty_vt::{RenderState, Terminal};
 
 use crate::{Error, Result};
@@ -35,10 +36,11 @@ impl From<libghostty_vt::style::RgbColor> for Rgb {
     }
 }
 
-/// SGR attributes, OR-ed together into a cell's `attributes` field.
+/// Cell attributes, OR-ed together into a cell's `attributes` field.
 ///
-/// Underlining is not here: it has kinds rather than an on/off state, so it
-/// gets its own field.
+/// The low byte is SGR state, the high byte is structure. Underlining is in
+/// neither: it has kinds rather than an on/off state, so it gets its own
+/// field.
 #[repr(u16)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Attribute {
@@ -58,6 +60,14 @@ pub enum Attribute {
     Strikethrough = 1 << 6,
     /// SGR 53.
     Overline = 1 << 7,
+    /// The leading cell of a character two columns wide.
+    Wide = 1 << 8,
+    /// The trailing cell of a character two columns wide. It holds no text of
+    /// its own and must not be drawn.
+    WideTail = 1 << 9,
+    /// The cell's `codepoint` is an index into the snapshot's grapheme table
+    /// rather than a codepoint.
+    Overflow = 1 << 10,
 }
 
 /// How a cell is underlined.
@@ -112,7 +122,9 @@ impl From<libghostty_vt::style::Underline> for Underline {
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Cell {
-    /// The grapheme's base codepoint, or 0 when the cell holds no text.
+    /// The cell's codepoint, or 0 when it holds no text. When the cell has
+    /// the overflow attribute this is an index into the snapshot's grapheme
+    /// table instead.
     pub codepoint: u32,
     /// Foreground colour, with the terminal's default already substituted.
     pub foreground: Rgb,
@@ -133,6 +145,13 @@ pub struct Snapshot {
     pub rows: u16,
     /// `rows * cols` cells in row-major order.
     pub cells: Vec<Cell>,
+    /// Codepoints for the cells that did not fit in one, so that the cell
+    /// stays a fixed size no matter how long its grapheme cluster is.
+    ///
+    /// A cell carrying the overflow attribute holds the index of its run's
+    /// length; the codepoints follow, base first. The table is rebuilt every
+    /// snapshot and never refers to an earlier one.
+    pub graphemes: Vec<u32>,
 }
 
 /// Flatten the terminal's render state into a snapshot.
@@ -160,6 +179,8 @@ pub(crate) fn capture(
         ..Cell::default()
     };
     let mut cells = vec![blank; usize::from(cols) * usize::from(rows)];
+    let mut graphemes = Vec::new();
+    let mut cluster = Vec::new();
 
     let mut row_iter = RowIterator::new()?;
     let mut cell_iter = CellIterator::new()?;
@@ -170,13 +191,23 @@ pub(crate) fn capture(
         let mut x = 0usize;
         while let Some(cell) = cells_iteration.next() {
             let style = cell.style()?;
+            let raw = cell.raw_cell()?;
+            let mut attributes = attributes_of(&style) | structure_of(raw.wide()?);
+
+            let codepoint = if raw.content_tag()? == CellContentTag::CodepointGrapheme {
+                attributes |= Attribute::Overflow as u16;
+                spill(cell, &mut graphemes, &mut cluster)?
+            } else {
+                raw.codepoint()?
+            };
+
             cells[y * usize::from(cols) + x] = Cell {
-                codepoint: cell.raw_cell()?.codepoint()?,
+                codepoint,
                 // The engine resolves palette indices for us; an unset colour
                 // falls back to the terminal's current default.
                 foreground: cell.fg_color()?.unwrap_or(defaults.foreground).into(),
                 background: cell.bg_color()?.unwrap_or(defaults.background).into(),
-                attributes: attributes_of(&style),
+                attributes,
                 underline: style.underline.into(),
             };
             x += 1;
@@ -188,7 +219,43 @@ pub(crate) fn capture(
     // reports clean on the next capture.
     frame.set_dirty(Dirty::Clean)?;
 
-    Ok(Some(Snapshot { cols, rows, cells }))
+    Ok(Some(Snapshot {
+        cols,
+        rows,
+        cells,
+        graphemes,
+    }))
+}
+
+/// Append a cell's codepoints to the grapheme table, returning the index the
+/// cell should carry.
+fn spill(
+    cell: &CellIteration<'_, '_>,
+    graphemes: &mut Vec<u32>,
+    cluster: &mut Vec<char>,
+) -> Result<u32> {
+    // The table is addressed by a u32 field, so a grid large enough to
+    // overrun that cannot be represented.
+    let index = u32::try_from(graphemes.len()).map_err(|_| Error::Engine)?;
+
+    cluster.resize(cell.graphemes_len()?, '\0');
+    cell.graphemes_buf(cluster)?;
+
+    let len = u32::try_from(cluster.len()).map_err(|_| Error::Engine)?;
+    graphemes.push(len);
+    graphemes.extend(cluster.iter().map(|codepoint| *codepoint as u32));
+
+    Ok(index)
+}
+
+fn structure_of(wide: CellWide) -> u16 {
+    match wide {
+        CellWide::Wide => Attribute::Wide as u16,
+        CellWide::SpacerTail => Attribute::WideTail as u16,
+        // Narrow needs no flag, and SpacerHead is a soft-wrap artefact that
+        // draws as nothing either way.
+        _ => 0,
+    }
 }
 
 fn attributes_of(style: &libghostty_vt::style::Style) -> u16 {
