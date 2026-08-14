@@ -16,6 +16,8 @@ Swift 없이 knotty-core와 하네스만 만듭니다.
 
 ## M1 — PTY and threading
 
+스펙: [#10](https://github.com/kwnms04/knotty/issues/10)
+
 - I/O 스레드 ([C1](03-core.md#c1--thread-topology)), PTY 스폰, writer 큐 + 배압
 - 자식 종료 처리 + 순서 불변식 ([C6](03-core.md#c6--child-lifecycle))
 - 이벤트 큐 3종 (벨, 클립보드 쓰기, 자식 종료)
