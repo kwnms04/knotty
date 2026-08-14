@@ -1,0 +1,14 @@
+[workspace]
+members = ["crates/knotty-core", "crates/knotty-ffi"]
+resolver = "3"
+
+[workspace.package]
+edition = "2024"
+license = "MIT"
+publish = false
+version = "0.0.0"
+
+[workspace.dependencies]
+knotty-core = { path = "crates/knotty-core" }
+# Pinned: the VT engine is a public alpha. Bumping it is gated on the harness.
+libghostty-vt = "=0.2.1"

@@ -1,0 +1,19 @@
+language = "C"
+header = "/* Generated from knotty-ffi by cbindgen. Do not edit by hand. */"
+include_guard = "KNOTTY_H"
+cpp_compat = true
+style = "type"
+documentation_style = "doxy"
+sys_includes = ["stdint.h", "stddef.h"]
+no_includes = true
+usize_is_size_t = true
+
+[enum]
+rename_variants = "QualifiedScreamingSnakeCase"
+
+[parse]
+parse_deps = true
+include = ["knotty-core"]
+
+[export.rename]
+Cell = "KtCell"
