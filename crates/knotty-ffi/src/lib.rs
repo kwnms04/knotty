@@ -66,7 +66,7 @@ pub extern "C" fn kt_abi_version() -> u32 {
 /// Create a session with no PTY behind it.
 ///
 /// On success writes an owned handle to `out`, to be released with
-/// [`kt_session_free`].
+/// [`kt_session_free`]. On failure `out` receives null.
 ///
 /// # Safety
 ///
@@ -81,6 +81,7 @@ pub unsafe extern "C" fn kt_session_new_detached(
     if out.is_null() {
         return KtStatus::NullArgument;
     }
+    unsafe { *out = ptr::null_mut() };
     match Session::new_detached(cols, rows, max_scrollback) {
         Ok(session) => {
             unsafe { *out = Box::into_raw(Box::new(KtSession(session))) };
@@ -137,9 +138,9 @@ pub unsafe extern "C" fn kt_session_feed(
 
 /// Take the latest snapshot, emptying the session's mailbox.
 ///
-/// Returns [`KtStatus::NoValue`] and writes null to `out` when nothing has
-/// been published since the last take. On success `out` receives an owned
-/// handle, to be released with [`kt_snapshot_free`].
+/// Returns [`KtStatus::NoValue`] when nothing has been published since the
+/// last take. On success `out` receives an owned handle, to be released with
+/// [`kt_snapshot_free`]; otherwise it receives null.
 ///
 /// # Safety
 ///
@@ -153,6 +154,7 @@ pub unsafe extern "C" fn kt_session_take_snapshot(
     if out.is_null() {
         return KtStatus::NullArgument;
     }
+    unsafe { *out = ptr::null_mut() };
     let Some(session) = (unsafe { session.as_ref() }) else {
         return KtStatus::NullArgument;
     };
@@ -162,10 +164,7 @@ pub unsafe extern "C" fn kt_session_take_snapshot(
             unsafe { *out = Box::into_raw(Box::new(KtSnapshot(snapshot))) };
             KtStatus::Ok
         }
-        None => {
-            unsafe { *out = ptr::null_mut() };
-            KtStatus::NoValue
-        }
+        None => KtStatus::NoValue,
     }
 }
 

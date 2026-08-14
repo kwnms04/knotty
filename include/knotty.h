@@ -105,7 +105,7 @@ uint32_t kt_abi_version(void);
  * Create a session with no PTY behind it.
  *
  * On success writes an owned handle to `out`, to be released with
- * [`kt_session_free`].
+ * [`kt_session_free`]. On failure `out` receives null.
  *
  * # Safety
  *
@@ -142,9 +142,9 @@ KtStatus kt_session_feed(KtSession *session, const uint8_t *bytes, size_t len);
 /**
  * Take the latest snapshot, emptying the session's mailbox.
  *
- * Returns [`KtStatus::NoValue`] and writes null to `out` when nothing has
- * been published since the last take. On success `out` receives an owned
- * handle, to be released with [`kt_snapshot_free`].
+ * Returns [`KtStatus::NoValue`] when nothing has been published since the
+ * last take. On success `out` receives an owned handle, to be released with
+ * [`kt_snapshot_free`]; otherwise it receives null.
  *
  * # Safety
  *

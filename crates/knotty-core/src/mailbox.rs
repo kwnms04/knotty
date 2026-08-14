@@ -87,6 +87,7 @@ mod tests {
         });
 
         let mut last: Option<usize> = None;
+        let mut taken = 0usize;
         loop {
             // Read "finished" before draining: if the producer was already
             // done, the drain below cannot miss a later publish.
@@ -98,6 +99,7 @@ mod tests {
                     value.seq,
                 );
                 last = Some(value.seq);
+                taken += 1;
             }
             if finished {
                 break;
@@ -106,6 +108,10 @@ mod tests {
         producer.join().unwrap();
 
         assert_eq!(last, Some(PUBLISHED - 1), "the final publish was lost");
+        assert!(
+            taken < PUBLISHED,
+            "took all {PUBLISHED} values, so nothing was ever overwritten",
+        );
         assert_eq!(
             dropped.load(Ordering::Relaxed),
             PUBLISHED,

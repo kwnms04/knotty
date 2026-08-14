@@ -5,9 +5,9 @@ use std::mem::MaybeUninit;
 use std::ptr;
 
 use knotty_ffi::{
-    KT_ABI_VERSION, KtSession, KtSnapshot, KtSnapshotView, KtStatus, kt_abi_version,
-    kt_session_feed, kt_session_free, kt_session_new_detached, kt_session_take_snapshot,
-    kt_snapshot_free, kt_snapshot_view,
+    KtSession, KtSnapshot, KtSnapshotView, KtStatus, kt_abi_version, kt_session_feed,
+    kt_session_free, kt_session_new_detached, kt_session_take_snapshot, kt_snapshot_free,
+    kt_snapshot_view,
 };
 
 fn detached(cols: u16, rows: u16) -> *mut KtSession {
@@ -45,9 +45,24 @@ fn codepoint_at(view: &KtSnapshotView, row: u16, col: u16) -> u32 {
     unsafe { (*view.cells.add(index)).codepoint }
 }
 
+/// The handshake a consumer performs at startup, against the header text it
+/// would have compiled against rather than against the Rust constant.
 #[test]
 fn the_library_reports_the_abi_version_the_header_declares() {
-    assert_eq!(kt_abi_version(), KT_ABI_VERSION);
+    let header = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../include/knotty.h"
+    ))
+    .expect("read include/knotty.h");
+    let declared: u32 = header
+        .lines()
+        .find_map(|line| line.strip_prefix("#define KT_ABI_VERSION "))
+        .expect("the header declares KT_ABI_VERSION")
+        .trim()
+        .parse()
+        .expect("KT_ABI_VERSION is a number");
+
+    assert_eq!(kt_abi_version(), declared);
 }
 
 #[test]

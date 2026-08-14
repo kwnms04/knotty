@@ -7,6 +7,12 @@ use libghostty_vt::{RenderState, Terminal};
 
 use crate::{Error, Result};
 
+impl From<libghostty_vt::Error> for Error {
+    fn from(_: libghostty_vt::Error) -> Self {
+        Self::Engine
+    }
+}
+
 /// One terminal cell.
 ///
 /// Fixed size and POD: the grid is a row-major flat array of these, so a
@@ -38,26 +44,25 @@ pub(crate) fn capture(
     render: &mut RenderState<'static>,
     terminal: &Terminal<'static, 'static>,
 ) -> Result<Option<Snapshot>> {
-    let frame = render.update(terminal).map_err(|_| Error::Engine)?;
-    if frame.dirty().map_err(|_| Error::Engine)? == Dirty::Clean {
+    let frame = render.update(terminal)?;
+    if frame.dirty()? == Dirty::Clean {
         return Ok(None);
     }
 
-    let cols = frame.cols().map_err(|_| Error::Engine)?;
-    let rows = frame.rows().map_err(|_| Error::Engine)?;
+    let cols = frame.cols()?;
+    let rows = frame.rows()?;
     let mut cells = vec![Cell::default(); usize::from(cols) * usize::from(rows)];
 
-    let mut row_iter = RowIterator::new().map_err(|_| Error::Engine)?;
-    let mut cell_iter = CellIterator::new().map_err(|_| Error::Engine)?;
-    let mut rows_iteration = row_iter.update(&frame).map_err(|_| Error::Engine)?;
+    let mut row_iter = RowIterator::new()?;
+    let mut cell_iter = CellIterator::new()?;
+    let mut rows_iteration = row_iter.update(&frame)?;
     let mut y = 0usize;
     while let Some(row) = rows_iteration.next() {
-        let mut cells_iteration = cell_iter.update(row).map_err(|_| Error::Engine)?;
+        let mut cells_iteration = cell_iter.update(row)?;
         let mut x = 0usize;
         while let Some(cell) = cells_iteration.next() {
-            let raw = cell.raw_cell().map_err(|_| Error::Engine)?;
             cells[y * usize::from(cols) + x] = Cell {
-                codepoint: raw.codepoint().map_err(|_| Error::Engine)?,
+                codepoint: cell.raw_cell()?.codepoint()?,
             };
             x += 1;
         }
@@ -66,7 +71,7 @@ pub(crate) fn capture(
 
     // Consume the dirty state we just acted on, so an unchanged terminal
     // reports clean on the next capture.
-    frame.set_dirty(Dirty::Clean).map_err(|_| Error::Engine)?;
+    frame.set_dirty(Dirty::Clean)?;
 
     Ok(Some(Snapshot { cols, rows, cells }))
 }

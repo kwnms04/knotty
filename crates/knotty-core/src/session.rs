@@ -2,9 +2,9 @@
 
 use libghostty_vt::{RenderState, Terminal, TerminalOptions};
 
+use crate::Result;
 use crate::mailbox::Mailbox;
 use crate::snapshot::{self, Snapshot};
-use crate::{Error, Result};
 
 /// A terminal session.
 ///
@@ -26,9 +26,8 @@ impl Session {
             cols,
             rows,
             max_scrollback,
-        })
-        .map_err(|_| Error::Engine)?;
-        let render = RenderState::new().map_err(|_| Error::Engine)?;
+        })?;
+        let render = RenderState::new()?;
 
         Ok(Self {
             terminal,
