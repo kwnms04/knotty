@@ -2,7 +2,7 @@
 //!
 //! Nothing outside this module names a VT engine type in a signature.
 
-use libghostty_vt::render::{CellIteration, CellIterator, Dirty, RowIterator};
+use libghostty_vt::render::{CellIteration, CellIterator, Dirty as VtDirty, RowIterator};
 use libghostty_vt::screen::{CellContentTag, CellWide};
 use libghostty_vt::{RenderState, Terminal};
 
@@ -111,6 +111,41 @@ impl From<libghostty_vt::style::Underline> for Underline {
     }
 }
 
+/// How much of the screen changed since the last snapshot was taken.
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Dirty {
+    /// Nothing changed. A published snapshot never says this, because a
+    /// capture that finds nothing to report is not published at all.
+    #[default]
+    Clean = 0,
+    /// Some rows changed; the row flags say which.
+    Partial = 1,
+    /// Everything changed, as on a switch to or from the alternate screen.
+    Full = 2,
+}
+
+impl From<VtDirty> for Dirty {
+    fn from(dirty: VtDirty) -> Self {
+        match dirty {
+            VtDirty::Clean => Self::Clean,
+            VtDirty::Partial => Self::Partial,
+            VtDirty::Full => Self::Full,
+        }
+    }
+}
+
+/// Row state, OR-ed together into one entry of a snapshot's row flags.
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RowFlag {
+    /// The row changed since the last snapshot.
+    Dirty = 1 << 0,
+    /// The row runs on into the next one. It ended because it ran out of
+    /// columns, not at a newline.
+    Wrapped = 1 << 1,
+}
+
 /// One terminal cell.
 ///
 /// Fixed size and POD: the grid is a row-major flat array of these, so a
@@ -143,8 +178,12 @@ pub struct Snapshot {
     pub cols: u16,
     /// Viewport height in cells.
     pub rows: u16,
+    /// How much of the screen changed since the last snapshot.
+    pub dirty: Dirty,
     /// `rows * cols` cells in row-major order.
     pub cells: Vec<Cell>,
+    /// One entry per row, each a bit set of [`RowFlag`] values.
+    pub row_flags: Vec<u8>,
     /// Codepoints for the cells that did not fit in one, so that the cell
     /// stays a fixed size no matter how long its grapheme cluster is.
     ///
@@ -164,7 +203,8 @@ pub(crate) fn capture(
     terminal: &Terminal<'static, 'static>,
 ) -> Result<Option<Snapshot>> {
     let frame = render.update(terminal)?;
-    if frame.dirty()? == Dirty::Clean {
+    let dirty = Dirty::from(frame.dirty()?);
+    if dirty == Dirty::Clean {
         return Ok(None);
     }
 
@@ -179,6 +219,7 @@ pub(crate) fn capture(
         ..Cell::default()
     };
     let mut cells = vec![blank; usize::from(cols) * usize::from(rows)];
+    let mut row_flags = vec![0u8; usize::from(rows)];
     let mut graphemes = Vec::new();
     let mut cluster = Vec::new();
 
@@ -187,6 +228,11 @@ pub(crate) fn capture(
     let mut rows_iteration = row_iter.update(&frame)?;
     let mut y = 0usize;
     while let Some(row) = rows_iteration.next() {
+        row_flags[y] = row_flags_of(row.dirty()?, row.raw_row()?.is_wrapped()?);
+        // The engine tracks the two dirty layers separately, so clearing the
+        // global one leaves these set. Clear them here, while we have the row.
+        row.set_dirty(false)?;
+
         let mut cells_iteration = cell_iter.update(row)?;
         let mut x = 0usize;
         while let Some(cell) = cells_iteration.next() {
@@ -218,14 +264,27 @@ pub(crate) fn capture(
 
     // Consume the dirty state we just acted on, so an unchanged terminal
     // reports clean on the next capture.
-    frame.set_dirty(Dirty::Clean)?;
+    frame.set_dirty(VtDirty::Clean)?;
 
     Ok(Some(Snapshot {
         cols,
         rows,
+        dirty,
         cells,
+        row_flags,
         graphemes,
     }))
+}
+
+fn row_flags_of(dirty: bool, wrapped: bool) -> u8 {
+    let mut flags = 0;
+    if dirty {
+        flags |= RowFlag::Dirty as u8;
+    }
+    if wrapped {
+        flags |= RowFlag::Wrapped as u8;
+    }
+    flags
 }
 
 /// Append a cell's codepoints to the grapheme table, returning the index the

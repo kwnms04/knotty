@@ -5,8 +5,8 @@ use std::mem::MaybeUninit;
 use std::ptr;
 
 use knotty_ffi::{
-    Attribute, Cell, KtSession, KtSnapshot, KtSnapshotView, KtStatus, Rgb, Underline,
-    kt_abi_version, kt_session_feed, kt_session_free, kt_session_new_detached,
+    Attribute, Cell, Dirty, KtSession, KtSnapshot, KtSnapshotView, KtStatus, Rgb, RowFlag,
+    Underline, kt_abi_version, kt_session_feed, kt_session_free, kt_session_new_detached,
     kt_session_take_snapshot, kt_snapshot_free, kt_snapshot_view,
 };
 
@@ -71,6 +71,26 @@ fn cell_at(view: &KtSnapshotView, row: u16, col: u16) -> Cell {
 
 fn codepoint_at(view: &KtSnapshotView, row: u16, col: u16) -> u32 {
     cell_at(view, row, col).codepoint
+}
+
+fn row_flags(view: &KtSnapshotView) -> Vec<u8> {
+    (0..usize::from(view.rows))
+        .map(|row| unsafe { *view.row_flags.add(row) })
+        .collect()
+}
+
+fn dirty_rows(view: &KtSnapshotView) -> Vec<bool> {
+    row_flags(view)
+        .iter()
+        .map(|flags| flags & RowFlag::Dirty as u8 != 0)
+        .collect()
+}
+
+fn wrapped_rows(view: &KtSnapshotView) -> Vec<bool> {
+    row_flags(view)
+        .iter()
+        .map(|flags| flags & RowFlag::Wrapped as u8 != 0)
+        .collect()
 }
 
 /// Read a cell's text the way a consumer does: straight from the cell unless
@@ -306,6 +326,108 @@ fn the_grapheme_table_is_rebuilt_for_every_snapshot() {
     );
 
     unsafe { kt_snapshot_free(second) };
+    unsafe { kt_session_free(session) };
+}
+
+#[test]
+fn a_change_to_some_rows_is_reported_as_partial_and_names_them() {
+    let session = detached(8, 4);
+
+    // The first frame has the whole screen to draw, so it is a full one.
+    feed(session, b"one");
+    let first = take(session);
+    assert_eq!(view(first).dirty, Dirty::Full);
+    assert_eq!(dirty_rows(&view(first)), vec![true; 4]);
+    unsafe { kt_snapshot_free(first) };
+
+    // Jump to row 2 and write there. Row 0 is dirty too because the cursor
+    // left it; the rows nothing touched stay clean, which is what makes this
+    // partial rather than full.
+    feed(session, b"\x1b[3;1Hthree");
+    let second = take(session);
+    let second_view = view(second);
+
+    assert_eq!(second_view.dirty, Dirty::Partial);
+    assert_eq!(dirty_rows(&second_view), vec![true, false, true, false]);
+
+    unsafe { kt_snapshot_free(second) };
+    unsafe { kt_session_free(session) };
+}
+
+#[test]
+fn switching_to_the_alternate_screen_is_reported_as_full() {
+    let session = detached(8, 3);
+    feed(session, b"one");
+    unsafe { kt_snapshot_free(take(session)) };
+
+    feed(session, b"\x1b[?1049h");
+
+    let snapshot = take(session);
+    assert_eq!(view(snapshot).dirty, Dirty::Full);
+
+    unsafe { kt_snapshot_free(snapshot) };
+    unsafe { kt_session_free(session) };
+}
+
+#[test]
+fn dirty_marks_do_not_carry_into_the_next_snapshot() {
+    let session = detached(8, 4);
+
+    feed(session, b"one");
+    unsafe { kt_snapshot_free(take(session)) };
+    feed(session, b"\x1b[3;1Hthree");
+    unsafe { kt_snapshot_free(take(session)) };
+
+    // Rows 0 and 2 were both marked in the snapshot just taken. Writing where
+    // the cursor already sits leaves only row 2, so neither the whole-screen
+    // marks from the first snapshot nor row 0's from the second survived.
+    feed(session, b"X");
+    let snapshot = take(session);
+    let view = view(snapshot);
+
+    assert_eq!(dirty_rows(&view), vec![false, false, true, false]);
+
+    unsafe { kt_snapshot_free(snapshot) };
+    unsafe { kt_session_free(session) };
+}
+
+#[test]
+fn a_row_says_whether_it_runs_on_into_the_next() {
+    let session = detached(4, 3);
+
+    // "abcdef" runs out of columns after four, so row 0 continues into row 1.
+    // "gh" then ends at a newline instead.
+    feed(session, b"abcdef\r\ngh");
+
+    let snapshot = take(session);
+    let view = view(snapshot);
+
+    assert_eq!(
+        wrapped_rows(&view),
+        vec![true, false, false],
+        "only the row that ran out of columns is marked",
+    );
+
+    unsafe { kt_snapshot_free(snapshot) };
+    unsafe { kt_session_free(session) };
+}
+
+#[test]
+fn a_line_that_exactly_fills_a_row_and_then_ends_is_not_wrapped() {
+    let session = detached(4, 2);
+
+    feed(session, b"abcd\r\n");
+
+    let snapshot = take(session);
+    let view = view(snapshot);
+
+    assert_eq!(
+        wrapped_rows(&view),
+        vec![false, false],
+        "filling the row is not the same as running past it",
+    );
+
+    unsafe { kt_snapshot_free(snapshot) };
     unsafe { kt_session_free(session) };
 }
 

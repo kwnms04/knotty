@@ -16,11 +16,13 @@ parse_deps = true
 include = ["knotty-core"]
 
 [export]
-# Attribute is a bit set for KtCell::attributes, so no signature refers to it.
-include = ["Attribute"]
+# Bit sets: their fields are plain integers, so no signature refers to them.
+include = ["Attribute", "RowFlag"]
 
 [export.rename]
 Attribute = "KtAttribute"
 Cell = "KtCell"
+Dirty = "KtDirty"
 Rgb = "KtRgb"
+RowFlag = "KtRowFlag"
 Underline = "KtUnderline"

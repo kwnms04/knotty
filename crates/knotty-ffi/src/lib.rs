@@ -9,14 +9,14 @@ use knotty_core::{Error, Session, Snapshot};
 
 /// The snapshot's POD types. A C consumer gets these from the header; this
 /// re-export is how a Rust consumer names the same layouts.
-pub use knotty_core::{Attribute, Cell, Rgb, Underline};
+pub use knotty_core::{Attribute, Cell, Dirty, Rgb, RowFlag, Underline};
 
 /// ABI version of this library.
 ///
 /// A caller reads the constant from the header it compiled against and
 /// compares it with [`kt_abi_version`]. Mismatch means header and library
 /// disagree about layouts, and the caller must not proceed.
-pub const KT_ABI_VERSION: u32 = 3;
+pub const KT_ABI_VERSION: u32 = 4;
 
 /// Outcome of a call across the boundary.
 #[repr(i32)]
@@ -59,8 +59,13 @@ pub struct KtSnapshotView {
     pub cols: u16,
     /// Viewport height in cells.
     pub rows: u16,
+    /// How much of the screen changed since the last snapshot. Never
+    /// `KT_DIRTY_CLEAN`: an unchanged screen is not published at all.
+    pub dirty: Dirty,
     /// Row-major grid of `rows * cols` cells.
     pub cells: *const Cell,
+    /// One entry per row, each a bit set of `KtRowFlag` values.
+    pub row_flags: *const u8,
     /// Codepoints for cells whose cluster did not fit in one cell. A cell
     /// carrying `KT_ATTRIBUTE_OVERFLOW` holds the index of its run's length
     /// here; the codepoints follow, base first.
@@ -215,7 +220,9 @@ pub unsafe extern "C" fn kt_snapshot_view(
         *out = KtSnapshotView {
             cols: snapshot.0.cols,
             rows: snapshot.0.rows,
+            dirty: snapshot.0.dirty,
             cells: snapshot.0.cells.as_ptr(),
+            row_flags: snapshot.0.row_flags.as_ptr(),
             graphemes: snapshot.0.graphemes.as_ptr(),
             grapheme_count: snapshot.0.graphemes.len(),
         }

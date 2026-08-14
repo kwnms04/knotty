@@ -8,7 +8,7 @@
 
 /* Golden snapshot comparison depends on these layouts, so a change here is an
  * ABI change and must come with a version bump. */
-_Static_assert(KT_ABI_VERSION == 3, "ABI version moved without updating this consumer");
+_Static_assert(KT_ABI_VERSION == 4, "ABI version moved without updating this consumer");
 
 _Static_assert(sizeof(KtCell) == 16, "KtCell grew or shrank");
 _Static_assert(offsetof(KtCell, codepoint) == 0, "KtCell fields moved");
@@ -17,12 +17,14 @@ _Static_assert(offsetof(KtCell, background) == 7, "KtCell fields moved");
 _Static_assert(offsetof(KtCell, attributes) == 10, "KtCell fields moved");
 _Static_assert(offsetof(KtCell, underline) == 12, "KtCell fields moved");
 
-_Static_assert(sizeof(KtSnapshotView) == 32, "KtSnapshotView grew or shrank");
+_Static_assert(sizeof(KtSnapshotView) == 40, "KtSnapshotView grew or shrank");
 _Static_assert(offsetof(KtSnapshotView, cols) == 0, "KtSnapshotView fields moved");
 _Static_assert(offsetof(KtSnapshotView, rows) == 2, "KtSnapshotView fields moved");
+_Static_assert(offsetof(KtSnapshotView, dirty) == 4, "KtSnapshotView fields moved");
 _Static_assert(offsetof(KtSnapshotView, cells) == 8, "KtSnapshotView fields moved");
-_Static_assert(offsetof(KtSnapshotView, graphemes) == 16, "KtSnapshotView fields moved");
-_Static_assert(offsetof(KtSnapshotView, grapheme_count) == 24, "KtSnapshotView fields moved");
+_Static_assert(offsetof(KtSnapshotView, row_flags) == 16, "KtSnapshotView fields moved");
+_Static_assert(offsetof(KtSnapshotView, graphemes) == 24, "KtSnapshotView fields moved");
+_Static_assert(offsetof(KtSnapshotView, grapheme_count) == 32, "KtSnapshotView fields moved");
 
 /* The startup handshake a real consumer performs. */
 int kt_consumer_abi_ok(void) {
@@ -55,4 +57,17 @@ const uint32_t *kt_consumer_text_of(const KtSnapshotView *view, const KtCell *ce
 /* The two halves of a wide character are told apart by their flags. */
 int kt_consumer_is_wide_tail(const KtCell *cell) {
     return (cell->attributes & KT_ATTRIBUTE_WIDE_TAIL) != 0;
+}
+
+/* Redrawing the least: everything on a full frame, only the marked rows on a
+ * partial one. */
+int kt_consumer_needs_redraw(const KtSnapshotView *view, uint16_t row) {
+    return view->dirty == KT_DIRTY_FULL ||
+           (view->row_flags[row] & KT_ROW_FLAG_DIRTY) != 0;
+}
+
+/* A row that runs on joins with the next; one that ended at a newline does
+ * not. */
+int kt_consumer_joins_next_row(const KtSnapshotView *view, uint16_t row) {
+    return (view->row_flags[row] & KT_ROW_FLAG_WRAPPED) != 0;
 }

@@ -13,7 +13,7 @@
  * compares it with [`kt_abi_version`]. Mismatch means header and library
  * disagree about layouts, and the caller must not proceed.
  */
-#define KT_ABI_VERSION 3
+#define KT_ABI_VERSION 4
 
 /**
  * Outcome of a call across the boundary.
@@ -49,6 +49,36 @@ enum KtStatus
 typedef enum KtStatus KtStatus;
 #else
 typedef int32_t KtStatus;
+#endif // __STDC_VERSION__ >= 202311L
+#endif // __cplusplus
+
+/**
+ * How much of the screen changed since the last snapshot was taken.
+ */
+enum KtDirty
+#if defined(__cplusplus) || __STDC_VERSION__ >= 202311L
+  : uint8_t
+#endif // defined(__cplusplus) || __STDC_VERSION__ >= 202311L
+ {
+  /**
+   * Nothing changed. A published snapshot never says this, because a
+   * capture that finds nothing to report is not published at all.
+   */
+  KT_DIRTY_CLEAN = 0,
+  /**
+   * Some rows changed; the row flags say which.
+   */
+  KT_DIRTY_PARTIAL = 1,
+  /**
+   * Everything changed, as on a switch to or from the alternate screen.
+   */
+  KT_DIRTY_FULL = 2,
+};
+#ifndef __cplusplus
+#if __STDC_VERSION__ >= 202311L
+typedef enum KtDirty KtDirty;
+#else
+typedef uint8_t KtDirty;
 #endif // __STDC_VERSION__ >= 202311L
 #endif // __cplusplus
 
@@ -166,6 +196,32 @@ typedef uint16_t KtAttribute;
 #endif // __cplusplus
 
 /**
+ * Row state, OR-ed together into one entry of a snapshot's row flags.
+ */
+enum KtRowFlag
+#if defined(__cplusplus) || __STDC_VERSION__ >= 202311L
+  : uint8_t
+#endif // defined(__cplusplus) || __STDC_VERSION__ >= 202311L
+ {
+  /**
+   * The row changed since the last snapshot.
+   */
+  KT_ROW_FLAG_DIRTY = (1 << 0),
+  /**
+   * The row runs on into the next one. It ended because it ran out of
+   * columns, not at a newline.
+   */
+  KT_ROW_FLAG_WRAPPED = (1 << 1),
+};
+#ifndef __cplusplus
+#if __STDC_VERSION__ >= 202311L
+typedef enum KtRowFlag KtRowFlag;
+#else
+typedef uint8_t KtRowFlag;
+#endif // __STDC_VERSION__ >= 202311L
+#endif // __cplusplus
+
+/**
  * Opaque handle to a session.
  */
 typedef struct KtSession KtSession;
@@ -239,9 +295,18 @@ typedef struct {
    */
   uint16_t rows;
   /**
+   * How much of the screen changed since the last snapshot. Never
+   * `KT_DIRTY_CLEAN`: an unchanged screen is not published at all.
+   */
+  KtDirty dirty;
+  /**
    * Row-major grid of `rows * cols` cells.
    */
   const KtCell *cells;
+  /**
+   * One entry per row, each a bit set of `KtRowFlag` values.
+   */
+  const uint8_t *row_flags;
   /**
    * Codepoints for cells whose cluster did not fit in one cell. A cell
    * carrying `KT_ATTRIBUTE_OVERFLOW` holds the index of its run's length
