@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/knotty-core", "crates/knotty-ffi"]
+members = ["crates/knotty-core", "crates/knotty-ffi", "crates/knotty-harness"]
 resolver = "3"
 
 [workspace.package]

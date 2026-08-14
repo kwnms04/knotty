@@ -32,10 +32,9 @@ const CHUNK: usize = 1024;
 /// Returns the failing call's status when the boundary reports one.
 pub fn replay(recording: &[u8], cols: u16, rows: u16, scrollback: usize) -> Result<String, String> {
     let mut session = ptr::null_mut();
-    check(
-        "kt_session_new_detached",
-        unsafe { kt_session_new_detached(cols, rows, scrollback, &mut session) },
-    )?;
+    check("kt_session_new_detached", unsafe {
+        kt_session_new_detached(cols, rows, scrollback, &mut session)
+    })?;
 
     let described = (|| {
         for chunk in recording.chunks(CHUNK) {
@@ -51,8 +50,8 @@ pub fn replay(recording: &[u8], cols: u16, rows: u16, scrollback: usize) -> Resu
 
         let mut view = std::mem::MaybeUninit::<KtSnapshotView>::uninit();
         let status = unsafe { kt_snapshot_view(snapshot, view.as_mut_ptr()) };
-        let described = check("kt_snapshot_view", status)
-            .map(|()| describe(&unsafe { view.assume_init() }));
+        let described =
+            check("kt_snapshot_view", status).map(|()| describe(&unsafe { view.assume_init() }));
 
         unsafe { kt_snapshot_free(snapshot) };
         described
@@ -138,7 +137,11 @@ fn describe_row(out: &mut String, view: &KtSnapshotView, row: u16) {
     let _ = writeln!(out, "text {}", quoted(row_text(view, row)));
 
     for col in 0..view.cols {
-        let cell = unsafe { *view.cells.add(usize::from(row) * usize::from(view.cols) + usize::from(col)) };
+        let cell = unsafe {
+            *view
+                .cells
+                .add(usize::from(row) * usize::from(view.cols) + usize::from(col))
+        };
         let codepoints: Vec<String> = codepoints_of(view, &cell)
             .iter()
             .map(|codepoint| format!("{codepoint:04X}"))
@@ -159,9 +162,15 @@ fn describe_row(out: &mut String, view: &KtSnapshotView, row: u16) {
 fn row_text(view: &KtSnapshotView, row: u16) -> String {
     (0..view.cols)
         .map(|col| {
-            let cell =
-                unsafe { *view.cells.add(usize::from(row) * usize::from(view.cols) + usize::from(col)) };
-            match codepoints_of(view, &cell).first().and_then(|c| char::from_u32(*c)) {
+            let cell = unsafe {
+                *view
+                    .cells
+                    .add(usize::from(row) * usize::from(view.cols) + usize::from(col))
+            };
+            match codepoints_of(view, &cell)
+                .first()
+                .and_then(|c| char::from_u32(*c))
+            {
                 Some('\0') | None => ' ',
                 Some(character) if character.is_control() => '.',
                 Some(character) => character,
@@ -198,10 +207,7 @@ fn text_of(text: KtText) -> &'static str {
 }
 
 fn quoted(text: impl AsRef<str>) -> String {
-    let escaped = text
-        .as_ref()
-        .replace('\\', "\\\\")
-        .replace('"', "\\\"");
+    let escaped = text.as_ref().replace('\\', "\\\\").replace('"', "\\\"");
     format!("\"{escaped}\"")
 }
 
@@ -275,4 +281,42 @@ pub fn diff(golden: &str, produced: &str) -> Option<String> {
         let _ = writeln!(report, "  golden has {want} lines, produced has {got}");
     }
     Some(report)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::diff;
+
+    #[test]
+    fn identical_descriptions_do_not_differ() {
+        assert!(diff("size 2 1\ncell 0 0 x\n", "size 2 1\ncell 0 0 x\n").is_none());
+    }
+
+    #[test]
+    fn a_report_names_the_line_and_shows_both_sides() {
+        let report = diff("size 2 1\ncell 0 1 x\n", "size 2 1\ncell 0 1 y\n")
+            .expect("the descriptions differ");
+
+        assert!(report.contains("line 2:"), "{report}");
+        assert!(report.contains("golden   cell 0 1 x"), "{report}");
+        assert!(report.contains("produced cell 0 1 y"), "{report}");
+    }
+
+    #[test]
+    fn a_report_says_when_one_side_is_longer() {
+        let report = diff("a\nb\n", "a\n").expect("the descriptions differ");
+        assert!(
+            report.contains("golden has 2 lines, produced has 1"),
+            "{report}"
+        );
+    }
+
+    #[test]
+    fn a_report_stops_listing_and_says_how_many_are_left() {
+        let golden: String = (0..40).map(|line| format!("line {line}\n")).collect();
+        let produced: String = (0..40).map(|line| format!("other {line}\n")).collect();
+
+        let report = diff(&golden, &produced).expect("the descriptions differ");
+        assert!(report.contains("and 28 more lines"), "{report}");
+    }
 }
