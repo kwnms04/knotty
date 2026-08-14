@@ -15,5 +15,12 @@ rename_variants = "QualifiedScreamingSnakeCase"
 parse_deps = true
 include = ["knotty-core"]
 
+[export]
+# Attribute is a bit set for KtCell::attributes, so no signature refers to it.
+include = ["Attribute"]
+
 [export.rename]
+Attribute = "KtAttribute"
 Cell = "KtCell"
+Rgb = "KtRgb"
+Underline = "KtUnderline"

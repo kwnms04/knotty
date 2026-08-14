@@ -13,7 +13,7 @@
  * compares it with [`kt_abi_version`]. Mismatch means header and library
  * disagree about layouts, and the caller must not proceed.
  */
-#define KT_ABI_VERSION 1
+#define KT_ABI_VERSION 2
 
 /**
  * Outcome of a call across the boundary.
@@ -49,6 +49,99 @@ typedef int32_t KtStatus;
 #endif // __cplusplus
 
 /**
+ * How a cell is underlined.
+ */
+enum KtUnderline
+#if defined(__cplusplus) || __STDC_VERSION__ >= 202311L
+  : uint8_t
+#endif // defined(__cplusplus) || __STDC_VERSION__ >= 202311L
+ {
+  /**
+   * Not underlined.
+   */
+  KT_UNDERLINE_NONE = 0,
+  /**
+   * SGR 4.
+   */
+  KT_UNDERLINE_SINGLE = 1,
+  /**
+   * SGR 21.
+   */
+  KT_UNDERLINE_DOUBLE = 2,
+  /**
+   * SGR 4:3.
+   */
+  KT_UNDERLINE_CURLY = 3,
+  /**
+   * SGR 4:4.
+   */
+  KT_UNDERLINE_DOTTED = 4,
+  /**
+   * SGR 4:5.
+   */
+  KT_UNDERLINE_DASHED = 5,
+};
+#ifndef __cplusplus
+#if __STDC_VERSION__ >= 202311L
+typedef enum KtUnderline KtUnderline;
+#else
+typedef uint8_t KtUnderline;
+#endif // __STDC_VERSION__ >= 202311L
+#endif // __cplusplus
+
+/**
+ * SGR attributes, OR-ed together into [`Cell::attributes`].
+ *
+ * Underlining is not here: it has kinds rather than an on/off state, so it
+ * gets its own field.
+ */
+enum KtAttribute
+#if defined(__cplusplus) || __STDC_VERSION__ >= 202311L
+  : uint16_t
+#endif // defined(__cplusplus) || __STDC_VERSION__ >= 202311L
+ {
+  /**
+   * SGR 1.
+   */
+  KT_ATTRIBUTE_BOLD = (1 << 0),
+  /**
+   * SGR 2.
+   */
+  KT_ATTRIBUTE_FAINT = (1 << 1),
+  /**
+   * SGR 3.
+   */
+  KT_ATTRIBUTE_ITALIC = (1 << 2),
+  /**
+   * SGR 5.
+   */
+  KT_ATTRIBUTE_BLINK = (1 << 3),
+  /**
+   * SGR 7.
+   */
+  KT_ATTRIBUTE_INVERSE = (1 << 4),
+  /**
+   * SGR 8.
+   */
+  KT_ATTRIBUTE_INVISIBLE = (1 << 5),
+  /**
+   * SGR 9.
+   */
+  KT_ATTRIBUTE_STRIKETHROUGH = (1 << 6),
+  /**
+   * SGR 53.
+   */
+  KT_ATTRIBUTE_OVERLINE = (1 << 7),
+};
+#ifndef __cplusplus
+#if __STDC_VERSION__ >= 202311L
+typedef enum KtAttribute KtAttribute;
+#else
+typedef uint16_t KtAttribute;
+#endif // __STDC_VERSION__ >= 202311L
+#endif // __cplusplus
+
+/**
  * Opaque handle to a session.
  */
 typedef struct KtSession KtSession;
@@ -57,6 +150,24 @@ typedef struct KtSession KtSession;
  * Opaque handle to a snapshot.
  */
 typedef struct KtSnapshot KtSnapshot;
+
+/**
+ * A colour, already resolved out of the palette.
+ */
+typedef struct {
+  /**
+   * Red component.
+   */
+  uint8_t r;
+  /**
+   * Green component.
+   */
+  uint8_t g;
+  /**
+   * Blue component.
+   */
+  uint8_t b;
+} KtRgb;
 
 /**
  * One terminal cell.
@@ -69,6 +180,22 @@ typedef struct {
    * The grapheme's base codepoint, or 0 when the cell holds no text.
    */
   uint32_t codepoint;
+  /**
+   * Foreground colour, with the terminal's default already substituted.
+   */
+  KtRgb foreground;
+  /**
+   * Background colour, with the terminal's default already substituted.
+   */
+  KtRgb background;
+  /**
+   * [`Attribute`] bits.
+   */
+  uint16_t attributes;
+  /**
+   * Which underline the cell carries, if any.
+   */
+  KtUnderline underline;
 } KtCell;
 
 /**

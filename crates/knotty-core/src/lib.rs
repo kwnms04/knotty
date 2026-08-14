@@ -8,7 +8,7 @@ pub mod session;
 pub mod snapshot;
 
 pub use session::Session;
-pub use snapshot::{Cell, Snapshot};
+pub use snapshot::{Attribute, Cell, Rgb, Snapshot, Underline};
 
 /// Why a core operation failed.
 ///

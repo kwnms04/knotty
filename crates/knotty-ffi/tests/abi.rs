@@ -5,9 +5,28 @@ use std::mem::MaybeUninit;
 use std::ptr;
 
 use knotty_ffi::{
-    KtSession, KtSnapshot, KtSnapshotView, KtStatus, kt_abi_version, kt_session_feed,
-    kt_session_free, kt_session_new_detached, kt_session_take_snapshot, kt_snapshot_free,
-    kt_snapshot_view,
+    Attribute, Cell, KtSession, KtSnapshot, KtSnapshotView, KtStatus, Rgb, Underline,
+    kt_abi_version, kt_session_feed, kt_session_free, kt_session_new_detached,
+    kt_session_take_snapshot, kt_snapshot_free, kt_snapshot_view,
+};
+
+/// Ghostty's own defaults. A change here is an upstream palette change, not a
+/// knotty bug — but it moves every golden snapshot, so it must be deliberate.
+const DEFAULT_FOREGROUND: Rgb = Rgb {
+    r: 255,
+    g: 255,
+    b: 255,
+};
+const DEFAULT_BACKGROUND: Rgb = Rgb { r: 0, g: 0, b: 0 };
+const PALETTE_RED: Rgb = Rgb {
+    r: 204,
+    g: 102,
+    b: 102,
+};
+const PALETTE_BLUE: Rgb = Rgb {
+    r: 129,
+    g: 162,
+    b: 190,
 };
 
 fn detached(cols: u16, rows: u16) -> *mut KtSession {
@@ -39,10 +58,28 @@ fn view(snapshot: *const KtSnapshot) -> KtSnapshotView {
 }
 
 /// Read a cell the way a consumer does: index into the flat grid.
-fn codepoint_at(view: &KtSnapshotView, row: u16, col: u16) -> u32 {
+fn cell_at(view: &KtSnapshotView, row: u16, col: u16) -> Cell {
     let index = usize::from(row) * usize::from(view.cols) + usize::from(col);
     assert!(index < usize::from(view.rows) * usize::from(view.cols));
-    unsafe { (*view.cells.add(index)).codepoint }
+    unsafe { *view.cells.add(index) }
+}
+
+fn codepoint_at(view: &KtSnapshotView, row: u16, col: u16) -> u32 {
+    cell_at(view, row, col).codepoint
+}
+
+/// Feed one burst to a fresh session and read back the first row.
+fn first_row_of(bytes: &[u8]) -> Vec<Cell> {
+    let session = detached(8, 1);
+    feed(session, bytes);
+    let snapshot = take(session);
+    let view = view(snapshot);
+
+    let cells = (0..view.cols).map(|col| cell_at(&view, 0, col)).collect();
+
+    unsafe { kt_snapshot_free(snapshot) };
+    unsafe { kt_session_free(session) };
+    cells
 }
 
 /// The handshake a consumer performs at startup, against the header text it
@@ -85,6 +122,88 @@ fn feeding_ascii_puts_it_in_the_grid() {
     assert_eq!(codepoint_at(&view, 2, 0), 0, "untouched rows stay empty");
 
     unsafe { kt_snapshot_free(snapshot) };
+    unsafe { kt_session_free(session) };
+}
+
+#[test]
+fn every_colour_source_arrives_as_resolved_rgb() {
+    // Plain, palette 1, true colour, then palette 4 as a background.
+    let row = first_row_of(b"P\x1b[31mR\x1b[38;2;10;20;30mT\x1b[0m\x1b[44mG");
+
+    assert_eq!(row[0].foreground, DEFAULT_FOREGROUND, "unset foreground");
+    assert_eq!(row[0].background, DEFAULT_BACKGROUND, "unset background");
+    assert_eq!(row[1].foreground, PALETTE_RED, "SGR 31 resolved");
+    assert_eq!(
+        row[2].foreground,
+        Rgb {
+            r: 10,
+            g: 20,
+            b: 30
+        },
+        "true colour passes through",
+    );
+    assert_eq!(row[3].background, PALETTE_BLUE, "SGR 44 resolved");
+}
+
+#[test]
+fn each_sgr_attribute_lands_in_its_own_bit() {
+    for (sgr, attribute) in [
+        ("1", Attribute::Bold),
+        ("2", Attribute::Faint),
+        ("3", Attribute::Italic),
+        ("5", Attribute::Blink),
+        ("7", Attribute::Inverse),
+        ("8", Attribute::Invisible),
+        ("9", Attribute::Strikethrough),
+        ("53", Attribute::Overline),
+    ] {
+        let row = first_row_of(format!("\x1b[{sgr}mX").as_bytes());
+        assert_eq!(row[0].attributes, attribute as u16, "SGR {sgr} alone");
+    }
+
+    // All at once: the bits must not tread on each other.
+    let row = first_row_of(b"\x1b[1;2;3;5;7;8;9;53mX");
+    assert_eq!(row[0].attributes, 0b1111_1111);
+}
+
+#[test]
+fn underline_styles_are_distinguished() {
+    for (sgr, expected) in [
+        ("4", Underline::Single),
+        ("21", Underline::Double),
+        ("4:3", Underline::Curly),
+        ("4:4", Underline::Dotted),
+        ("4:5", Underline::Dashed),
+        ("4;24", Underline::None),
+    ] {
+        let row = first_row_of(format!("\x1b[{sgr}mX").as_bytes());
+        assert_eq!(row[0].underline, expected, "SGR {sgr}");
+    }
+}
+
+#[test]
+fn changing_the_palette_recolours_cells_in_the_next_snapshot() {
+    let session = detached(4, 1);
+    feed(session, b"\x1b[31mX");
+
+    let before = take(session);
+    assert_eq!(cell_at(&view(before), 0, 0).foreground, PALETTE_RED);
+    unsafe { kt_snapshot_free(before) };
+
+    feed(session, b"\x1b]4;1;rgb:12/34/56\x07");
+
+    let after = take(session);
+    assert_eq!(
+        cell_at(&view(after), 0, 0).foreground,
+        Rgb {
+            r: 0x12,
+            g: 0x34,
+            b: 0x56
+        },
+        "the cell still names palette 1, which now means something else",
+    );
+
+    unsafe { kt_snapshot_free(after) };
     unsafe { kt_session_free(session) };
 }
 

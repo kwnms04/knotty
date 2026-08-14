@@ -5,14 +5,18 @@
 
 use std::ptr;
 
-use knotty_core::{Cell, Error, Session, Snapshot};
+use knotty_core::{Error, Session, Snapshot};
+
+/// The snapshot's POD types. A C consumer gets these from the header; this
+/// re-export is how a Rust consumer names the same layouts.
+pub use knotty_core::{Attribute, Cell, Rgb, Underline};
 
 /// ABI version of this library.
 ///
 /// A caller reads the constant from the header it compiled against and
 /// compares it with [`kt_abi_version`]. Mismatch means header and library
 /// disagree about layouts, and the caller must not proceed.
-pub const KT_ABI_VERSION: u32 = 1;
+pub const KT_ABI_VERSION: u32 = 2;
 
 /// Outcome of a call across the boundary.
 #[repr(i32)]
