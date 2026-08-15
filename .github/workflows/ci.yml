@@ -17,16 +17,32 @@ env:
 
 jobs:
   check:
-    runs-on: ubuntu-latest
+    # macOS is the release platform. Linux is what enforces the portable-core
+    # constraint of adr/0001, which appears nowhere in the code itself.
+    strategy:
+      # One platform breaking must not hide the other's result — telling them
+      # apart is the whole reason for two runners.
+      fail-fast: false
+      matrix:
+        include:
+          # Pinned rather than macos-latest: Zig 0.15.2 cannot link against the
+          # macOS 26 SDK, which is why AGENTS.md documents an xcrun shim for
+          # local builds. Pinning keeps CI off that path.
+          - runner: macos-15
+            zig_target: aarch64-macos
+          - runner: ubuntu-latest
+            zig_target: x86_64-linux
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
 
       - name: Install Zig
         run: |
           set -euo pipefail
-          curl -fsSL "https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-linux-${ZIG_VERSION}.tar.xz" \
+          zig_dir="zig-${{ matrix.zig_target }}-${ZIG_VERSION}"
+          curl -fsSL "https://ziglang.org/download/${ZIG_VERSION}/${zig_dir}.tar.xz" \
             | tar -xJ
-          echo "${PWD}/zig-x86_64-linux-${ZIG_VERSION}" >> "${GITHUB_PATH}"
+          echo "${PWD}/${zig_dir}" >> "${GITHUB_PATH}"
 
       - run: zig version
 
