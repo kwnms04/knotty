@@ -63,6 +63,12 @@ enum KtStatus
    * exists yet; the contract is fixed now so it cannot move later.
    */
   KT_STATUS_NOT_DETACHED = 8,
+  /**
+   * The queue of bytes bound for the child is at its cap, and what did not
+   * fit was dropped. Reported once per overrun, so a later call succeeding
+   * does not mean the dropped bytes came back.
+   */
+  KT_STATUS_WRITE_QUEUE_FULL = 9,
 };
 #ifndef __cplusplus
 #if __STDC_VERSION__ >= 202311L
@@ -326,6 +332,23 @@ typedef struct {
 } KtSelectionRange;
 
 /**
+ * Borrowed bytes, valid until the call that lent them is made again.
+ *
+ * Not a string: these are whatever the terminal put on the wire, and nothing
+ * promises they are text. Read `len` bytes.
+ */
+typedef struct {
+  /**
+   * The bytes.
+   */
+  const uint8_t *bytes;
+  /**
+   * How many of them.
+   */
+  size_t len;
+} KtBytes;
+
+/**
  * A colour, already resolved out of the palette.
  */
 typedef struct {
@@ -536,6 +559,10 @@ void kt_session_free(KtSession *session);
  * publishes at most one snapshot. A session with a PTY behind it takes its
  * input from that PTY, so this returns `KT_STATUS_NOT_DETACHED` for one.
  *
+ * Returns `KT_STATUS_WRITE_QUEUE_FULL` when the terminal's answers to what
+ * was fed did not fit in the writer queue. The snapshot is published either
+ * way: what the child missed hearing does not make the frame wrong.
+ *
  * # Safety
  *
  * `session` must be a live handle, and `bytes` must point at `len` readable
@@ -554,6 +581,26 @@ KtStatus kt_session_feed(KtSession *session, const uint8_t *bytes, size_t len);
  * readable `KtSelectionRange`.
  */
 KtStatus kt_session_set_selection(KtSession *session, const KtSelectionRange *range);
+
+/**
+ * Take the bytes a detached session has queued for its child, emptying the
+ * queue.
+ *
+ * `out` receives a run borrowed from the session, valid until the next call
+ * to this function on it or until the session is freed. A length of 0 means
+ * nothing was queued, which is not a failure. A session with a PTY behind it
+ * has its own reader draining the queue, so this returns
+ * `KT_STATUS_NOT_DETACHED` for one.
+ *
+ * Works on a defunct session, for the same reason taking its snapshot does:
+ * what it queued before it broke is still what it queued.
+ *
+ * # Safety
+ *
+ * `session` must be a live handle and `out` must be a valid, writable
+ * pointer to a `KtBytes`.
+ */
+KtStatus kt_session_take_writes(KtSession *session, KtBytes *out);
 
 /**
  * Take the latest snapshot, emptying the session's mailbox.

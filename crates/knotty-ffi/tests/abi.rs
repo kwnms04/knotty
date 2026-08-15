@@ -5,10 +5,10 @@ use std::mem::MaybeUninit;
 use std::ptr;
 
 use knotty_ffi::{
-    Attribute, Cell, Cursor, CursorShape, Dirty, KtSession, KtSnapshot, KtSnapshotView, KtStatus,
-    KtText, Rgb, Row, RowFlag, SelectionRange, Underline, kt_abi_version, kt_session_feed,
-    kt_session_free, kt_session_new_detached, kt_session_set_selection, kt_session_take_snapshot,
-    kt_snapshot_free, kt_snapshot_view,
+    Attribute, Cell, Cursor, CursorShape, Dirty, KtBytes, KtSession, KtSnapshot, KtSnapshotView,
+    KtStatus, KtText, Rgb, Row, RowFlag, SelectionRange, Underline, kt_abi_version,
+    kt_session_feed, kt_session_free, kt_session_new_detached, kt_session_set_selection,
+    kt_session_take_snapshot, kt_session_take_writes, kt_snapshot_free, kt_snapshot_view,
 };
 
 /// Ghostty's own defaults. A change here is an upstream palette change, not a
@@ -108,6 +108,20 @@ fn set_selection(session: *mut KtSession, range: Option<SelectionRange>) -> KtSt
         Some(range) => unsafe { kt_session_set_selection(session, &range) },
         None => unsafe { kt_session_set_selection(session, ptr::null()) },
     }
+}
+
+/// Drain the writer queue, copying it out so the next drain cannot move it
+/// under the caller.
+fn writes(session: *mut KtSession) -> Vec<u8> {
+    let mut queued = MaybeUninit::<KtBytes>::uninit();
+    let status = unsafe { kt_session_take_writes(session, queued.as_mut_ptr()) };
+    assert_eq!(status, KtStatus::Ok);
+
+    let queued = unsafe { queued.assume_init() };
+    if queued.len == 0 {
+        return Vec::new();
+    }
+    unsafe { std::slice::from_raw_parts(queued.bytes, queued.len) }.to_vec()
 }
 
 /// Read borrowed text the way a consumer does: bytes and a length, no
@@ -898,6 +912,84 @@ fn taking_before_anything_is_fed_reports_no_value() {
     unsafe { kt_session_free(session) };
 }
 
+/// No callback of ours is attached to anything yet, and the engine still
+/// answers a cursor position report by itself. That answer is the traffic
+/// this queue exists to carry.
+#[test]
+fn what_the_engine_answers_on_its_own_lands_in_the_writer_queue() {
+    let session = detached(4, 1);
+
+    feed(session, b"\x1b[6n");
+
+    assert_eq!(writes(session), b"\x1b[1;1R");
+
+    unsafe { kt_session_free(session) };
+}
+
+#[test]
+fn taking_the_queued_writes_empties_the_queue() {
+    let session = detached(4, 1);
+    feed(session, b"\x1b[6n");
+
+    assert!(!writes(session).is_empty());
+    assert!(
+        writes(session).is_empty(),
+        "the queue handed the same bytes twice"
+    );
+
+    unsafe { kt_session_free(session) };
+}
+
+#[test]
+fn nothing_queued_is_an_empty_run_rather_than_a_failure() {
+    let session = detached(4, 1);
+    feed(session, b"ok");
+
+    assert!(writes(session).is_empty());
+
+    unsafe { kt_session_free(session) };
+}
+
+/// The cap is what keeps a child that never reads from growing the queue
+/// without bound, so overrunning it has to be its own status: a caller that
+/// cannot tell it from a rejected sequence cannot tell the user either.
+#[test]
+fn a_writer_queue_over_its_cap_is_reported_apart_from_other_failures() {
+    // The 8MB of 02-ffi.md, restated because the core keeps its own copy
+    // private. If the two ever disagree, this is what notices.
+    const CAP: usize = 8 * 1024 * 1024;
+
+    let session = detached(4, 1);
+
+    // XTVERSION: four bytes in, seventeen out, answered with no callback of
+    // ours. Repeat it and the answers outrun the cap long before the bound.
+    let queries = b"\x1b[>q".repeat(4096);
+    let mut status = KtStatus::Ok;
+    for _ in 0..1000 {
+        status = unsafe { kt_session_feed(session, queries.as_ptr(), queries.len()) };
+        if status != KtStatus::Ok {
+            break;
+        }
+    }
+
+    assert_eq!(status, KtStatus::WriteQueueFull);
+
+    // Full to within one answer of the cap: a queue that reported overrunning
+    // while nearly empty would be dropping bytes it had room for.
+    let queued = writes(session).len();
+    assert!(
+        (CAP - 64..=CAP).contains(&queued),
+        "reported the cap with {queued} bytes queued, not the {CAP} it holds",
+    );
+    assert_eq!(
+        unsafe { kt_session_feed(session, b"ok".as_ptr(), 2) },
+        KtStatus::Ok,
+        "the overflow was reported once, not held against every later feed",
+    );
+
+    unsafe { kt_session_free(session) };
+}
+
 #[test]
 fn null_arguments_are_reported_rather_than_dereferenced() {
     assert_eq!(
@@ -910,6 +1002,10 @@ fn null_arguments_are_reported_rather_than_dereferenced() {
     );
     assert_eq!(
         unsafe { kt_snapshot_view(ptr::null(), ptr::null_mut()) },
+        KtStatus::NullArgument,
+    );
+    assert_eq!(
+        unsafe { kt_session_take_writes(ptr::null_mut(), ptr::null_mut()) },
         KtStatus::NullArgument,
     );
 

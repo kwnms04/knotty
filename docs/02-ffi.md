@@ -33,7 +33,8 @@
 | `feed` | detached 세션 입력. PTY 세션이면 오류 |
 
 - 쓰기 함수는 큐에 적재되면 PTY 쓰기를 기다리지 않고 반환합니다. cf. [0011](adr/0011-main-thread.md) 계약 A
-- writer 큐의 상한은 8MB입니다. 초과 시 호출자에 알립니다.
+- writer 큐의 상한은 8MB입니다. 초과 시 다른 오류와 구분되는 상태값으로 호출자에 알리며, 그 보고는 넘친 건마다 한 번입니다.
+- detached 세션은 writer 큐를 조회로 드레인합니다. cf. [C7](03-core.md#c7--detached-session)
 - 비블로킹 계약의 예외는 둘입니다.
     - `feed` — 호출자 스레드에서 동기적으로 전량 처리합니다. detached 전용이며 결정성이 우선입니다.
     - 리사이즈 — 리플로우 비용이 스크롤백 길이에 비례합니다. 비동기화 대신 [성능 게이트](07-definition-of-done.md#b-performance-gates)로 비용을 묶습니다.

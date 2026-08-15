@@ -1,5 +1,8 @@
 //! Session lifecycle and the publish path.
 
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use libghostty_vt::screen::Screen;
 use libghostty_vt::selection::Selection;
 use libghostty_vt::terminal::{Point, PointCoordinate};
@@ -29,6 +32,44 @@ pub struct SelectionRange {
     pub rectangle: bool,
 }
 
+/// How many bytes may wait for the PTY before further writes are dropped.
+///
+/// A child that never reads is the case this exists for: without a cap the
+/// queue grows until the process dies.
+const WRITE_QUEUE_CAP: usize = 8 * 1024 * 1024;
+
+/// Bytes on their way to the child.
+///
+/// Every write the terminal makes lands here, so nothing waits on a PTY that
+/// may not be ready — or, in a detached session, that does not exist.
+//
+// `03-core.md` gives this to the `io` module, which owns the event loop and
+// the file descriptor. Neither exists yet, so it waits here.
+#[derive(Debug, Default)]
+struct WriteQueue {
+    bytes: Vec<u8>,
+    /// Whether bytes were dropped for want of room.
+    overran: bool,
+}
+
+impl WriteQueue {
+    fn push(&mut self, bytes: &[u8]) {
+        if self.bytes.len() + bytes.len() > WRITE_QUEUE_CAP {
+            self.overran = true;
+            return;
+        }
+        self.bytes.extend_from_slice(bytes);
+    }
+
+    /// Whether bytes have been dropped since this was last asked.
+    ///
+    /// Asking clears it, so one overrun is reported once rather than held
+    /// against every later call.
+    fn take_overrun(&mut self) -> bool {
+        std::mem::take(&mut self.overran)
+    }
+}
+
 /// A terminal session.
 ///
 /// A detached session owns no thread and no child process: [`feed`] runs the
@@ -51,17 +92,30 @@ pub struct Session {
     // What the last capture said about the screen outside the grid, so that a
     // title or cursor change on an otherwise still screen still publishes.
     last_screen: ScreenState,
+    // Shared with the engine callback, which outlives any single call and so
+    // cannot borrow the session. One thread drives both, so the borrows never
+    // overlap.
+    writes: Rc<RefCell<WriteQueue>>,
+    // What the last drain handed out. Kept alive here because the boundary
+    // lends the bytes rather than copying them.
+    drained: Vec<u8>,
 }
 
 impl Session {
     /// Create a session with no PTY behind it.
     pub fn new_detached(cols: u16, rows: u16, max_scrollback: usize) -> Result<Self> {
-        let terminal = Terminal::new(TerminalOptions {
+        let mut terminal = Terminal::new(TerminalOptions {
             cols,
             rows,
             max_scrollback,
         })?;
         let render = RenderState::new()?;
+
+        let writes = Rc::new(RefCell::new(WriteQueue::default()));
+        terminal.on_pty_write({
+            let writes = Rc::clone(&writes);
+            move |_, bytes| writes.borrow_mut().push(bytes)
+        })?;
 
         Ok(Self {
             terminal,
@@ -69,6 +123,8 @@ impl Session {
             mailbox: Mailbox::new(),
             selection_screen: None,
             last_screen: ScreenState::default(),
+            writes,
+            drained: Vec::new(),
         })
     }
 
@@ -119,9 +175,33 @@ impl Session {
 
     /// Process `bytes` to completion on the calling thread, publishing at most
     /// one snapshot.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::WriteQueueFull`] when the terminal's answers did not fit in
+    /// the writer queue. The screen is published either way: what the child
+    /// missed hearing does not make the frame wrong.
     pub fn feed(&mut self, bytes: &[u8]) -> Result<()> {
         self.terminal.vt_write(bytes);
-        self.publish()
+
+        // Read before publishing, which can return early: an overrun left
+        // standing would surface on some later feed that overran nothing.
+        let overran = self.writes.borrow_mut().take_overrun();
+        self.publish()?;
+
+        if overran {
+            return Err(Error::WriteQueueFull);
+        }
+        Ok(())
+    }
+
+    /// Take the bytes queued for the child, emptying the queue.
+    ///
+    /// The slice stays valid until the next take or until the session is
+    /// dropped.
+    pub fn take_writes(&mut self) -> &[u8] {
+        self.drained = std::mem::take(&mut self.writes.borrow_mut().bytes);
+        &self.drained
     }
 
     /// Take the latest snapshot, emptying the mailbox.

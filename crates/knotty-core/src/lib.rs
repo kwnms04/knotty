@@ -27,6 +27,9 @@ pub enum Error {
     TooLarge,
     /// A coordinate fell outside the terminal.
     OutOfRange,
+    /// The queue of bytes bound for the child is at its cap, and what did not
+    /// fit was dropped.
+    WriteQueueFull,
 }
 
 /// Result alias for fallible core operations.

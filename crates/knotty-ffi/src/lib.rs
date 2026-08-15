@@ -35,6 +35,19 @@ impl From<&str> for KtText {
     }
 }
 
+/// Borrowed bytes, valid until the call that lent them is made again.
+///
+/// Not a string: these are whatever the terminal put on the wire, and nothing
+/// promises they are text. Read `len` bytes.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct KtBytes {
+    /// The bytes.
+    pub bytes: *const u8,
+    /// How many of them.
+    pub len: usize,
+}
+
 /// ABI version of this library.
 ///
 /// A caller reads the constant from the header it compiled against and
@@ -67,6 +80,10 @@ pub enum KtStatus {
     /// The call is only for a session with no PTY behind it. No such session
     /// exists yet; the contract is fixed now so it cannot move later.
     NotDetached = 8,
+    /// The queue of bytes bound for the child is at its cap, and what did not
+    /// fit was dropped. Reported once per overrun, so a later call succeeding
+    /// does not mean the dropped bytes came back.
+    WriteQueueFull = 9,
 }
 
 impl From<Error> for KtStatus {
@@ -75,6 +92,7 @@ impl From<Error> for KtStatus {
             Error::Engine => Self::Engine,
             Error::TooLarge => Self::TooLarge,
             Error::OutOfRange => Self::OutOfRange,
+            Error::WriteQueueFull => Self::WriteQueueFull,
         }
     }
 }
@@ -221,6 +239,10 @@ pub unsafe extern "C" fn kt_session_free(session: *mut KtSession) {
 /// publishes at most one snapshot. A session with a PTY behind it takes its
 /// input from that PTY, so this returns `KT_STATUS_NOT_DETACHED` for one.
 ///
+/// Returns `KT_STATUS_WRITE_QUEUE_FULL` when the terminal's answers to what
+/// was fed did not fit in the writer queue. The snapshot is published either
+/// way: what the child missed hearing does not make the frame wrong.
+///
 /// # Safety
 ///
 /// `session` must be a live handle, and `bytes` must point at `len` readable
@@ -264,6 +286,54 @@ pub unsafe extern "C" fn kt_session_set_selection(
 
     let range = unsafe { range.as_ref() }.copied();
     session.drive(|session| session.set_selection(range))
+}
+
+/// Take the bytes a detached session has queued for its child, emptying the
+/// queue.
+///
+/// `out` receives a run borrowed from the session, valid until the next call
+/// to this function on it or until the session is freed. A length of 0 means
+/// nothing was queued, which is not a failure. A session with a PTY behind it
+/// has its own reader draining the queue, so this returns
+/// `KT_STATUS_NOT_DETACHED` for one.
+///
+/// Works on a defunct session, for the same reason taking its snapshot does:
+/// what it queued before it broke is still what it queued.
+///
+/// # Safety
+///
+/// `session` must be a live handle and `out` must be a valid, writable
+/// pointer to a `KtBytes`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kt_session_take_writes(
+    session: *mut KtSession,
+    out: *mut KtBytes,
+) -> KtStatus {
+    if out.is_null() {
+        return KtStatus::NullArgument;
+    }
+    // What a call that never gets to the queue leaves behind. A successful
+    // drain overwrites this, empty or not, with the session's own buffer.
+    unsafe {
+        *out = KtBytes {
+            bytes: ptr::null(),
+            len: 0,
+        }
+    };
+    let Some(session) = (unsafe { session.as_mut() }) else {
+        return KtStatus::NullArgument;
+    };
+
+    session.guard(|session| {
+        let queued = session.take_writes();
+        unsafe {
+            *out = KtBytes {
+                bytes: queued.as_ptr(),
+                len: queued.len(),
+            }
+        };
+        KtStatus::Ok
+    })
 }
 
 /// Take the latest snapshot, emptying the session's mailbox.
