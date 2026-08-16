@@ -65,6 +65,15 @@ before committing what a session grew. It targets `knotty-core` and not the C
 ABI the golden harness uses: the boundary catches panics and returns a status,
 so a panic reached through it looks like a clean refusal.
 
+What a CI run found comes home by hand — the job uploads it, nothing commits
+it:
+
+```sh
+gh run download <run-id> -n fuzz-corpus -D fuzz/corpus/feed
+cargo +nightly fuzz cmin feed
+git add fuzz/corpus/feed
+```
+
 Anything longer than a few minutes wants the flags `fuzz.yml` passes, for the
 reasons given there:
 

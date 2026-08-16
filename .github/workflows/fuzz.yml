@@ -87,6 +87,16 @@ jobs:
           -- -fork=1 -ignore_timeouts=0 -rss_limit_mb=8192
           -max_total_time=${{ env.FUZZ_SECONDS }}
 
+      # What the night found. Without this it lives only in the cache, which
+      # expires — so a run that grew the corpus and passed would leave nothing
+      # behind. `always()` because a run that crashed still learned on its way
+      # there. Bringing it home is by hand; AGENTS.md has the three commands.
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: fuzz-corpus
+          path: fuzz/corpus/feed
+
       # The input that crashed. It reproduces with
       # `cargo +nightly fuzz run feed <file>`, and belongs in
       # `fuzz/corpus/feed/` once the crash is fixed.
