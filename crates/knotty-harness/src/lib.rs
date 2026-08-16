@@ -182,6 +182,12 @@ fn describe_event(out: &mut String, index: usize, event: &KtEvent) {
             clipboard_target_name(event.clipboard_target),
             quoted(text_of(event.text)),
         ),
+        // No child stands behind a detached session, so nothing a recording
+        // holds can produce one. The arm is here because the kinds are what a
+        // consumer switches on, and one left out is one nobody notices.
+        KtEventKind::ChildExited => {
+            writeln!(out, "event {index} child-exited {}", event.exit_code)
+        }
     };
 }
 

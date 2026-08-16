@@ -14,7 +14,7 @@
  * compares it with [`kt_abi_version`]. Mismatch means header and library
  * disagree about layouts, and the caller must not proceed.
  */
-#define KT_ABI_VERSION 6
+#define KT_ABI_VERSION 7
 
 /**
  * Outcome of a call across the boundary.
@@ -100,6 +100,10 @@ enum KtEventKind
    * The child asked for text to be put on a clipboard.
    */
   KT_EVENT_KIND_CLIPBOARD_WRITE = 1,
+  /**
+   * The child is gone.
+   */
+  KT_EVENT_KIND_CHILD_EXITED = 2,
 };
 #ifndef __cplusplus
 #if __STDC_VERSION__ >= 202311L
@@ -465,6 +469,12 @@ typedef struct {
    * re-enter — the paste path. cf. `docs/adr/0007-input-security.md`
    */
   KtText text;
+  /**
+   * What the child exited with, or 128 plus the signal that ended it — the
+   * one number a shell reports either by. Set only for a child's exit, and
+   * 0 for any other kind.
+   */
+  int32_t exit_code;
 } KtEvent;
 
 /**

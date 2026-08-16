@@ -31,6 +31,16 @@ pub enum Event {
         /// What to put there.
         text: String,
     },
+    /// The child is gone.
+    ///
+    /// Queued only once the terminal has been read to its end, so everything
+    /// the child printed is already published when this is taken. cf.
+    /// `03-core.md` C6
+    ChildExited {
+        /// What it exited with, or 128 plus the signal that ended it — the
+        /// one number a shell reports either by.
+        code: i32,
+    },
 }
 
 /// How many events may wait to be taken before further ones are dropped.
@@ -38,6 +48,12 @@ pub enum Event {
 /// A consumer drains the whole queue on every wake, so a backlog this deep
 /// means the child is producing faster than anything can act on. Dropping is
 /// safe by construction: nothing a screen has to get right is in here.
+///
+/// [`Event::ChildExited`] is the one whose truth is meant to live outside here
+/// as well: the snapshot is to carry the child's state beside it, so that a
+/// consumer which missed the event still finds out. That field is
+/// `kwnms04/knotty#21`, and until it lands a queue that overflowed at the
+/// moment its child ended loses the news of it.
 const EVENT_QUEUE_CAP: usize = 64;
 
 /// Events waiting for the app, a count of the ones that did not fit, and

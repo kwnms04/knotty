@@ -13,3 +13,7 @@ knotty-core.workspace = true
 
 [dev-dependencies]
 cbindgen = "0.29"
+# Asking whether a child outlived its session, which is a question about a
+# process and not about knotty. Already in the graph; cf. the M1 spec,
+# `kwnms04/knotty#10`.
+rustix.workspace = true

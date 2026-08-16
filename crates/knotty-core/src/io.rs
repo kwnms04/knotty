@@ -10,8 +10,8 @@
 use std::ffi::OsStr;
 use std::os::fd::{AsRawFd, BorrowedFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::process::CommandExt;
-use std::process::{Child, Command, Stdio};
+use std::os::unix::process::{CommandExt, ExitStatusExt};
+use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::Receiver;
@@ -83,10 +83,19 @@ pub struct Pty {
     /// Read end of the nudge pipe, waited on beside the terminal so that
     /// input from another thread cuts the wait short.
     nudge: Arc<OwnedFd>,
-    /// Held so the child stays ours to wait on. Collecting what is left of one
-    /// that outlives its terminal is `kwnms04/knotty#20`.
-    #[expect(dead_code, reason = "the child is reaped in kwnms04/knotty#20")]
+    /// Held so the child stays ours to wait on, and to collect on the way out.
     child: Child,
+}
+
+/// The one number a child's end is reported by.
+///
+/// A death by signal has no exit code of its own, so it is reported as the
+/// shells report one: 128 plus the signal. A consumer showing "exited 139"
+/// says as much as one that would have had to know what a signal is.
+fn exit_code(status: ExitStatus) -> i32 {
+    status
+        .code()
+        .unwrap_or_else(|| 128 + status.signal().unwrap_or(0))
 }
 
 /// The sending end of a [`Pty`]'s nudge pipe.
@@ -184,8 +193,8 @@ impl Pty {
         }
         let child = command.spawn()?;
         // The far end must stop being ours, or the terminal never reaches its
-        // end when the child lets go — and an exit nobody can see is `#20`'s
-        // whole subject.
+        // end when the child lets go — and an end nobody sees is an exit
+        // nobody hears about.
         drop(far);
 
         Ok((
@@ -253,6 +262,19 @@ impl Pty {
         }
     }
 
+    /// Put the child down and collect it, answering with what it ended by.
+    ///
+    /// The signal is for the child that let go of its terminal and kept
+    /// running: knotty can no longer see it or talk to it, so waiting on one
+    /// would be waiting forever and leaving it would be leaving it for good.
+    /// A child that ended of its own accord — every ordinary one — is only
+    /// waiting to be collected by the time this is called, and a signal
+    /// changes nothing about what it ended with.
+    pub fn kill_and_reap(&mut self) -> Result<i32> {
+        let _ = self.child.kill();
+        Ok(exit_code(self.child.wait()?))
+    }
+
     /// Hand the child as much of `bytes` as the terminal will take, returning
     /// how much that was.
     pub fn write(&self, bytes: &[u8]) -> Result<usize> {
@@ -264,6 +286,20 @@ impl Pty {
             Err(Errno::IO | Errno::PIPE) => Ok(0),
             Err(error) => Err(error.into()),
         }
+    }
+}
+
+impl Drop for Pty {
+    /// Collect the child, so that letting go of a session leaves nothing of it
+    /// behind.
+    ///
+    /// This is the path for a session released while its child is still
+    /// running: closing the terminal alone is a hangup the child is free to
+    /// ignore, and an ignored one leaves a process the app can no longer
+    /// reach. A child already collected on the way out of the loop makes this
+    /// an error nobody has anything to do with.
+    fn drop(&mut self) {
+        let _ = self.kill_and_reap();
     }
 }
 
@@ -279,7 +315,7 @@ impl Pty {
 /// here as the engine answers and taken from as the terminal accepts.
 pub fn run(
     session: &mut Session,
-    terminal: &Pty,
+    terminal: &mut Pty,
     input: &Receiver<Input>,
     backlog: &AtomicUsize,
     stopping: &AtomicBool,
@@ -325,7 +361,11 @@ pub fn run(
                     Err(error) => return Err(error),
                 },
                 Chunk::Empty => {}
-                Chunk::Ended => return Ok(()),
+                // The end of the terminal is the end of the child, and it is
+                // seen here rather than watched for elsewhere — so the exit is
+                // committed after the last byte was fed and published, with no
+                // second mechanism to order the two. cf. `03-core.md` C6
+                Chunk::Ended => return session.note_child_exit(terminal.kill_and_reap()?),
             }
         }
     }

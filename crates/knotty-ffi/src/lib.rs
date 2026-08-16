@@ -61,6 +61,8 @@ pub enum KtEventKind {
     Bell = 0,
     /// The child asked for text to be put on a clipboard.
     ClipboardWrite = 1,
+    /// The child is gone.
+    ChildExited = 2,
 }
 
 /// One thing that happened, whose happening is the whole of its meaning.
@@ -79,6 +81,10 @@ pub struct KtEvent {
     /// of a copied paragraph, and untrusted bytes are made safe where they
     /// re-enter — the paste path. cf. `docs/adr/0007-input-security.md`
     pub text: KtText,
+    /// What the child exited with, or 128 plus the signal that ended it — the
+    /// one number a shell reports either by. Set only for a child's exit, and
+    /// 0 for any other kind.
+    pub exit_code: i32,
 }
 
 /// Borrowed run of events, valid until the call that lent them is made again.
@@ -96,21 +102,38 @@ pub struct KtEvents {
     pub dropped: u64,
 }
 
+impl KtEvent {
+    /// An event of `kind` carrying nothing, for the kind to fill in what it
+    /// does carry.
+    ///
+    /// Every field is set on every event, whether or not its kind uses it — so
+    /// what a kind leaves alone reads as the empty value its field documents
+    /// rather than as whatever the last event put there.
+    fn of(kind: KtEventKind) -> Self {
+        Self {
+            kind,
+            clipboard_target: ClipboardTarget::Standard,
+            text: KtText {
+                bytes: ptr::null(),
+                len: 0,
+            },
+            exit_code: 0,
+        }
+    }
+}
+
 impl From<&Event> for KtEvent {
     fn from(event: &Event) -> Self {
         match event {
-            Event::Bell => Self {
-                kind: KtEventKind::Bell,
-                clipboard_target: ClipboardTarget::Standard,
-                text: KtText {
-                    bytes: ptr::null(),
-                    len: 0,
-                },
-            },
+            Event::Bell => Self::of(KtEventKind::Bell),
             Event::ClipboardWrite { target, text } => Self {
-                kind: KtEventKind::ClipboardWrite,
                 clipboard_target: *target,
                 text: text.as_str().into(),
+                ..Self::of(KtEventKind::ClipboardWrite)
+            },
+            Event::ChildExited { code } => Self {
+                exit_code: *code,
+                ..Self::of(KtEventKind::ChildExited)
             },
         }
     }
@@ -155,7 +178,7 @@ impl Userdata {
 /// A caller reads the constant from the header it compiled against and
 /// compares it with [`kt_abi_version`]. Mismatch means header and library
 /// disagree about layouts, and the caller must not proceed.
-pub const KT_ABI_VERSION: u32 = 6;
+pub const KT_ABI_VERSION: u32 = 7;
 
 /// Outcome of a call across the boundary.
 #[repr(i32)]

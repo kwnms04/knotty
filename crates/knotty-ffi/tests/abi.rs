@@ -8,6 +8,8 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use rustix::process::{Pid, test_kill_process};
+
 use knotty_ffi::{
     Attribute, Cell, ClipboardTarget, Cursor, CursorShape, Dirty, KtBytes, KtEventKind, KtEvents,
     KtSession, KtSnapshot, KtSnapshotView, KtStatus, KtText, Rgb, Row, RowFlag, SelectionRange,
@@ -136,6 +138,7 @@ struct Happened {
     kind: KtEventKind,
     clipboard_target: ClipboardTarget,
     text: String,
+    exit_code: i32,
 }
 
 fn bell() -> Happened {
@@ -143,6 +146,7 @@ fn bell() -> Happened {
         kind: KtEventKind::Bell,
         clipboard_target: ClipboardTarget::Standard,
         text: String::new(),
+        exit_code: 0,
     }
 }
 
@@ -151,6 +155,16 @@ fn clipboard_write(target: ClipboardTarget, text: &str) -> Happened {
         kind: KtEventKind::ClipboardWrite,
         clipboard_target: target,
         text: text.to_owned(),
+        exit_code: 0,
+    }
+}
+
+fn child_exited(code: i32) -> Happened {
+    Happened {
+        kind: KtEventKind::ChildExited,
+        clipboard_target: ClipboardTarget::Standard,
+        text: String::new(),
+        exit_code: code,
     }
 }
 
@@ -174,6 +188,7 @@ fn events(session: *mut KtSession) -> (Vec<Happened>, u64) {
                 0 => String::new(),
                 _ => text(event.text),
             },
+            exit_code: event.exit_code,
         })
         .collect();
     (taken, queued.dropped)
@@ -1479,25 +1494,36 @@ fn screen_lines(view: &KtSnapshotView) -> Vec<String> {
         .collect()
 }
 
-/// Wait for some row of the screen to hold `wanted`.
+/// Watch the screen until `read` finds what it is after, and answer with that.
 ///
 /// Every snapshot carries the whole grid, so only the newest one has to be
 /// looked at — a frame passed over cannot have held anything a later one does
-/// not.
-fn wait_for(session: *mut KtSession, wanted: &str) {
+/// not. `wanted` says what the wait was for, and is what a failure names.
+fn wait_for_screen<T>(
+    session: *mut KtSession,
+    wanted: &str,
+    read: impl Fn(&[String]) -> Option<T>,
+) -> T {
     let deadline = Instant::now() + PATIENCE;
     let mut last = Vec::new();
     while Instant::now() < deadline {
         if let Some(snapshot) = take_if_any(session) {
             last = screen_lines(&view(snapshot));
             unsafe { kt_snapshot_free(snapshot) };
-            if last.iter().any(|line| line.contains(wanted)) {
-                return;
+            if let Some(found) = read(&last) {
+                return found;
             }
         }
         thread::sleep(Duration::from_millis(5));
     }
-    panic!("waited for {wanted:?}; the screen said {last:#?}");
+    panic!("waited for {wanted}; the screen said {last:#?}");
+}
+
+/// Wait for some row of the screen to hold `wanted`.
+fn wait_for(session: *mut KtSession, wanted: &str) {
+    wait_for_screen(session, &format!("{wanted:?}"), |lines| {
+        lines.iter().any(|line| line.contains(wanted)).then_some(())
+    });
 }
 
 /// The wake counter a session with its own thread needs: the call arrives on
@@ -1635,6 +1661,173 @@ fn a_pty_session_reports_a_writer_queue_over_its_cap() {
     assert_eq!(status, KtStatus::WriteQueueFull);
 
     unsafe { kt_session_free(session) };
+}
+
+/// Drive a consumer's own loop until the child's exit turns up: drain the
+/// events, then take the newest screen. Answers with the exit and with the
+/// screen as it stood when the exit was observed.
+///
+/// The screen is taken after the drain rather than before it, so what comes
+/// back is what a consumer that has just been told "the child is gone" has to
+/// draw — which is what C6's ordering invariant is about.
+fn wait_for_exit(session: *mut KtSession) -> (Happened, Vec<String>) {
+    let deadline = Instant::now() + PATIENCE;
+    let mut screen = Vec::new();
+    let mut ended = None;
+
+    while ended.is_none() {
+        assert!(
+            Instant::now() < deadline,
+            "waited for the child to end; the screen said {screen:#?}",
+        );
+        thread::sleep(Duration::from_millis(5));
+
+        let (taken, _) = events(session);
+        ended = taken
+            .into_iter()
+            .find(|event| event.kind == KtEventKind::ChildExited);
+        if let Some(snapshot) = take_if_any(session) {
+            screen = screen_lines(&view(snapshot));
+            unsafe { kt_snapshot_free(snapshot) };
+        }
+    }
+
+    (ended.expect("the loop runs until the exit arrives"), screen)
+}
+
+/// Whether a process is still there, asked the way anything asks: a signal of
+/// no signal.
+///
+/// A child that was killed but never collected is a zombie, and a zombie
+/// answers this as alive — so this holds the session to collecting what it
+/// kills, not only to killing it.
+fn alive(pid: u32) -> bool {
+    Pid::from_raw(pid as i32).is_some_and(|pid| test_kill_process(pid).is_ok())
+}
+
+/// Wait for the child to print its own process id, and answer with it.
+///
+/// The brackets are what makes a half-arrived number impossible to misread: a
+/// screen showing the closing one is showing the whole of it.
+fn pid_of_child(session: *mut KtSession) -> u32 {
+    wait_for_screen(session, "the child's pid", |lines| {
+        lines.iter().find_map(|line| {
+            let (_, rest) = line.split_once("pid[")?;
+            let (pid, _) = rest.split_once(']')?;
+            pid.parse().ok()
+        })
+    })
+}
+
+/// Nothing on the screen says the shell has gone: a prompt that will never
+/// come back looks exactly like one that will. So the exit is an event, and it
+/// carries the code because that is what decides whether the window closes
+/// quietly or stays up saying what went wrong. cf. `05-swift-app.md`
+#[test]
+fn a_child_that_ends_arrives_as_an_event_carrying_its_exit_code() {
+    let session = pty(24, 4, &["/bin/sh", "-c", "exit 3"]);
+
+    let (ended, _) = wait_for_exit(session);
+
+    assert_eq!(ended, child_exited(3));
+
+    unsafe { kt_session_free(session) };
+}
+
+/// A death by signal has no exit code of its own. It is reported as the shells
+/// report one — 128 plus the signal — so that a consumer has a single number
+/// to show and one meaning for it.
+#[test]
+fn a_child_killed_by_a_signal_reports_the_code_a_shell_would() {
+    // SIGTERM, sent by the child to itself: no signal of knotty's is involved,
+    // which is the point — nothing here installs a handler.
+    let session = pty(24, 4, &["/bin/sh", "-c", "kill -TERM $$"]);
+
+    let (ended, _) = wait_for_exit(session);
+
+    assert_eq!(ended, child_exited(128 + 15));
+
+    unsafe { kt_session_free(session) };
+}
+
+/// C6's ordering invariant. The exit is committed only after the terminal has
+/// been read to its end, so a consumer told the child is gone has already been
+/// shown everything it printed.
+///
+/// The child prints far more than one read takes, so the end arrives in a
+/// round of its own rather than in the round that carried the output — which
+/// is the shape a watcher of exits other than the read itself would have to
+/// order by hand.
+#[test]
+fn everything_a_child_printed_is_on_screen_when_its_exit_arrives() {
+    let session = pty(
+        24,
+        4,
+        &["/bin/sh", "-c", "seq 5000; printf 'the last line'; exit 0"],
+    );
+
+    let (ended, screen) = wait_for_exit(session);
+
+    assert_eq!(ended.exit_code, 0);
+    assert!(
+        screen.iter().any(|line| line.contains("the last line")),
+        "the exit outran the output; the screen said {screen:#?}",
+    );
+
+    unsafe { kt_session_free(session) };
+}
+
+/// A block the child left open can never close, and the round that would have
+/// carried the wake it held back ends with the child. So the exit pays what is
+/// owed itself — otherwise the last thing a window ever hears is silence, with
+/// its shell gone and the news of it sitting in a queue. cf. `03-core.md` C5
+#[test]
+fn a_child_that_dies_inside_a_synchronized_block_still_wakes_its_consumer() {
+    // The escape is written as the octal every shell's printf reads: an
+    // escape spelled with a backslash-e is bash's alone.
+    let session = pty(
+        24,
+        4,
+        &["/bin/sh", "-c", "printf '\\033[?2026hhalf drawn'; exit 0"],
+    );
+    let count = shared_wake_counter(session);
+
+    let (ended, screen) = wait_for_exit(session);
+
+    assert_eq!(ended.exit_code, 0);
+    assert!(
+        count.load(Ordering::Relaxed) > 0,
+        "the exit was queued with nobody told to come for it",
+    );
+    assert!(
+        screen.iter().any(|line| line.contains("half drawn")),
+        "what the block held back never arrived; the screen said {screen:#?}",
+    );
+
+    unsafe { kt_session_free(session) };
+}
+
+/// Releasing a session is the user closing the window, and a child left behind
+/// by that is a process nobody can talk to and nobody will collect.
+#[test]
+fn a_long_running_child_does_not_outlive_the_session() {
+    // `exec` so the pid printed stays the pid that goes on running: what has
+    // to be gone afterwards is the process knotty started, not a shell that
+    // had already left of its own accord.
+    let session = pty(
+        24,
+        4,
+        &["/bin/sh", "-c", "printf 'pid[%s]' $$; exec sleep 30"],
+    );
+    let pid = pid_of_child(session);
+    assert!(alive(pid), "the child was not there to begin with");
+
+    unsafe { kt_session_free(session) };
+
+    assert!(
+        !alive(pid),
+        "the child outlived the session that spawned it"
+    );
 }
 
 /// Both calls reach past the I/O thread for what it owns: one would race the

@@ -9,7 +9,7 @@
 
 /* Golden snapshot comparison depends on these layouts, so a change here is an
  * ABI change and must come with a version bump. */
-_Static_assert(KT_ABI_VERSION == 6, "ABI version moved without updating this consumer");
+_Static_assert(KT_ABI_VERSION == 7, "ABI version moved without updating this consumer");
 
 _Static_assert(sizeof(KtCell) == 16, "KtCell grew or shrank");
 _Static_assert(offsetof(KtCell, codepoint) == 0, "KtCell fields moved");
@@ -41,6 +41,12 @@ _Static_assert(offsetof(KtSnapshotView, grapheme_count) == 32, "KtSnapshotView f
 _Static_assert(offsetof(KtSnapshotView, cursor) == 40, "KtSnapshotView fields moved");
 _Static_assert(offsetof(KtSnapshotView, title) == 48, "KtSnapshotView fields moved");
 _Static_assert(offsetof(KtSnapshotView, pwd) == 64, "KtSnapshotView fields moved");
+
+_Static_assert(sizeof(KtEvent) == 32, "KtEvent grew or shrank");
+_Static_assert(offsetof(KtEvent, kind) == 0, "KtEvent fields moved");
+_Static_assert(offsetof(KtEvent, clipboard_target) == 1, "KtEvent fields moved");
+_Static_assert(offsetof(KtEvent, text) == 8, "KtEvent fields moved");
+_Static_assert(offsetof(KtEvent, exit_code) == 24, "KtEvent fields moved");
 
 /* The startup handshake a real consumer performs. */
 int kt_consumer_abi_ok(void) {

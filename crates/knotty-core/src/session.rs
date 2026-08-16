@@ -428,6 +428,30 @@ impl Session {
         Ok(())
     }
 
+    /// Queue the child's end for the app and publish.
+    ///
+    /// The caller is whoever read the terminal to its end, which is what makes
+    /// the order right: everything the child printed went through [`feed`]
+    /// before this. Publishing after the event is queued is what carries the
+    /// wake — a consumer that came for the frame drains the event beside it.
+    ///
+    /// The wake is paid even inside a synchronized output block, which is the
+    /// one place that rule bends. A block the child left open can never close,
+    /// and no round follows this one to carry what was held back — so
+    /// suppressing here would leave the news of the exit in a queue nobody was
+    /// told to come for. cf. `03-core.md` C5
+    ///
+    /// [`feed`]: Session::feed
+    pub(crate) fn note_child_exit(&mut self, code: i32) -> Result<()> {
+        self.events
+            .lock()
+            .expect("event queue lock")
+            .push(Event::ChildExited { code });
+        self.publish()?;
+        self.pay_wake();
+        Ok(())
+    }
+
     /// Take the bytes queued for the child, emptying the queue.
     ///
     /// The slice stays valid until the next take or until the session is
@@ -504,16 +528,25 @@ impl Session {
         if !self.wake_owed || self.terminal.mode(Mode::SYNC_OUTPUT)? {
             return Ok(());
         }
-        // Owed with nobody to tell stays owed, so a consumer that registers
-        // late is told about what it was not there for rather than having to
-        // know to look.
+        self.pay_wake();
+        Ok(())
+    }
+
+    /// Settle the owed wake, if one is owed and anyone is there to take it.
+    ///
+    /// Owed with nobody to tell stays owed, so a consumer that registers late
+    /// is told about what it was not there for rather than having to know to
+    /// look.
+    fn pay_wake(&mut self) {
+        if !self.wake_owed {
+            return;
+        }
         let Some(wake) = &self.wake else {
-            return Ok(());
+            return;
         };
 
         self.wake_owed = false;
         wake();
-        Ok(())
     }
 }
 
@@ -578,7 +611,7 @@ impl PtySession {
         rows: u16,
         max_scrollback: usize,
     ) -> Result<Self> {
-        let (terminal, waker) = Pty::spawn(program, args, cols, rows)?;
+        let (mut terminal, waker) = Pty::spawn(program, args, cols, rows)?;
         let (input, arriving) = mpsc::channel();
         let stopping = Arc::new(AtomicBool::new(false));
         let backlog = Arc::new(AtomicUsize::new(0));
@@ -615,7 +648,7 @@ impl PtySession {
                     // A loop that gave up mid-round leaves the session broken
                     // rather than merely finished, and saying which is
                     // `kwnms04/knotty#21`.
-                    let _ = io::run(&mut session, &terminal, &arriving, &backlog, &stopping);
+                    let _ = io::run(&mut session, &mut terminal, &arriving, &backlog, &stopping);
                 }
             })
             .map_err(Error::from)?;
@@ -707,8 +740,9 @@ impl PtySession {
 impl Drop for PtySession {
     /// Stop the thread and wait for it to let go of the terminal.
     ///
-    /// Closing the terminal is what tells the child to go. Collecting what is
-    /// left of one that does not is `kwnms04/knotty#20`.
+    /// The thread owns the terminal, so waiting for it is also what waits for
+    /// the child to be put down and collected — by the time this returns,
+    /// nothing of the session is still running.
     fn drop(&mut self) {
         self.stopping.store(true, Ordering::Relaxed);
         // Stored first, so a thread that is between rounds rather than in the
