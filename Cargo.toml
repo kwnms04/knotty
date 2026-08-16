@@ -12,3 +12,11 @@ version = "0.0.0"
 knotty-core = { path = "crates/knotty-core" }
 # Pinned: the VT engine is a public alpha. Bumping it is gated on the harness.
 libghostty-vt = "=0.2.1"
+
+# Stopgap, in force for M1 only. Two soundness fixes on the clipboard write
+# path that we cannot defend against from here; cf. ADR 0012. The branch is cut
+# from the 0.2.1 release commit, so the pinned ghostty commit does not move.
+# The facade retires both entries — deleting this section is its done-condition.
+[patch.crates-io]
+libghostty-vt = { git = "https://github.com/kwnms04/libghostty-rs", branch = "knotty-stopgap" }
+libghostty-vt-sys = { git = "https://github.com/kwnms04/libghostty-rs", branch = "knotty-stopgap" }

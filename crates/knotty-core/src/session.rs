@@ -56,7 +56,7 @@ const CLIPBOARD_TEXT_CAP: usize = 1024 * 1024;
 /// The engine normalizes OSC 52 and iTerm2's copy sequence into the same
 /// shape, and both carry this. v1 has no rich clipboard to put anything else
 /// on, so a write offering no plain text has nothing for us.
-const CLIPBOARD_MIME: &str = "text/plain";
+const CLIPBOARD_MIME: &[u8] = b"text/plain";
 
 /// What an ENQ is answered with: knotty's name.
 ///
@@ -240,13 +240,11 @@ impl Session {
                 // child either way — what they buy is that the app is never
                 // handed a payload it should not act on.
                 //
-                // Reading the contents at all is what an empty OSC 52 payload
-                // breaks: the engine hands the pinned wrapper a null array
-                // with a length of 0, and the slice built from that trips the
-                // standard library's own check before this callback sees
-                // anything. There is no point on our side to guard — the
-                // guard belongs inside `contents`. cf.
-                // `docs/open-questions.md`
+                // A write carrying no representations at all is how the engine
+                // asks for the clipboard to be cleared. It lands here as no
+                // matching representation, and refusing it is the answer we
+                // want: acting on it faithfully would wipe what the user last
+                // copied on the say-so of the child.
                 let Some(content) = write
                     .contents()
                     .find(|content| content.mime == CLIPBOARD_MIME)
@@ -264,10 +262,18 @@ impl Session {
                 if content.data.len() > CLIPBOARD_TEXT_CAP {
                     return Err(ClipboardWriteError::Denied);
                 }
+                // The payload is base64 of whatever the child chose to send,
+                // so it is bytes and nothing promises they are text. What is
+                // not UTF-8 is malformed as `text/plain`, and the event
+                // carries `KtText`, which promises UTF-8 to the app. So it is
+                // refused here rather than decoded lossily. cf. ADR 0012
+                let Ok(text) = str::from_utf8(content.data) else {
+                    return Err(ClipboardWriteError::InvalidData);
+                };
 
                 events.borrow_mut().push(Event::ClipboardWrite {
                     target: write.location().into(),
-                    text: content.data.to_owned(),
+                    text: text.to_owned(),
                 });
                 Ok(())
             }
@@ -399,5 +405,59 @@ impl Session {
             self.mailbox.publish(snapshot);
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Session;
+    use crate::queue::Event;
+
+    fn session() -> Session {
+        Session::new_detached(80, 24, 0).expect("a detached session")
+    }
+
+    /// The fuzzer cannot stand in for these: neither input crashes once the
+    /// binding layer stops building invalid values out of them, so what is
+    /// under test is a refusal, not a survival. cf. ADR 0012
+    #[test]
+    fn a_clipboard_write_that_is_not_utf8_is_refused() {
+        let mut session = session();
+
+        // `//4=` is base64 for FF FE, which is not UTF-8.
+        session
+            .feed(b"\x1b]52;c;//4=\x07")
+            .expect("the feed to finish");
+
+        let (events, dropped) = session.take_events();
+        assert!(events.is_empty(), "non-UTF-8 payload reached the app");
+        assert_eq!(dropped, 0);
+    }
+
+    #[test]
+    fn a_clipboard_write_with_no_representations_leaves_the_clipboard_alone() {
+        let mut session = session();
+
+        session.feed(b"\x1b]52;c;\x07").expect("the feed to finish");
+
+        let (events, dropped) = session.take_events();
+        assert!(events.is_empty(), "a clear request reached the app");
+        assert_eq!(dropped, 0);
+    }
+
+    #[test]
+    fn a_clipboard_write_that_is_utf8_still_arrives() {
+        let mut session = session();
+
+        // `aGk=` is base64 for "hi".
+        session
+            .feed(b"\x1b]52;c;aGk=\x07")
+            .expect("the feed to finish");
+
+        let (events, _) = session.take_events();
+        assert!(matches!(
+            events.as_slice(),
+            [Event::ClipboardWrite { text, .. }] if text == "hi"
+        ));
     }
 }
