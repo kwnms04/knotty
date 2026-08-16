@@ -5,7 +5,10 @@ use std::rc::Rc;
 
 use libghostty_vt::screen::Screen;
 use libghostty_vt::selection::Selection;
-use libghostty_vt::terminal::{Point, PointCoordinate};
+use libghostty_vt::terminal::{
+    ConformanceLevel, DeviceAttributeFeature, DeviceAttributes, DeviceType, Point, PointCoordinate,
+    PrimaryDeviceAttributes, SecondaryDeviceAttributes, TertiaryDeviceAttributes,
+};
 use libghostty_vt::{RenderState, Terminal, TerminalOptions};
 
 use crate::mailbox::Mailbox;
@@ -37,6 +40,37 @@ pub struct SelectionRange {
 /// A child that never reads is the case this exists for: without a cap the
 /// queue grows until the process dies.
 const WRITE_QUEUE_CAP: usize = 8 * 1024 * 1024;
+
+/// What an ENQ is answered with: knotty's name.
+///
+/// An answerback reaches the child as if it were typed, so it stays a fixed
+/// string of ours — nothing that reaches the screen can steer what is sent.
+const ANSWERBACK: &str = "knotty";
+
+/// Name and version, the payload of the XTVERSION answer.
+///
+/// Programs pick a code path by this, so it has to be knotty's rather than the
+/// `libghostty` the engine falls back to.
+const VERSION_REPORT: &str = concat!("knotty ", env!("CARGO_PKG_VERSION"));
+
+/// What knotty answers a device attributes query with.
+///
+/// A VT220 with color, which is what the engine implements. DA2's firmware
+/// field is a version number and stays 0 while knotty is 0.x — it is set by
+/// hand, not from the crate version. DA3's unit id is meaningless for an
+/// emulator.
+const DEVICE_ATTRIBUTES: DeviceAttributes = DeviceAttributes {
+    primary: PrimaryDeviceAttributes::new(
+        ConformanceLevel::VT220,
+        &[DeviceAttributeFeature::ANSI_COLOR],
+    ),
+    secondary: SecondaryDeviceAttributes {
+        device_type: DeviceType::VT220,
+        firmware_version: 0,
+        rom_cartridge: 0,
+    },
+    tertiary: TertiaryDeviceAttributes { unit_id: 0 },
+};
 
 /// How the engine answers a title query: `OSC l <title> ST`.
 const TITLE_REPORT_PREFIX: &[u8] = b"\x1b]l";
@@ -145,6 +179,20 @@ impl Session {
             let writes = Rc::clone(&writes);
             move |_, bytes| writes.borrow_mut().push(sanitized_answer(bytes))
         })?;
+
+        // What the core knows about itself, and nothing more. The pixel size
+        // is the renderer's to answer and the color scheme the app's, so those
+        // queries get no callback and the engine stays silent on them — knotty
+        // does not invent a value it cannot know. One callback covers all
+        // three size reports, so the size in cells goes silent with the two in
+        // pixels rather than being answered alongside made-up pixels.
+        //
+        // `03-core.md` gives these to the `listener` module, which does not
+        // exist yet; until it does, they sit at the one place a session wires
+        // the engine up.
+        terminal.on_device_attributes(|_| Some(DEVICE_ATTRIBUTES))?;
+        terminal.on_enquiry(|_| Some(ANSWERBACK))?;
+        terminal.on_xtversion(|_| Some(VERSION_REPORT))?;
 
         Ok(Self {
             terminal,

@@ -950,6 +950,80 @@ fn nothing_queued_is_an_empty_run_rather_than_a_failure() {
     unsafe { kt_session_free(session) };
 }
 
+/// A TUI that asks what terminal it is talking to waits for the answer, so an
+/// unanswered query is a hang rather than a missing feature.
+///
+/// These bytes are what knotty says it is, and the core now fills every one of
+/// them in. The engine's own unset default says the same today — it quacks as a
+/// VT220 too — so what this pins is the answer, and a change to it is an
+/// upstream change knotty has to decide on rather than inherit.
+#[test]
+fn every_device_attributes_query_is_answered() {
+    let session = detached(4, 1);
+
+    feed(session, b"\x1b[c");
+    assert_eq!(writes(session), b"\x1b[?62;22c", "DA1");
+
+    feed(session, b"\x1b[>c");
+    assert_eq!(writes(session), b"\x1b[>1;0;0c", "DA2");
+
+    feed(session, b"\x1b[=c");
+    assert_eq!(writes(session), b"\x1bP!|00000000\x1b\\", "DA3");
+
+    unsafe { kt_session_free(session) };
+}
+
+/// A program picking a code path by terminal name has to be told knotty's,
+/// not the engine's — the engine answers this one on its own with
+/// `libghostty` when nothing fills it in.
+#[test]
+fn a_version_query_is_answered_with_knottys_own_name() {
+    let session = detached(4, 1);
+
+    feed(session, b"\x1b[>q");
+
+    assert_eq!(
+        writes(session),
+        format!("\x1bP>|knotty {}\x1b\\", env!("CARGO_PKG_VERSION")).into_bytes(),
+    );
+
+    unsafe { kt_session_free(session) };
+}
+
+/// An old program checks that something is there by asking, so the answerback
+/// is knotty's name rather than the silence an unfilled callback leaves.
+#[test]
+fn an_enquiry_is_answered_with_the_terminals_name() {
+    let session = detached(4, 1);
+
+    feed(session, b"\x05");
+
+    assert_eq!(writes(session), b"knotty");
+
+    unsafe { kt_session_free(session) };
+}
+
+/// The pixel size is the renderer's to know and the color scheme the app's,
+/// so the core has nothing true to say and says nothing: a made-up value is
+/// worse than none. cf. the M1 spec, `kwnms04/knotty#10`.
+///
+/// One engine callback covers all three size reports, and it cannot be filled
+/// in without the cell pixel size — so the size in cells, which the core does
+/// know, goes unanswered along with the two in pixels.
+#[test]
+fn queries_whose_answer_the_core_does_not_know_go_unanswered() {
+    let session = detached(4, 1);
+
+    // Cell pixel size, window pixel size, and text area size in cells.
+    feed(session, b"\x1b[16t\x1b[14t\x1b[18t");
+    // Color scheme.
+    feed(session, b"\x1b[?996n");
+
+    assert!(writes(session).is_empty());
+
+    unsafe { kt_session_free(session) };
+}
+
 /// The engine reports the title with no callback of ours in the way, so
 /// untrusted output can plant a command in the title and have the answer
 /// delivered to the shell as keystrokes. cf. `docs/adr/0007-input-security.md`.
@@ -1024,8 +1098,8 @@ fn a_writer_queue_over_its_cap_is_reported_apart_from_other_failures() {
 
     let session = detached(4, 1);
 
-    // XTVERSION: four bytes in, seventeen out, answered with no callback of
-    // ours. Repeat it and the answers outrun the cap long before the bound.
+    // XTVERSION: four bytes in, a name and version out. Repeat it and the
+    // answers outrun the cap long before the bound.
     let queries = b"\x1b[>q".repeat(4096);
     let mut status = KtStatus::Ok;
     for _ in 0..1000 {
