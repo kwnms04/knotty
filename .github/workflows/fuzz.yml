@@ -60,25 +60,32 @@ jobs:
       # than random bytes, and referring to them beats copying them in — two
       # sets of the same recordings would have to be kept in step.
       #
-      # `-fork=1` because the run is an hour long. AddressSanitizer's allocator
-      # holds onto pages it never hands back, so a single process climbs past
-      # libFuzzer's RSS limit and is killed for an out-of-memory the core did
-      # not cause — the same target built without a sanitizer sits flat at
-      # 34MB. Forking gives each batch of inputs a fresh process, which puts
-      # that growth back where it started.
+      # AddressSanitizer's allocator keeps the pages it is done with, so a
+      # process climbs for as long as it lives and eventually trips libFuzzer's
+      # RSS limit over nothing. It is measurably not the core: at the moment
+      # one of these fires the live heap is 25MB against an RSS of 2GB, the
+      # allocations naming it are libFuzzer's own coverage tables, and one such
+      # report blamed the empty input — which cannot allocate at all. Built
+      # without a sanitizer the same target sits flat at 34MB.
       #
-      # Fork mode ignores timeouts and out-of-memories by default and stops
-      # only on crashes. `-ignore_timeouts=0` takes the first half back: an
-      # input the parser never finishes is a bug this is here to find, and no
-      # sanitizer invents one. Out-of-memory stays ignored, because under
-      # forking that is the growth above and not knotty's — which does mean an
-      # allocation the core lets run away is a night this job passes. Bounding
-      # what a session may allocate is what would make it catchable.
+      # `-fork=1` puts that growth back to nothing on every new job, but jobs
+      # lengthen as a campaign runs, so on its own it only postpones the limit
+      # — a run died on it at 906s. Raising the limit is what actually holds:
+      # 8GB on a 16GB runner, verified past that point. What it costs is the
+      # out-of-memory signal, which under this sanitizer was measuring the
+      # sanitizer anyway. An allocation the core lets run away is now a night
+      # this job passes; bounding what one session may allocate is what would
+      # make it catchable again.
+      #
+      # `-ignore_timeouts=0` takes back the other half of what fork mode waives
+      # by default. An input the parser never finishes is a bug this job is
+      # here to find, and no sanitizer invents one.
       - name: Fuzz feed
         run: >
           cargo +nightly fuzz run feed
           fuzz/corpus/feed crates/knotty-harness/recordings
-          -- -fork=1 -ignore_timeouts=0 -max_total_time=${{ env.FUZZ_SECONDS }}
+          -- -fork=1 -ignore_timeouts=0 -rss_limit_mb=8192
+          -max_total_time=${{ env.FUZZ_SECONDS }}
 
       # The input that crashed. It reproduces with
       # `cargo +nightly fuzz run feed <file>`, and belongs in

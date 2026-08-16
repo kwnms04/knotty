@@ -65,8 +65,17 @@ before committing what a session grew. It targets `knotty-core` and not the C
 ABI the golden harness uses: the boundary catches panics and returns a status,
 so a panic reached through it looks like a clean refusal.
 
-Anything longer than a few minutes wants the `-fork=1` that `fuzz.yml` passes,
-for the reason given there.
+Anything longer than a few minutes wants the flags `fuzz.yml` passes, for the
+reasons given there:
+
+```sh
+cargo +nightly fuzz run feed fuzz/corpus/feed crates/knotty-harness/recordings \
+  -- -fork=1 -ignore_timeouts=0 -rss_limit_mb=8192 -max_total_time=3600
+```
+
+Without them a long run ends in an out-of-memory that is AddressSanitizer's and
+not knotty's. An `oom-*` artifact is that, not a finding — check the live heap
+in the report against the RSS before believing one.
 
 A crash lands in `fuzz/artifacts/feed/` and replays with `cargo +nightly fuzz
 run feed <file>`. Commit it into the corpus once it is fixed.
