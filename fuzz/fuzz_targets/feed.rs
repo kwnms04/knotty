@@ -29,7 +29,7 @@ const SCROLLBACK: usize = 1000;
 const CHUNK: usize = 64;
 
 fuzz_target!(|stream: &[u8]| {
-    let Ok(mut session) = Session::new_detached(COLS, ROWS, SCROLLBACK) else {
+    let Ok(mut session) = Session::new(COLS, ROWS, SCROLLBACK) else {
         return;
     };
     // A session with nobody to wake keeps owing the wake it never pays, so

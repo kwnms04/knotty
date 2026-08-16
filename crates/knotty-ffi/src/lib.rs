@@ -6,7 +6,7 @@
 use std::ffi::c_void;
 use std::ptr;
 
-use knotty_core::{Error, Event, Session, Snapshot};
+use knotty_core::{Error, Event, PtySession, Session, Snapshot, Wake};
 
 /// The snapshot's POD types. A C consumer gets these from the header; this
 /// re-export is how a Rust consumer names the same layouts.
@@ -121,9 +121,34 @@ impl From<&Event> for KtEvent {
 /// `userdata` comes back exactly as it was handed to [`kt_session_set_wake`].
 ///
 /// The call is made on the thread that drove the session, from inside the call
-/// that published. **It may do nothing but wake its own thread** — a call back
-/// across this boundary re-enters a session the running call still holds.
+/// that published — the caller's own thread for a detached session, the
+/// session's I/O thread for one with a PTY behind it. **It may do nothing but
+/// wake its own thread**: a call back across this boundary re-enters a session
+/// the running call still holds.
 pub type KtWake = Option<extern "C" fn(userdata: *mut c_void)>;
+
+/// The caller's opaque pointer, on its way to whichever thread publishes.
+///
+/// A PTY session wakes from its own I/O thread, so the pointer crosses one.
+/// Nothing here reads it — what it points at is the caller's to keep alive,
+/// which is the promise [`kt_session_set_wake`] already asks for.
+struct Userdata(*mut c_void);
+
+// SAFETY: the pointer is carried, never dereferenced. Whatever it names is the
+// caller's to synchronize, and the wake contract already forbids the callback
+// from doing more than flagging its own thread.
+unsafe impl Send for Userdata {}
+
+impl Userdata {
+    /// Hand the pointer back for the one call it is for.
+    ///
+    /// A method rather than a field read, so that a closure capturing this
+    /// captures the wrapper — reaching for the field directly would capture
+    /// the bare pointer and lose the promise above.
+    fn get(&self) -> *mut c_void {
+        self.0
+    }
+}
 
 /// ABI version of this library.
 ///
@@ -154,13 +179,16 @@ pub enum KtStatus {
     /// The session already panicked. It keeps its last good snapshot but
     /// takes no more input.
     Defunct = 7,
-    /// The call is only for a session with no PTY behind it. No such session
-    /// exists yet; the contract is fixed now so it cannot move later.
+    /// The call is only for a session with no PTY behind it. One with a PTY
+    /// has its own thread doing what the call would have done.
     NotDetached = 8,
     /// The queue of bytes bound for the child is at its cap, and what did not
     /// fit was dropped. Reported once per overrun, so a later call succeeding
     /// does not mean the dropped bytes came back.
     WriteQueueFull = 9,
+    /// An operating system call failed — opening a terminal, starting a child,
+    /// or talking to one already started.
+    Io = 10,
 }
 
 impl From<Error> for KtStatus {
@@ -170,13 +198,95 @@ impl From<Error> for KtStatus {
             Error::TooLarge => Self::TooLarge,
             Error::OutOfRange => Self::OutOfRange,
             Error::WriteQueueFull => Self::WriteQueueFull,
+            Error::Io => Self::Io,
+        }
+    }
+}
+
+/// What a fallible core call comes back across the boundary as.
+fn status(result: Result<(), Error>) -> KtStatus {
+    match result {
+        Ok(()) => KtStatus::Ok,
+        Err(error) => error.into(),
+    }
+}
+
+/// Who drives the engine behind a session: the caller, or a thread of the
+/// session's own.
+///
+/// That is the whole of the difference between the two shapes a session comes
+/// in, and the calls below are where it is answered — so that no entry point
+/// has to know which it is holding.
+enum Driver {
+    /// No PTY behind it: the caller feeds the engine itself.
+    Detached(Session),
+    /// A child process behind a pseudoterminal, with a thread on it.
+    Pty(PtySession),
+}
+
+impl Driver {
+    /// Feed bytes to the engine.
+    ///
+    /// A PTY session takes its input from its child, so there is nothing here
+    /// for a caller to push in. cf. `03-core.md` C7
+    fn feed(&mut self, bytes: &[u8]) -> KtStatus {
+        match self {
+            Self::Detached(session) => status(session.feed(bytes)),
+            Self::Pty(_) => KtStatus::NotDetached,
+        }
+    }
+
+    /// Drain the bytes queued for the child.
+    ///
+    /// A PTY session's I/O thread is already draining that queue into the
+    /// terminal, so nothing is left for a caller to take. cf. `03-core.md` C7
+    fn take_writes(&mut self) -> Result<&[u8], KtStatus> {
+        match self {
+            Self::Detached(session) => Ok(session.take_writes()),
+            Self::Pty(_) => Err(KtStatus::NotDetached),
+        }
+    }
+
+    /// Queue bytes for the child.
+    fn write(&mut self, bytes: &[u8]) -> KtStatus {
+        match self {
+            Self::Detached(session) => status(session.write(bytes)),
+            Self::Pty(session) => status(session.write(bytes)),
+        }
+    }
+
+    fn set_selection(&mut self, range: Option<SelectionRange>) -> KtStatus {
+        match self {
+            Self::Detached(session) => status(session.set_selection(range)),
+            Self::Pty(session) => status(session.set_selection(range)),
+        }
+    }
+
+    fn set_wake(&mut self, wake: Option<Wake>) {
+        match self {
+            Self::Detached(session) => session.set_wake(wake),
+            Self::Pty(session) => session.set_wake(wake),
+        }
+    }
+
+    fn take_events(&mut self) -> (Vec<Event>, u64) {
+        match self {
+            Self::Detached(session) => session.take_events(),
+            Self::Pty(session) => session.take_events(),
+        }
+    }
+
+    fn take_snapshot(&self) -> Option<Snapshot> {
+        match self {
+            Self::Detached(session) => session.take_snapshot(),
+            Self::Pty(session) => session.take_snapshot(),
         }
     }
 }
 
 /// Opaque handle to a session.
 pub struct KtSession {
-    session: Session,
+    driver: Driver,
     defunct: bool,
     /// What the last event drain took. Kept alive because the run lent to the
     /// caller borrows the text out of it rather than copying it.
@@ -192,8 +302,8 @@ impl KtSession {
     /// no way to know that carrying on is safe. What the session has already
     /// published stays where it is, because a screen that is stale beats a
     /// screen that empties.
-    fn guard(&mut self, call: impl FnOnce(&mut Session) -> KtStatus) -> KtStatus {
-        let status = guarded(KtStatus::Panicked, || call(&mut self.session));
+    fn guard(&mut self, call: impl FnOnce(&mut Driver) -> KtStatus) -> KtStatus {
+        let status = guarded(KtStatus::Panicked, || call(&mut self.driver));
         if status == KtStatus::Panicked {
             self.defunct = true;
         }
@@ -202,16 +312,23 @@ impl KtSession {
 
     /// The same, for a call that gives the session input — which a defunct
     /// session no longer takes.
-    fn drive(&mut self, call: impl FnOnce(&mut Session) -> Result<(), Error>) -> KtStatus {
+    fn drive(&mut self, call: impl FnOnce(&mut Driver) -> KtStatus) -> KtStatus {
         if self.defunct {
             return KtStatus::Defunct;
         }
 
-        self.guard(|session| match call(session) {
-            Ok(()) => KtStatus::Ok,
-            Err(error) => error.into(),
-        })
+        self.guard(call)
     }
+}
+
+/// Wrap `session` in a handle the boundary can hand out.
+fn handle(driver: Driver) -> *mut KtSession {
+    Box::into_raw(Box::new(KtSession {
+        driver,
+        defunct: false,
+        events: Vec::new(),
+        event_views: Vec::new(),
+    }))
 }
 
 /// Run a boundary call, returning `fallback` if it panics.
@@ -286,15 +403,9 @@ pub unsafe extern "C" fn kt_session_new_detached(
     }
     unsafe { *out = ptr::null_mut() };
     guarded(KtStatus::Panicked, || {
-        match Session::new_detached(cols, rows, max_scrollback) {
+        match Session::new(cols, rows, max_scrollback) {
             Ok(session) => {
-                let handle = KtSession {
-                    session,
-                    defunct: false,
-                    events: Vec::new(),
-                    event_views: Vec::new(),
-                };
-                unsafe { *out = Box::into_raw(Box::new(handle)) };
+                unsafe { *out = handle(Driver::Detached(session)) };
                 KtStatus::Ok
             }
             Err(error) => error.into(),
@@ -302,12 +413,72 @@ pub unsafe extern "C" fn kt_session_new_detached(
     })
 }
 
-/// Release a session. Null is a no-op.
+/// Create a session with a child process behind a pseudoterminal.
+///
+/// `argv` is the command to run: `argv[0]` is the program, the rest its
+/// arguments, and each is a run of bytes rather than a null-terminated string.
+/// An empty `argv` names nothing to run and is reported as a missing argument.
+/// The child starts knowing the size it was given here, so its first frame is
+/// already the right shape.
+///
+/// The session gets a thread of its own, which reads the terminal, feeds the
+/// engine, publishes, and hands the child what [`kt_session_write`] queued. A
+/// call that reaches past that thread to what it owns — [`kt_session_feed`],
+/// [`kt_session_take_writes`] — is refused with `KT_STATUS_NOT_DETACHED`.
+///
+/// On success writes an owned handle to `out`, to be released with
+/// [`kt_session_free`]. On failure `out` receives null.
 ///
 /// # Safety
 ///
-/// `session` must come from [`kt_session_new_detached`] and must not be used
-/// afterwards.
+/// `argv` must point at `argc` readable `KtText`s, each of which must point at
+/// its own `len` readable bytes. `out` must be a valid, writable pointer to a
+/// `KtSession *`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kt_session_new_pty(
+    cols: u16,
+    rows: u16,
+    max_scrollback: usize,
+    argv: *const KtText,
+    argc: usize,
+    out: *mut *mut KtSession,
+) -> KtStatus {
+    if out.is_null() {
+        return KtStatus::NullArgument;
+    }
+    unsafe { *out = ptr::null_mut() };
+    if argv.is_null() || argc == 0 {
+        return KtStatus::NullArgument;
+    }
+
+    // Copied rather than borrowed: the thread that runs the command outlives
+    // this call, and what the caller lent does not have to.
+    let argv: Vec<Vec<u8>> = unsafe { std::slice::from_raw_parts(argv, argc) }
+        .iter()
+        .map(|argument| match argument.len {
+            0 => Vec::new(),
+            len => unsafe { std::slice::from_raw_parts(argument.bytes, len) }.to_vec(),
+        })
+        .collect();
+    let (program, args) = argv.split_first().expect("argc is not zero");
+
+    guarded(KtStatus::Panicked, || {
+        match PtySession::new(program, args, cols, rows, max_scrollback) {
+            Ok(session) => {
+                unsafe { *out = handle(Driver::Pty(session)) };
+                KtStatus::Ok
+            }
+            Err(error) => error.into(),
+        }
+    })
+}
+
+/// Release a session, stopping its I/O thread if it has one. Null is a no-op.
+///
+/// # Safety
+///
+/// `session` must come from [`kt_session_new_detached`] or
+/// [`kt_session_new_pty`] and must not be used afterwards.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kt_session_free(session: *mut KtSession) {
     guarded((), || {
@@ -348,7 +519,42 @@ pub unsafe extern "C" fn kt_session_feed(
         unsafe { std::slice::from_raw_parts(bytes, len) }
     };
 
-    session.drive(|session| session.feed(bytes))
+    session.drive(|driver| driver.feed(bytes))
+}
+
+/// Queue `len` bytes for the session's child.
+///
+/// Returns as soon as they are queued rather than waiting on the child to
+/// read them: a session with a PTY behind it hands them over on its own
+/// thread, and a detached one has them collected by
+/// [`kt_session_take_writes`] alongside what the terminal answered.
+///
+/// Returns `KT_STATUS_WRITE_QUEUE_FULL` when they did not fit, in which case
+/// none of them were queued — a prefix of what the user typed reaching the
+/// child is worse than none of it.
+///
+/// # Safety
+///
+/// `session` must be a live handle, and `bytes` must point at `len` readable
+/// bytes. `bytes` may be null only when `len` is 0.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kt_session_write(
+    session: *mut KtSession,
+    bytes: *const u8,
+    len: usize,
+) -> KtStatus {
+    let Some(session) = (unsafe { session.as_mut() }) else {
+        return KtStatus::NullArgument;
+    };
+    let bytes = if len == 0 {
+        &[][..]
+    } else if bytes.is_null() {
+        return KtStatus::NullArgument;
+    } else {
+        unsafe { std::slice::from_raw_parts(bytes, len) }
+    };
+
+    session.drive(|driver| driver.write(bytes))
 }
 
 /// Register what a session calls when it has something new to be taken, or
@@ -385,8 +591,11 @@ pub unsafe extern "C" fn kt_session_set_wake(
         return KtStatus::NullArgument;
     };
 
-    session.guard(|session| {
-        session.set_wake(wake.map(|wake| Box::new(move || wake(userdata)) as Box<dyn Fn()>));
+    session.guard(|driver| {
+        driver.set_wake(wake.map(|wake| {
+            let userdata = Userdata(userdata);
+            Box::new(move || wake(userdata.get())) as Wake
+        }));
         KtStatus::Ok
     })
 }
@@ -394,6 +603,11 @@ pub unsafe extern "C" fn kt_session_set_wake(
 /// Select a range of the viewport, or clear the selection by passing null.
 ///
 /// Publishes a snapshot, since the selection is part of what a consumer draws.
+///
+/// A session with a PTY behind it applies this on its own thread, so the call
+/// returns once the request is queued and an endpoint outside the viewport
+/// comes back as a wake with nothing new selected rather than as
+/// `KT_STATUS_OUT_OF_RANGE`.
 ///
 /// # Safety
 ///
@@ -409,7 +623,7 @@ pub unsafe extern "C" fn kt_session_set_selection(
     };
 
     let range = unsafe { range.as_ref() }.copied();
-    session.drive(|session| session.set_selection(range))
+    session.drive(|driver| driver.set_selection(range))
 }
 
 /// Take the bytes a detached session has queued for its child, emptying the
@@ -448,15 +662,17 @@ pub unsafe extern "C" fn kt_session_take_writes(
         return KtStatus::NullArgument;
     };
 
-    session.guard(|session| {
-        let queued = session.take_writes();
-        unsafe {
-            *out = KtBytes {
-                bytes: queued.as_ptr(),
-                len: queued.len(),
-            }
-        };
-        KtStatus::Ok
+    session.guard(|driver| match driver.take_writes() {
+        Ok(queued) => {
+            unsafe {
+                *out = KtBytes {
+                    bytes: queued.as_ptr(),
+                    len: queued.len(),
+                }
+            };
+            KtStatus::Ok
+        }
+        Err(refusal) => refusal,
     })
 }
 
@@ -502,8 +718,8 @@ pub unsafe extern "C" fn kt_session_take_events(
     // Taken out of the guarded call rather than inside it: what comes back
     // has to be stored on the handle, which the guard has already borrowed.
     let mut taken = None;
-    let status = session.guard(|session| {
-        taken = Some(session.take_events());
+    let status = session.guard(|driver| {
+        taken = Some(driver.take_events());
         KtStatus::Ok
     });
     let Some((events, dropped)) = taken else {
@@ -552,7 +768,7 @@ pub unsafe extern "C" fn kt_session_take_snapshot(
 
     // Guarded rather than driven: a defunct session still hands back what it
     // last published, which is the whole reason for keeping it.
-    session.guard(|session| match session.take_snapshot() {
+    session.guard(|driver| match driver.take_snapshot() {
         Some(snapshot) => {
             unsafe { *out = Box::into_raw(Box::new(KtSnapshot(snapshot))) };
             KtStatus::Ok
@@ -621,6 +837,9 @@ mod tests {
     /// A panic has to start somewhere real. `guard` is where every call that
     /// touches a session goes through, so panicking there is the same thing
     /// happening to a session that a bug in the core would do.
+    ///
+    /// A panic on a PTY session's own thread is a different path and belongs
+    /// to `kwnms04/knotty#21`.
     fn panic_in(session: *mut KtSession) -> KtStatus {
         unsafe { &mut *session }.guard(|_| panic!("on purpose"))
     }

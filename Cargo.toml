@@ -12,6 +12,10 @@ version = "0.0.0"
 knotty-core = { path = "crates/knotty-core" }
 # Pinned: the VT engine is a public alpha. Bumping it is gated on the harness.
 libghostty-vt = "=0.2.1"
+# The operating system calls the I/O thread makes. Already in the graph as a
+# build-time dependency, so nothing new is pulled in for it; cf. the M1 spec,
+# `kwnms04/knotty#10`.
+rustix = { version = "1.1", features = ["event", "pipe", "process", "pty", "termios"] }
 
 # Stopgap, in force for M1 only. Two soundness fixes on the clipboard write
 # path that we cannot defend against from here; cf. ADR 0012. The branch is cut

@@ -2,6 +2,10 @@
 
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::mpsc::{self, Sender};
+use std::sync::{Arc, Mutex};
+use std::thread::{self, JoinHandle};
 
 use libghostty_vt::screen::Screen;
 use libghostty_vt::selection::Selection;
@@ -12,10 +16,17 @@ use libghostty_vt::terminal::{
 };
 use libghostty_vt::{RenderState, Terminal, TerminalOptions};
 
+use crate::io::{self, Input, Pty, Waker};
 use crate::mailbox::Mailbox;
 use crate::queue::{ClipboardTarget, Event, EventQueue};
 use crate::snapshot::{self, ScreenState, Snapshot};
 use crate::{Error, Result};
+
+/// What a session calls when it has something new to be taken.
+///
+/// `Send` because a PTY session makes the call from its own I/O thread, which
+/// is not the thread that registered it.
+pub type Wake = Box<dyn Fn() + Send>;
 
 /// A selection's two endpoints, in viewport coordinates.
 ///
@@ -143,12 +154,21 @@ struct WriteQueue {
 }
 
 impl WriteQueue {
-    fn push(&mut self, bytes: &[u8]) {
+    /// Append `bytes`, or report that there was no room for them.
+    fn try_push(&mut self, bytes: &[u8]) -> bool {
         if self.bytes.len() + bytes.len() > WRITE_QUEUE_CAP {
-            self.overran = true;
-            return;
+            return false;
         }
         self.bytes.extend_from_slice(bytes);
+        true
+    }
+
+    /// The same for what the engine answers, which has no caller standing by
+    /// to be told: the drop is remembered instead.
+    fn push(&mut self, bytes: &[u8]) {
+        if !self.try_push(bytes) {
+            self.overran = true;
+        }
     }
 
     /// Whether bytes have been dropped since this was last asked.
@@ -162,15 +182,20 @@ impl WriteQueue {
 
 /// A terminal session.
 ///
-/// A detached session owns no thread and no child process: [`feed`] runs the
-/// VT engine on the calling thread. Everything past the parser — conversion
-/// and mailbox publication — is the path a PTY session will take too.
+/// It owns no thread and no child process of its own: [`feed`] runs the VT
+/// engine on the calling thread. A detached session is one used directly; a
+/// [`PtySession`] is this same session with a thread and a child around it,
+/// and everything past the parser is the same code either way.
 ///
 /// [`feed`]: Session::feed
 pub struct Session {
     terminal: Terminal<'static, 'static>,
     render: RenderState<'static>,
-    mailbox: Mailbox<Snapshot>,
+    // Shared rather than owned outright: a PTY session's consumer takes from
+    // this on its own thread while the I/O thread publishes into it. The
+    // mailbox is the only thing here that crosses, which is what adr/0003
+    // bought.
+    mailbox: Arc<Mailbox<Snapshot>>,
     // Which screen the selection was made on, or None when there is none.
     //
     // A snapshot has to say whether a selection exists even when no visible
@@ -190,18 +215,23 @@ pub struct Session {
     // lends the bytes rather than copying them.
     drained: Vec<u8>,
     // Shared with the engine callbacks, for the same reason the writer queue
-    // is.
-    events: Rc<RefCell<EventQueue>>,
+    // is — and with the app, which is what drains it whether or not a PTY is
+    // behind the session. That second sharer is why this is a lock and the
+    // writer queue is not.
+    events: Arc<Mutex<EventQueue>>,
     // How the consumer is told to come and look, and whether it is owed a
     // telling. Neither is the engine's business: when a frame gets drawn is
     // between the session and whoever draws.
-    wake: Option<Box<dyn Fn()>>,
+    wake: Option<Wake>,
     wake_owed: bool,
 }
 
 impl Session {
-    /// Create a session with no PTY behind it.
-    pub fn new_detached(cols: u16, rows: u16, max_scrollback: usize) -> Result<Self> {
+    /// Create a session, its engine, and its queues.
+    ///
+    /// The engine's handles are single-threaded, so whatever thread calls this
+    /// is the only one that may drive the session afterwards.
+    pub fn new(cols: u16, rows: u16, max_scrollback: usize) -> Result<Self> {
         let mut terminal = Terminal::new(TerminalOptions {
             cols,
             rows,
@@ -232,13 +262,13 @@ impl Session {
         // What the app has to be told rather than shown. Neither leaves a
         // mark on the screen, so a consumer that misses one has no second way
         // to learn it happened.
-        let events = Rc::new(RefCell::new(EventQueue::default()));
+        let events = Arc::new(Mutex::new(EventQueue::default()));
         terminal.on_bell({
-            let events = Rc::clone(&events);
-            move |_| events.borrow_mut().push(Event::Bell)
+            let events = Arc::clone(&events);
+            move |_| events.lock().expect("event queue lock").push(Event::Bell)
         })?;
         terminal.on_clipboard_write({
-            let events = Rc::clone(&events);
+            let events = Arc::clone(&events);
             move |_, write| {
                 // The refusals below are how the engine's callback says no.
                 // OSC 52 carries no acknowledgement, so nothing reaches the
@@ -276,10 +306,13 @@ impl Session {
                     return Err(ClipboardWriteError::InvalidData);
                 };
 
-                events.borrow_mut().push(Event::ClipboardWrite {
-                    target: write.location().into(),
-                    text: text.to_owned(),
-                });
+                events
+                    .lock()
+                    .expect("event queue lock")
+                    .push(Event::ClipboardWrite {
+                        target: write.location().into(),
+                        text: text.to_owned(),
+                    });
                 Ok(())
             }
         })?;
@@ -292,7 +325,7 @@ impl Session {
         Ok(Self {
             terminal,
             render,
-            mailbox: Mailbox::new(),
+            mailbox: Arc::new(Mailbox::new()),
             selection_screen: None,
             last_screen: ScreenState::default(),
             writes,
@@ -310,8 +343,22 @@ impl Session {
     /// call that published — so it may do nothing but wake its own thread.
     /// Re-entering the session from it would re-enter state the running call
     /// still holds.
-    pub fn set_wake(&mut self, wake: Option<Box<dyn Fn()>>) {
+    pub fn set_wake(&mut self, wake: Option<Wake>) {
         self.wake = wake;
+    }
+
+    /// Queue `bytes` for the child, without waiting for them to get there.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::WriteQueueFull`] when they did not fit, in which case none of
+    /// them were queued: a prefix of what the user typed reaching the child is
+    /// worse than none of it.
+    pub fn write(&mut self, bytes: &[u8]) -> Result<()> {
+        if self.writes.borrow_mut().try_push(bytes) {
+            return Ok(());
+        }
+        Err(Error::WriteQueueFull)
     }
 
     /// Select a range of the viewport, or clear the selection with `None`.
@@ -396,7 +443,7 @@ impl Session {
     /// A dropped event never makes the screen wrong: everything that has to
     /// be true is in the snapshot.
     pub fn take_events(&mut self) -> (Vec<Event>, u64) {
-        self.events.borrow_mut().take()
+        self.events.lock().expect("event queue lock").take()
     }
 
     /// Take the latest snapshot, emptying the mailbox.
@@ -413,7 +460,7 @@ impl Session {
         // An event is as much reason to wake as a frame is, and a bell marks
         // no cell — so a screen that did not move can still leave something
         // to take.
-        let mut something_to_take = self.events.borrow_mut().take_arrival();
+        let mut something_to_take = self.events.lock().expect("event queue lock").take_arrival();
         if let Some(mut snapshot) =
             snapshot::capture(&mut self.render, &self.terminal, &self.last_screen)?
         {
@@ -470,13 +517,216 @@ impl Session {
     }
 }
 
+/// The consumer of a PTY session, and whether it is owed a telling.
+///
+/// The debt lives here rather than on the session inside, because that
+/// session's callback is a trampoline into this and so is never absent — it
+/// would settle a debt on behalf of a consumer that is not there. Keeping it
+/// out here is what lets a consumer registering late be told about what it was
+/// not there for. cf. `03-core.md` C5
+#[derive(Default)]
+struct Consumer {
+    wake: Option<Wake>,
+    owed: bool,
+}
+
+impl Consumer {
+    /// Tell the consumer to come and look, or remember that it is owed one.
+    fn tell(&mut self) {
+        match &self.wake {
+            Some(wake) => wake(),
+            None => self.owed = true,
+        }
+    }
+}
+
+/// A session with a child process behind a pseudoterminal.
+///
+/// One thread per session owns the engine and everything that touches it: the
+/// safe wrapper's handles are single-threaded, so they never leave it. What
+/// crosses back to the app is the mailbox, the event queue, and the wake —
+/// none of which is the engine's. cf. `docs/adr/0003-snapshot-mailbox.md`
+///
+/// Input goes the other way as a request rather than a call: it is put where
+/// the thread will find it, and the thread applies it. So the calls below
+/// return as soon as the request is queued, and the engine's own answer to it
+/// is not theirs to report.
+pub struct PtySession {
+    mailbox: Arc<Mailbox<Snapshot>>,
+    events: Arc<Mutex<EventQueue>>,
+    // Kept here rather than on the session, so that registering one does not
+    // have to reach across to a thread that may be mid-parse.
+    consumer: Arc<Mutex<Consumer>>,
+    input: Sender<Input>,
+    // How many bytes are waiting for the child, whoever queued them. Both
+    // ends add and the I/O thread takes away as the terminal accepts, because
+    // a queue with an end on each thread cannot be counted on either alone.
+    backlog: Arc<AtomicUsize>,
+    waker: Waker,
+    stopping: Arc<AtomicBool>,
+    // Taken in `drop`, which is the only place this is `None`.
+    thread: Option<JoinHandle<()>>,
+}
+
+impl PtySession {
+    /// Start `program` with `args` behind a pseudoterminal of `cols` by
+    /// `rows`, and put a thread on it.
+    pub fn new(
+        program: &[u8],
+        args: &[Vec<u8>],
+        cols: u16,
+        rows: u16,
+        max_scrollback: usize,
+    ) -> Result<Self> {
+        let (terminal, waker) = Pty::spawn(program, args, cols, rows)?;
+        let (input, arriving) = mpsc::channel();
+        let stopping = Arc::new(AtomicBool::new(false));
+        let backlog = Arc::new(AtomicUsize::new(0));
+        let consumer = Arc::new(Mutex::new(Consumer::default()));
+        let (started, start) = mpsc::channel();
+
+        let thread = thread::Builder::new()
+            .name("knotty-io".to_owned())
+            .spawn({
+                let stopping = Arc::clone(&stopping);
+                let backlog = Arc::clone(&backlog);
+                let consumer = Arc::clone(&consumer);
+                move || {
+                    // Built here rather than handed in: the engine's handles
+                    // are single-threaded, so this thread has to be the one
+                    // that makes them.
+                    let mut session = match Session::new(cols, rows, max_scrollback) {
+                        Ok(session) => session,
+                        Err(error) => {
+                            let _ = started.send(Err(error));
+                            return;
+                        }
+                    };
+                    // Always set, so the session inside never holds a debt of
+                    // its own — `Consumer` is what holds one instead.
+                    session.set_wake(Some(Box::new(move || {
+                        consumer.lock().expect("consumer lock").tell();
+                    })));
+
+                    let crossing = (Arc::clone(&session.mailbox), Arc::clone(&session.events));
+                    if started.send(Ok(crossing)).is_err() {
+                        return;
+                    }
+                    // A loop that gave up mid-round leaves the session broken
+                    // rather than merely finished, and saying which is
+                    // `kwnms04/knotty#21`.
+                    let _ = io::run(&mut session, &terminal, &arriving, &backlog, &stopping);
+                }
+            })
+            .map_err(Error::from)?;
+
+        // The thread reports how its own construction went, so a session that
+        // could not build its engine fails here rather than looking alive.
+        let (mailbox, events) = start.recv().map_err(|_| Error::Io)??;
+        Ok(Self {
+            mailbox,
+            events,
+            consumer,
+            input,
+            backlog,
+            waker,
+            stopping,
+            thread: Some(thread),
+        })
+    }
+
+    /// Set what to call when the session has something new to be taken, or
+    /// clear it with `None`.
+    ///
+    /// The call is made on the session's own I/O thread, so it may do nothing
+    /// but wake the thread that registered it. A wake that fell due while
+    /// nobody was registered is paid here, before this returns.
+    pub fn set_wake(&self, wake: Option<Wake>) {
+        let mut consumer = self.consumer.lock().expect("consumer lock");
+        consumer.wake = wake;
+        // Taken rather than read: a wake cleared while a debt stands leaves
+        // the debt, which `tell` puts back.
+        if std::mem::take(&mut consumer.owed) {
+            consumer.tell();
+        }
+    }
+
+    /// Queue `bytes` for the child.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::WriteQueueFull`] when the child has left more waiting than the
+    /// queue holds, in which case none of `bytes` was queued.
+    pub fn write(&self, bytes: &[u8]) -> Result<()> {
+        // The backlog is only ever taken from as the terminal accepts, so what
+        // this refuses against is what the child has not read — the case the
+        // cap exists for. cf. `02-ffi.md`
+        //
+        // Read and added to with no lock between: calls on one session are
+        // serialized by the boundary's own contract, so the only other hand
+        // here is the I/O thread's, and a subtraction it makes in between only
+        // makes this answer more generous.
+        if self.backlog.load(Ordering::Relaxed) + bytes.len() > WRITE_QUEUE_CAP {
+            return Err(Error::WriteQueueFull);
+        }
+        self.backlog.fetch_add(bytes.len(), Ordering::Relaxed);
+        self.hand_over(Input::Write(bytes.to_vec()))
+    }
+
+    /// Select a range of the viewport, or clear the selection with `None`.
+    ///
+    /// An endpoint outside the viewport is not reported: by the time the
+    /// thread finds that out, this call has long returned.
+    pub fn set_selection(&self, range: Option<SelectionRange>) -> Result<()> {
+        self.hand_over(Input::Selection(range))
+    }
+
+    /// Take the events queued for the app, emptying the queue, along with how
+    /// many were dropped for want of room since the last take.
+    pub fn take_events(&self) -> (Vec<Event>, u64) {
+        self.events.lock().expect("event queue lock").take()
+    }
+
+    /// Take the latest snapshot, emptying the mailbox.
+    ///
+    /// Returns `None` when nothing has been published since the last take.
+    pub fn take_snapshot(&self) -> Option<Snapshot> {
+        self.mailbox.take()
+    }
+
+    /// Put `input` where the I/O thread will find it, and make it look.
+    fn hand_over(&self, input: Input) -> Result<()> {
+        // The thread is gone once the child is, and what this carried has
+        // nowhere left to go. Saying so beats swallowing it.
+        self.input.send(input).map_err(|_| Error::Io)?;
+        self.waker.nudge();
+        Ok(())
+    }
+}
+
+impl Drop for PtySession {
+    /// Stop the thread and wait for it to let go of the terminal.
+    ///
+    /// Closing the terminal is what tells the child to go. Collecting what is
+    /// left of one that does not is `kwnms04/knotty#20`.
+    fn drop(&mut self) {
+        self.stopping.store(true, Ordering::Relaxed);
+        // Stored first, so a thread that is between rounds rather than in the
+        // wait still finds the flag set when it gets there.
+        self.waker.nudge();
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::Session;
     use crate::queue::Event;
 
     fn session() -> Session {
-        Session::new_detached(80, 24, 0).expect("a detached session")
+        Session::new(80, 24, 0).expect("a session")
     }
 
     /// The fuzzer cannot stand in for these: neither input crashes once the

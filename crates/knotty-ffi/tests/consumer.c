@@ -102,9 +102,22 @@ int kt_consumer_is_selected(const KtSnapshotView *view, uint16_t row, uint16_t c
            col <= state->selection_end;
 }
 
-/* M0 has no session with a PTY behind it, so the only thing to pin is that
- * the code a PTY session's feed returns exists and keeps its value. */
-_Static_assert(KT_STATUS_NOT_DETACHED == 8, "the PTY feed contract moved");
+/* A session with a PTY behind it drains its own writer queue and takes its
+ * input from its child, so the two calls that would reach past its thread are
+ * refused rather than answered wrongly. */
+_Static_assert(KT_STATUS_NOT_DETACHED == 8, "the PTY refusal moved");
+
+/* Starting a shell: the command is words of borrowed text, program first, and
+ * the size the child is born knowing comes with it. */
+KtStatus kt_consumer_open_a_shell(KtSession **out) {
+    KtText argv[2] = {{(const uint8_t *)"/bin/sh", 7}, {(const uint8_t *)"-l", 2}};
+    return kt_session_new_pty(80, 24, 1000, argv, 2, out);
+}
+
+/* Typing: queued for the child, never waited on. */
+KtStatus kt_consumer_type(KtSession *session, const char *keys, size_t len) {
+    return kt_session_write(session, (const uint8_t *)keys, len);
+}
 
 /* A wake runs on the core's thread and may do nothing but flag the consumer's
  * own, which is why it takes no lock and reads nothing back. */

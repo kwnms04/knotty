@@ -200,6 +200,7 @@ name = "knotty-core"
 version = "0.0.0"
 dependencies = [
  "libghostty-vt",
+ "rustix",
 ]
 
 [[package]]

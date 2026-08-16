@@ -4,13 +4,17 @@
 use std::ffi::c_void;
 use std::mem::MaybeUninit;
 use std::ptr;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use knotty_ffi::{
     Attribute, Cell, ClipboardTarget, Cursor, CursorShape, Dirty, KtBytes, KtEventKind, KtEvents,
     KtSession, KtSnapshot, KtSnapshotView, KtStatus, KtText, Rgb, Row, RowFlag, SelectionRange,
     Underline, kt_abi_version, kt_session_feed, kt_session_free, kt_session_new_detached,
-    kt_session_set_selection, kt_session_set_wake, kt_session_take_events,
-    kt_session_take_snapshot, kt_session_take_writes, kt_snapshot_free, kt_snapshot_view,
+    kt_session_new_pty, kt_session_set_selection, kt_session_set_wake, kt_session_take_events,
+    kt_session_take_snapshot, kt_session_take_writes, kt_session_write, kt_snapshot_free,
+    kt_snapshot_view,
 };
 
 /// Ghostty's own defaults. A change here is an upstream palette change, not a
@@ -1429,6 +1433,244 @@ fn clearing_the_wake_stops_the_calls_without_losing_what_they_would_have_said() 
     unsafe { kt_session_free(session) };
 }
 
+/// Whatever a shell prints, it prints on the child's own schedule: a fork, an
+/// exec and a write have to happen before anything is on screen. So the check
+/// is "eventually", with a bound long enough that only a real failure reaches
+/// it.
+const PATIENCE: Duration = Duration::from_secs(10);
+
+/// A command as a consumer passes one: borrowed runs of text, program first.
+fn pty(cols: u16, rows: u16, argv: &[&str]) -> *mut KtSession {
+    let argv: Vec<KtText> = argv.iter().copied().map(KtText::from).collect();
+    let mut session = ptr::null_mut();
+    let status =
+        unsafe { kt_session_new_pty(cols, rows, 0, argv.as_ptr(), argv.len(), &mut session) };
+    assert_eq!(status, KtStatus::Ok);
+    assert!(!session.is_null());
+    session
+}
+
+fn write(session: *mut KtSession, bytes: &[u8]) {
+    let status = unsafe { kt_session_write(session, bytes.as_ptr(), bytes.len()) };
+    assert_eq!(status, KtStatus::Ok);
+}
+
+/// Take a snapshot if one has been published, rather than insisting on it.
+fn take_if_any(session: *mut KtSession) -> Option<*mut KtSnapshot> {
+    let mut snapshot = ptr::null_mut();
+    match unsafe { kt_session_take_snapshot(session, &mut snapshot) } {
+        KtStatus::Ok => Some(snapshot),
+        KtStatus::NoValue => None,
+        status => panic!("taking a snapshot answered {status:?}"),
+    }
+}
+
+/// The screen as a person reads it: a cell holding nothing is a space.
+fn screen_lines(view: &KtSnapshotView) -> Vec<String> {
+    (0..view.rows)
+        .map(|row| {
+            (0..view.cols)
+                .map(|col| match codepoint_at(view, row, col) {
+                    0 => ' ',
+                    codepoint => char::from_u32(codepoint).unwrap_or(' '),
+                })
+                .collect()
+        })
+        .collect()
+}
+
+/// Wait for some row of the screen to hold `wanted`.
+///
+/// Every snapshot carries the whole grid, so only the newest one has to be
+/// looked at — a frame passed over cannot have held anything a later one does
+/// not.
+fn wait_for(session: *mut KtSession, wanted: &str) {
+    let deadline = Instant::now() + PATIENCE;
+    let mut last = Vec::new();
+    while Instant::now() < deadline {
+        if let Some(snapshot) = take_if_any(session) {
+            last = screen_lines(&view(snapshot));
+            unsafe { kt_snapshot_free(snapshot) };
+            if last.iter().any(|line| line.contains(wanted)) {
+                return;
+            }
+        }
+        thread::sleep(Duration::from_millis(5));
+    }
+    panic!("waited for {wanted:?}; the screen said {last:#?}");
+}
+
+/// The wake counter a session with its own thread needs: the call arrives on
+/// that thread, not on the one reading the count.
+extern "C" fn count_a_wake_across_threads(userdata: *mut c_void) {
+    unsafe { &*userdata.cast::<AtomicU32>() }.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Point the session at a counter and hand it back. The box stays put while
+/// the session holds its address.
+fn shared_wake_counter(session: *mut KtSession) -> Box<AtomicU32> {
+    let count = Box::new(AtomicU32::new(0));
+    let status = unsafe {
+        kt_session_set_wake(
+            session,
+            Some(count_a_wake_across_threads),
+            (&raw const *count).cast_mut().cast(),
+        )
+    };
+    assert_eq!(status, KtStatus::Ok);
+    count
+}
+
+/// The milestone in one line: a shell actually comes up, and what it prints is
+/// on the screen.
+#[test]
+fn a_pty_session_puts_what_its_child_printed_on_the_screen() {
+    let session = pty(24, 4, &["/bin/sh", "-c", "printf 'up and running'"]);
+
+    wait_for(session, "up and running");
+
+    unsafe { kt_session_free(session) };
+}
+
+/// A child told the size only after it started has already drawn its first
+/// frame to the wrong one, and many never redraw. So it is set on the terminal
+/// before the fork.
+#[test]
+fn a_child_starts_knowing_the_size_of_the_window_it_is_in() {
+    let session = pty(37, 9, &["/bin/sh", "-c", "stty size"]);
+
+    // What `stty size` prints is rows then columns.
+    wait_for(session, "9 37");
+
+    unsafe { kt_session_free(session) };
+}
+
+/// The other half of the conversation: without this the terminal can only be
+/// watched, not used.
+#[test]
+fn bytes_written_to_a_pty_session_reach_its_child() {
+    let session = pty(
+        24,
+        4,
+        &["/bin/sh", "-c", "read line; printf 'heard:%s' \"$line\""],
+    );
+
+    // Carriage return rather than newline: it is what a keyboard sends, and
+    // the terminal's line discipline is what turns it into the end of a line.
+    write(session, b"typed\r");
+
+    wait_for(session, "heard:typed");
+
+    unsafe { kt_session_free(session) };
+}
+
+/// Without this a consumer has to poll a thread it does not own, which is the
+/// idle cost the whole design exists to avoid.
+#[test]
+fn a_pty_session_wakes_its_consumer_when_there_is_something_to_take() {
+    // A child that reads before it writes, so the callback is registered
+    // before anything can be published.
+    let session = pty(
+        24,
+        4,
+        &["/bin/sh", "-c", "read line; printf 'heard:%s' \"$line\""],
+    );
+    let count = shared_wake_counter(session);
+
+    write(session, b"typed\r");
+    wait_for(session, "heard:typed");
+
+    assert!(
+        count.load(Ordering::Relaxed) > 0,
+        "a new screen went unannounced",
+    );
+
+    unsafe { kt_session_free(session) };
+}
+
+/// The session inside a PTY one always has a callback registered — the
+/// trampoline out to the app — so it can never hold the debt itself. If it
+/// settled one on the app's behalf, a consumer attaching late would sit on a
+/// full mailbox it was never told about. cf. `03-core.md` C5
+#[test]
+fn a_pty_session_still_owes_a_wake_registered_after_the_screen_was_drawn() {
+    let session = pty(24, 4, &["/bin/sh", "-c", "printf 'up and running'"]);
+    // Drawn, published, and taken — all with nobody registered to be told.
+    wait_for(session, "up and running");
+
+    let count = shared_wake_counter(session);
+
+    assert_eq!(
+        count.load(Ordering::Relaxed),
+        1,
+        "the screen drawn while nobody listened was never announced",
+    );
+
+    unsafe { kt_session_free(session) };
+}
+
+/// The cap is what keeps a child that has stopped reading from growing the
+/// queue without bound, and a caller that cannot tell that from a rejected
+/// sequence cannot tell the user either. A PTY session hands the queue over on
+/// another thread, so this is the path where the report is easiest to lose.
+#[test]
+fn a_pty_session_reports_a_writer_queue_over_its_cap() {
+    // The 8MB of 02-ffi.md, restated because the core keeps its own copy
+    // private. If the two ever disagree, this is what notices.
+    const CAP: usize = 8 * 1024 * 1024;
+
+    // A child that never reads: everything written piles up behind it once the
+    // terminal itself stops taking more.
+    let session = pty(4, 1, &["/bin/sh", "-c", "sleep 30"]);
+
+    let chunk = vec![b'x'; 64 * 1024];
+    let mut status = KtStatus::Ok;
+    for _ in 0..(4 * CAP / chunk.len()) {
+        status = unsafe { kt_session_write(session, chunk.as_ptr(), chunk.len()) };
+        if status != KtStatus::Ok {
+            break;
+        }
+    }
+
+    assert_eq!(status, KtStatus::WriteQueueFull);
+
+    unsafe { kt_session_free(session) };
+}
+
+/// Both calls reach past the I/O thread for what it owns: one would race the
+/// engine it is parsing with, the other would take bytes it is already
+/// handing to the child. cf. `03-core.md` C7
+#[test]
+fn a_pty_session_refuses_the_calls_that_are_only_for_a_detached_one() {
+    let session = pty(4, 1, &["/bin/sh", "-c", "sleep 30"]);
+
+    assert_eq!(
+        unsafe { kt_session_feed(session, b"x".as_ptr(), 1) },
+        KtStatus::NotDetached,
+    );
+    let mut queued = MaybeUninit::<KtBytes>::uninit();
+    assert_eq!(
+        unsafe { kt_session_take_writes(session, queued.as_mut_ptr()) },
+        KtStatus::NotDetached,
+    );
+
+    unsafe { kt_session_free(session) };
+}
+
+/// A detached session has no child to hand them to, so its queue is where
+/// they stop — beside what the terminal answered, since both are bound for
+/// the same place.
+#[test]
+fn bytes_written_to_a_detached_session_wait_in_its_queue() {
+    let session = detached(4, 1);
+
+    write(session, b"typed");
+
+    assert_eq!(writes(session), b"typed");
+
+    unsafe { kt_session_free(session) };
+}
+
 #[test]
 fn null_arguments_are_reported_rather_than_dereferenced() {
     assert_eq!(
@@ -1436,7 +1678,23 @@ fn null_arguments_are_reported_rather_than_dereferenced() {
         KtStatus::NullArgument,
     );
     assert_eq!(
+        unsafe { kt_session_new_pty(4, 1, 0, ptr::null(), 0, ptr::null_mut()) },
+        KtStatus::NullArgument,
+    );
+    // A command of no words names nothing to run, which is the same missing
+    // argument as a null one.
+    let mut nothing_to_run = ptr::null_mut();
+    assert_eq!(
+        unsafe { kt_session_new_pty(4, 1, 0, ptr::null(), 0, &mut nothing_to_run) },
+        KtStatus::NullArgument,
+    );
+    assert!(nothing_to_run.is_null());
+    assert_eq!(
         unsafe { kt_session_feed(ptr::null_mut(), b"x".as_ptr(), 1) },
+        KtStatus::NullArgument,
+    );
+    assert_eq!(
+        unsafe { kt_session_write(ptr::null_mut(), b"x".as_ptr(), 1) },
         KtStatus::NullArgument,
     );
     assert_eq!(

@@ -4,14 +4,19 @@
 //! in [`snapshot`] and nowhere else, which is the conversion the boundary
 //! depends on; [`session`] also names engine types where it drives the engine.
 //! No engine type appears in any signature outside those two modules.
+//!
+//! The operating system is walled off the same way. [`io`] is the only module
+//! that knows a file descriptor, and no platform type appears in a signature
+//! outside it. cf. `docs/adr/0001-portable-core.md`
 
+pub mod io;
 pub mod mailbox;
 pub mod queue;
 pub mod session;
 pub mod snapshot;
 
 pub use queue::{ClipboardTarget, Event};
-pub use session::{SelectionRange, Session};
+pub use session::{PtySession, SelectionRange, Session, Wake};
 pub use snapshot::{
     Attribute, Cell, Cursor, CursorShape, Dirty, Rgb, Row, RowFlag, ScreenState, Snapshot,
     Underline,
@@ -32,6 +37,9 @@ pub enum Error {
     /// The queue of bytes bound for the child is at its cap, and what did not
     /// fit was dropped.
     WriteQueueFull,
+    /// An operating system call failed — opening a terminal, starting a child,
+    /// or talking to one already started.
+    Io,
 }
 
 /// Result alias for fallible core operations.

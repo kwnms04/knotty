@@ -59,8 +59,8 @@ enum KtStatus
    */
   KT_STATUS_DEFUNCT = 7,
   /**
-   * The call is only for a session with no PTY behind it. No such session
-   * exists yet; the contract is fixed now so it cannot move later.
+   * The call is only for a session with no PTY behind it. One with a PTY
+   * has its own thread doing what the call would have done.
    */
   KT_STATUS_NOT_DETACHED = 8,
   /**
@@ -69,6 +69,11 @@ enum KtStatus
    * does not mean the dropped bytes came back.
    */
   KT_STATUS_WRITE_QUEUE_FULL = 9,
+  /**
+   * An operating system call failed — opening a terminal, starting a child,
+   * or talking to one already started.
+   */
+  KT_STATUS_IO = 10,
 };
 #ifndef __cplusplus
 #if __STDC_VERSION__ >= 202311L
@@ -360,13 +365,34 @@ typedef struct KtSession KtSession;
 typedef struct KtSnapshot KtSnapshot;
 
 /**
+ * Borrowed UTF-8, valid for as long as whatever lent it stays put.
+ *
+ * Not null-terminated: read `len` bytes. What has been taken out of the text
+ * is the lending field's to say: a snapshot's title and working directory
+ * have had their control characters removed and so hold no interior nulls,
+ * a clipboard payload is whatever the child asked to copy.
+ */
+typedef struct {
+  /**
+   * The bytes.
+   */
+  const uint8_t *bytes;
+  /**
+   * How many of them.
+   */
+  size_t len;
+} KtText;
+
+/**
  * What a session calls when it has something new to be taken.
  *
  * `userdata` comes back exactly as it was handed to [`kt_session_set_wake`].
  *
  * The call is made on the thread that drove the session, from inside the call
- * that published. **It may do nothing but wake its own thread** — a call back
- * across this boundary re-enters a session the running call still holds.
+ * that published — the caller's own thread for a detached session, the
+ * session's I/O thread for one with a PTY behind it. **It may do nothing but
+ * wake its own thread**: a call back across this boundary re-enters a session
+ * the running call still holds.
  */
 typedef void (*KtWake)(void *userdata);
 
@@ -416,25 +442,6 @@ typedef struct {
    */
   size_t len;
 } KtBytes;
-
-/**
- * Borrowed UTF-8, valid for as long as whatever lent it stays put.
- *
- * Not null-terminated: read `len` bytes. What has been taken out of the text
- * is the lending field's to say: a snapshot's title and working directory
- * have had their control characters removed and so hold no interior nulls,
- * a clipboard payload is whatever the child asked to copy.
- */
-typedef struct {
-  /**
-   * The bytes.
-   */
-  const uint8_t *bytes;
-  /**
-   * How many of them.
-   */
-  size_t len;
-} KtText;
 
 /**
  * One thing that happened, whose happening is the whole of its meaning.
@@ -659,12 +666,42 @@ KtStatus kt_session_new_detached(uint16_t cols,
                                  KtSession **out);
 
 /**
- * Release a session. Null is a no-op.
+ * Create a session with a child process behind a pseudoterminal.
+ *
+ * `argv` is the command to run: `argv[0]` is the program, the rest its
+ * arguments, and each is a run of bytes rather than a null-terminated string.
+ * An empty `argv` names nothing to run and is reported as a missing argument.
+ * The child starts knowing the size it was given here, so its first frame is
+ * already the right shape.
+ *
+ * The session gets a thread of its own, which reads the terminal, feeds the
+ * engine, publishes, and hands the child what [`kt_session_write`] queued. A
+ * call that reaches past that thread to what it owns — [`kt_session_feed`],
+ * [`kt_session_take_writes`] — is refused with `KT_STATUS_NOT_DETACHED`.
+ *
+ * On success writes an owned handle to `out`, to be released with
+ * [`kt_session_free`]. On failure `out` receives null.
  *
  * # Safety
  *
- * `session` must come from [`kt_session_new_detached`] and must not be used
- * afterwards.
+ * `argv` must point at `argc` readable `KtText`s, each of which must point at
+ * its own `len` readable bytes. `out` must be a valid, writable pointer to a
+ * `KtSession *`.
+ */
+KtStatus kt_session_new_pty(uint16_t cols,
+                            uint16_t rows,
+                            size_t max_scrollback,
+                            const KtText *argv,
+                            size_t argc,
+                            KtSession **out);
+
+/**
+ * Release a session, stopping its I/O thread if it has one. Null is a no-op.
+ *
+ * # Safety
+ *
+ * `session` must come from [`kt_session_new_detached`] or
+ * [`kt_session_new_pty`] and must not be used afterwards.
  */
 void kt_session_free(KtSession *session);
 
@@ -685,6 +722,25 @@ void kt_session_free(KtSession *session);
  * bytes. `bytes` may be null only when `len` is 0.
  */
 KtStatus kt_session_feed(KtSession *session, const uint8_t *bytes, size_t len);
+
+/**
+ * Queue `len` bytes for the session's child.
+ *
+ * Returns as soon as they are queued rather than waiting on the child to
+ * read them: a session with a PTY behind it hands them over on its own
+ * thread, and a detached one has them collected by
+ * [`kt_session_take_writes`] alongside what the terminal answered.
+ *
+ * Returns `KT_STATUS_WRITE_QUEUE_FULL` when they did not fit, in which case
+ * none of them were queued — a prefix of what the user typed reaching the
+ * child is worse than none of it.
+ *
+ * # Safety
+ *
+ * `session` must be a live handle, and `bytes` must point at `len` readable
+ * bytes. `bytes` may be null only when `len` is 0.
+ */
+KtStatus kt_session_write(KtSession *session, const uint8_t *bytes, size_t len);
 
 /**
  * Register what a session calls when it has something new to be taken, or
@@ -718,6 +774,11 @@ KtStatus kt_session_set_wake(KtSession *session, KtWake wake, void *userdata);
  * Select a range of the viewport, or clear the selection by passing null.
  *
  * Publishes a snapshot, since the selection is part of what a consumer draws.
+ *
+ * A session with a PTY behind it applies this on its own thread, so the call
+ * returns once the request is queued and an endpoint outside the viewport
+ * comes back as a wake with nothing new selected rather than as
+ * `KT_STATUS_OUT_OF_RANGE`.
  *
  * # Safety
  *
