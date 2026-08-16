@@ -5,18 +5,21 @@
 
 use std::ptr;
 
-use knotty_core::{Error, Session, Snapshot};
+use knotty_core::{Error, Event, Session, Snapshot};
 
 /// The snapshot's POD types. A C consumer gets these from the header; this
 /// re-export is how a Rust consumer names the same layouts.
 pub use knotty_core::{
-    Attribute, Cell, Cursor, CursorShape, Dirty, Rgb, Row, RowFlag, SelectionRange, Underline,
+    Attribute, Cell, ClipboardTarget, Cursor, CursorShape, Dirty, Rgb, Row, RowFlag,
+    SelectionRange, Underline,
 };
 
-/// Borrowed UTF-8, valid until the snapshot it came from is freed.
+/// Borrowed UTF-8, valid for as long as whatever lent it stays put.
 ///
-/// Not null-terminated: read `len` bytes. Control characters have already been
-/// removed, so there are no interior nulls either.
+/// Not null-terminated: read `len` bytes. What has been taken out of the text
+/// is the lending field's to say: a snapshot's title and working directory
+/// have had their control characters removed and so hold no interior nulls,
+/// a clipboard payload is whatever the child asked to copy.
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct KtText {
@@ -46,6 +49,70 @@ pub struct KtBytes {
     pub bytes: *const u8,
     /// How many of them.
     pub len: usize,
+}
+
+/// Which kind of event a [`KtEvent`] is, and so which of its fields carry
+/// anything.
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KtEventKind {
+    /// The child rang the bell.
+    Bell = 0,
+    /// The child asked for text to be put on a clipboard.
+    ClipboardWrite = 1,
+}
+
+/// One thing that happened, whose happening is the whole of its meaning.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct KtEvent {
+    /// Which kind of event this is.
+    pub kind: KtEventKind,
+    /// Which clipboard the text is bound for. Set only for a clipboard write.
+    pub clipboard_target: ClipboardTarget,
+    /// What to put on that clipboard, borrowed for as long as the run it came
+    /// in is. Empty for any other kind.
+    ///
+    /// Nothing has been taken out of it: it is what the child asked to copy,
+    /// control characters and all. Stripping those would eat the newlines out
+    /// of a copied paragraph, and untrusted bytes are made safe where they
+    /// re-enter — the paste path. cf. `docs/adr/0007-input-security.md`
+    pub text: KtText,
+}
+
+/// Borrowed run of events, valid until the call that lent them is made again.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct KtEvents {
+    /// The events, oldest first.
+    pub events: *const KtEvent,
+    /// How many of them.
+    pub len: usize,
+    /// How many events were dropped for want of room since the last take. A
+    /// dropped event never makes the screen wrong: everything that has to be
+    /// true is in the snapshot. The count empties with the queue, so one
+    /// overrun is reported once.
+    pub dropped: u64,
+}
+
+impl From<&Event> for KtEvent {
+    fn from(event: &Event) -> Self {
+        match event {
+            Event::Bell => Self {
+                kind: KtEventKind::Bell,
+                clipboard_target: ClipboardTarget::Standard,
+                text: KtText {
+                    bytes: ptr::null(),
+                    len: 0,
+                },
+            },
+            Event::ClipboardWrite { target, text } => Self {
+                kind: KtEventKind::ClipboardWrite,
+                clipboard_target: *target,
+                text: text.as_str().into(),
+            },
+        }
+    }
 }
 
 /// ABI version of this library.
@@ -101,6 +168,11 @@ impl From<Error> for KtStatus {
 pub struct KtSession {
     session: Session,
     defunct: bool,
+    /// What the last event drain took. Kept alive because the run lent to the
+    /// caller borrows the text out of it rather than copying it.
+    events: Vec<Event>,
+    /// The lent run itself, pointing into `events`.
+    event_views: Vec<KtEvent>,
 }
 
 impl KtSession {
@@ -209,6 +281,8 @@ pub unsafe extern "C" fn kt_session_new_detached(
                 let handle = KtSession {
                     session,
                     defunct: false,
+                    events: Vec::new(),
+                    event_views: Vec::new(),
                 };
                 unsafe { *out = Box::into_raw(Box::new(handle)) };
                 KtStatus::Ok
@@ -334,6 +408,70 @@ pub unsafe extern "C" fn kt_session_take_writes(
         };
         KtStatus::Ok
     })
+}
+
+/// Take the events a session has queued for the app, emptying the queue.
+///
+/// `out` receives a run borrowed from the session, valid until the next call
+/// to this function on it or until the session is freed, along with the
+/// number of events dropped for want of room since the last take. A length of
+/// 0 means nothing was queued, which is not a failure.
+///
+/// Unlike the writer queue this is not a detached-only drain: events are the
+/// app's to consume, and a session with a PTY behind it has no one else to
+/// consume them. Drain until the queue is empty on every wake.
+///
+/// Works on a defunct session, for the same reason taking its snapshot does:
+/// what it queued before it broke is still what it queued.
+///
+/// # Safety
+///
+/// `session` must be a live handle and `out` must be a valid, writable
+/// pointer to a `KtEvents`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kt_session_take_events(
+    session: *mut KtSession,
+    out: *mut KtEvents,
+) -> KtStatus {
+    if out.is_null() {
+        return KtStatus::NullArgument;
+    }
+    // What a call that never gets to the queue leaves behind. A successful
+    // drain overwrites this, empty or not.
+    unsafe {
+        *out = KtEvents {
+            events: ptr::null(),
+            len: 0,
+            dropped: 0,
+        }
+    };
+    let Some(session) = (unsafe { session.as_mut() }) else {
+        return KtStatus::NullArgument;
+    };
+
+    // Taken out of the guarded call rather than inside it: what comes back
+    // has to be stored on the handle, which the guard has already borrowed.
+    let mut taken = None;
+    let status = session.guard(|session| {
+        taken = Some(session.take_events());
+        KtStatus::Ok
+    });
+    let Some((events, dropped)) = taken else {
+        return status;
+    };
+
+    // Dropping what the last drain lent is what invalidates its pointers,
+    // which is the contract above.
+    session.events = events;
+    session.event_views = session.events.iter().map(KtEvent::from).collect();
+    unsafe {
+        *out = KtEvents {
+            events: session.event_views.as_ptr(),
+            len: session.event_views.len(),
+            dropped,
+        }
+    };
+    KtStatus::Ok
 }
 
 /// Take the latest snapshot, emptying the session's mailbox.

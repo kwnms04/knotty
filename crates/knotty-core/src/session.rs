@@ -6,12 +6,14 @@ use std::rc::Rc;
 use libghostty_vt::screen::Screen;
 use libghostty_vt::selection::Selection;
 use libghostty_vt::terminal::{
-    ConformanceLevel, DeviceAttributeFeature, DeviceAttributes, DeviceType, Point, PointCoordinate,
-    PrimaryDeviceAttributes, SecondaryDeviceAttributes, TertiaryDeviceAttributes,
+    ClipboardLocation, ClipboardWriteError, ConformanceLevel, DeviceAttributeFeature,
+    DeviceAttributes, DeviceType, Point, PointCoordinate, PrimaryDeviceAttributes,
+    SecondaryDeviceAttributes, TertiaryDeviceAttributes,
 };
 use libghostty_vt::{RenderState, Terminal, TerminalOptions};
 
 use crate::mailbox::Mailbox;
+use crate::queue::{ClipboardTarget, Event, EventQueue};
 use crate::snapshot::{self, ScreenState, Snapshot};
 use crate::{Error, Result};
 
@@ -40,6 +42,21 @@ pub struct SelectionRange {
 /// A child that never reads is the case this exists for: without a cap the
 /// queue grows until the process dies.
 const WRITE_QUEUE_CAP: usize = 8 * 1024 * 1024;
+
+/// The largest clipboard payload knotty will carry.
+///
+/// A write past it is refused whole rather than cut short: nothing tells the
+/// user their copy arrived as its first megabyte, so a truncated clipboard is
+/// worse than one that did not change. With the queue's cap this is also what
+/// bounds what undrained events can hold.
+const CLIPBOARD_TEXT_CAP: usize = 1024 * 1024;
+
+/// The one representation knotty takes off a clipboard write.
+///
+/// The engine normalizes OSC 52 and iTerm2's copy sequence into the same
+/// shape, and both carry this. v1 has no rich clipboard to put anything else
+/// on, so a write offering no plain text has nothing for us.
+const CLIPBOARD_MIME: &str = "text/plain";
 
 /// What an ENQ is answered with: knotty's name.
 ///
@@ -99,6 +116,16 @@ fn sanitized_answer(bytes: &[u8]) -> &[u8] {
         return EMPTY_TITLE_REPORT;
     }
     bytes
+}
+
+impl From<ClipboardLocation> for ClipboardTarget {
+    fn from(location: ClipboardLocation) -> Self {
+        match location {
+            ClipboardLocation::Standard => Self::Standard,
+            ClipboardLocation::Selection => Self::Selection,
+            ClipboardLocation::Primary => Self::Primary,
+        }
+    }
 }
 
 /// Bytes on their way to the child.
@@ -162,6 +189,9 @@ pub struct Session {
     // What the last drain handed out. Kept alive here because the boundary
     // lends the bytes rather than copying them.
     drained: Vec<u8>,
+    // Shared with the engine callbacks, for the same reason the writer queue
+    // is.
+    events: Rc<RefCell<EventQueue>>,
 }
 
 impl Session {
@@ -194,6 +224,60 @@ impl Session {
         terminal.on_enquiry(|_| Some(ANSWERBACK))?;
         terminal.on_xtversion(|_| Some(VERSION_REPORT))?;
 
+        // What the app has to be told rather than shown. Neither leaves a
+        // mark on the screen, so a consumer that misses one has no second way
+        // to learn it happened.
+        let events = Rc::new(RefCell::new(EventQueue::default()));
+        terminal.on_bell({
+            let events = Rc::clone(&events);
+            move |_| events.borrow_mut().push(Event::Bell)
+        })?;
+        terminal.on_clipboard_write({
+            let events = Rc::clone(&events);
+            move |_, write| {
+                // The refusals below are how the engine's callback says no.
+                // OSC 52 carries no acknowledgement, so nothing reaches the
+                // child either way — what they buy is that the app is never
+                // handed a payload it should not act on.
+                //
+                // Reading the contents at all is what an empty OSC 52 payload
+                // breaks: the engine hands the pinned wrapper a null array
+                // with a length of 0, and the slice built from that trips the
+                // standard library's own check before this callback sees
+                // anything. There is no point on our side to guard — the
+                // guard belongs inside `contents`. cf.
+                // `docs/open-questions.md`
+                let Some(content) = write
+                    .contents()
+                    .find(|content| content.mime == CLIPBOARD_MIME)
+                else {
+                    return Err(ClipboardWriteError::Unsupported);
+                };
+                // A representation of no length is an explicit empty one,
+                // which the engine's contract says does not clear the
+                // clipboard. An app that wrote it faithfully would wipe what
+                // the user last copied, so it stops here rather than going
+                // out as a copy of nothing.
+                if content.data.is_empty() {
+                    return Ok(());
+                }
+                if content.data.len() > CLIPBOARD_TEXT_CAP {
+                    return Err(ClipboardWriteError::Denied);
+                }
+
+                events.borrow_mut().push(Event::ClipboardWrite {
+                    target: write.location().into(),
+                    text: content.data.to_owned(),
+                });
+                Ok(())
+            }
+        })?;
+
+        // A clipboard read gets no callback because the engine drops the
+        // request without telling us: there is nothing to answer, so nothing
+        // goes out. Answering would hand the child whatever the user last
+        // copied. cf. `docs/adr/0007-input-security.md`
+
         Ok(Self {
             terminal,
             render,
@@ -202,6 +286,7 @@ impl Session {
             last_screen: ScreenState::default(),
             writes,
             drained: Vec::new(),
+            events,
         })
     }
 
@@ -279,6 +364,15 @@ impl Session {
     pub fn take_writes(&mut self) -> &[u8] {
         self.drained = std::mem::take(&mut self.writes.borrow_mut().bytes);
         &self.drained
+    }
+
+    /// Take the events queued for the app, emptying the queue, along with how
+    /// many were dropped for want of room since the last take.
+    ///
+    /// A dropped event never makes the screen wrong: everything that has to
+    /// be true is in the snapshot.
+    pub fn take_events(&mut self) -> (Vec<Event>, u64) {
+        self.events.borrow_mut().take()
     }
 
     /// Take the latest snapshot, emptying the mailbox.

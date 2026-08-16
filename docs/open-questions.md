@@ -19,6 +19,7 @@
 |---|---|
 | 하이퍼링크 노출 | 렌더 상태에 링크 id·URL 노출 요청. 받아들여지면 [0006](adr/0006-no-osc8-in-v1.md)을 재검토 |
 | 제목 질의 콜백 | 호스트가 제목 질의 응답을 채우는 콜백. 받아들여지면 [C4](03-core.md#c4--listener-and-response-hygiene)의 바이트 필터를 그 콜백으로 옮김 |
+| 빈 클립보드 페이로드 | 페이로드가 빈 `OSC 52`(`ESC ] 52 ; c ; BEL`)에서 안전 래퍼가 널 배열로 슬라이스를 만들어(`libghostty-vt` 0.2.1 `ClipboardWrite::contents`) 디버그 빌드가 중단됩니다. 우리 쪽에 막을 지점이 없어 상류 수정이 필요하며, 그때까지 [퍼저](https://github.com/kwnms04/knotty/issues/18)가 이 입력에서 멈춥니다 |
 
 ## v1
 

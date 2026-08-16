@@ -5,10 +5,11 @@ use std::mem::MaybeUninit;
 use std::ptr;
 
 use knotty_ffi::{
-    Attribute, Cell, Cursor, CursorShape, Dirty, KtBytes, KtSession, KtSnapshot, KtSnapshotView,
-    KtStatus, KtText, Rgb, Row, RowFlag, SelectionRange, Underline, kt_abi_version,
-    kt_session_feed, kt_session_free, kt_session_new_detached, kt_session_set_selection,
-    kt_session_take_snapshot, kt_session_take_writes, kt_snapshot_free, kt_snapshot_view,
+    Attribute, Cell, ClipboardTarget, Cursor, CursorShape, Dirty, KtBytes, KtEventKind, KtEvents,
+    KtSession, KtSnapshot, KtSnapshotView, KtStatus, KtText, Rgb, Row, RowFlag, SelectionRange,
+    Underline, kt_abi_version, kt_session_feed, kt_session_free, kt_session_new_detached,
+    kt_session_set_selection, kt_session_take_events, kt_session_take_snapshot,
+    kt_session_take_writes, kt_snapshot_free, kt_snapshot_view,
 };
 
 /// Ghostty's own defaults. A change here is an upstream palette change, not a
@@ -122,6 +123,55 @@ fn writes(session: *mut KtSession) -> Vec<u8> {
         return Vec::new();
     }
     unsafe { std::slice::from_raw_parts(queued.bytes, queued.len) }.to_vec()
+}
+
+/// What one event said, copied out so it outlives the drain that lent it.
+#[derive(Debug, PartialEq, Eq)]
+struct Happened {
+    kind: KtEventKind,
+    clipboard_target: ClipboardTarget,
+    text: String,
+}
+
+fn bell() -> Happened {
+    Happened {
+        kind: KtEventKind::Bell,
+        clipboard_target: ClipboardTarget::Standard,
+        text: String::new(),
+    }
+}
+
+fn clipboard_write(target: ClipboardTarget, text: &str) -> Happened {
+    Happened {
+        kind: KtEventKind::ClipboardWrite,
+        clipboard_target: target,
+        text: text.to_owned(),
+    }
+}
+
+/// Drain the event queue, copying it out so the next drain cannot move it
+/// under the caller. Returns what was queued and what was dropped.
+fn events(session: *mut KtSession) -> (Vec<Happened>, u64) {
+    let mut queued = MaybeUninit::<KtEvents>::uninit();
+    let status = unsafe { kt_session_take_events(session, queued.as_mut_ptr()) };
+    assert_eq!(status, KtStatus::Ok);
+
+    let queued = unsafe { queued.assume_init() };
+    if queued.len == 0 {
+        return (Vec::new(), queued.dropped);
+    }
+    let taken = unsafe { std::slice::from_raw_parts(queued.events, queued.len) }
+        .iter()
+        .map(|event| Happened {
+            kind: event.kind,
+            clipboard_target: event.clipboard_target,
+            text: match event.text.len {
+                0 => String::new(),
+                _ => text(event.text),
+            },
+        })
+        .collect();
+    (taken, queued.dropped)
 }
 
 /// Read borrowed text the way a consumer does: bytes and a length, no
@@ -1127,6 +1177,137 @@ fn a_writer_queue_over_its_cap_is_reported_apart_from_other_failures() {
     unsafe { kt_session_free(session) };
 }
 
+/// The bell leaves no mark on the screen, so the event is the only trace of
+/// it there is: a consumer that misses it has no second way to find out.
+#[test]
+fn a_bell_arrives_as_an_event() {
+    let session = detached(4, 1);
+
+    feed(session, b"\x07");
+
+    assert_eq!(events(session), (vec![bell()], 0));
+    assert_eq!(
+        events(session),
+        (Vec::new(), 0),
+        "taking the queue empties it",
+    );
+
+    unsafe { kt_session_free(session) };
+}
+
+/// Copying is the child's request and the app's to carry out, so the event
+/// has to say both which clipboard and what to put on it.
+#[test]
+fn a_clipboard_write_carries_its_target_and_its_text() {
+    let session = detached(4, 1);
+
+    // OSC 52 with the base64 of "hello", "world" and "again" — one for each
+    // clipboard a write can name, since the app puts them in different
+    // places.
+    feed(session, b"\x1b]52;c;aGVsbG8=\x07");
+    feed(session, b"\x1b]52;p;d29ybGQ=\x07");
+    feed(session, b"\x1b]52;s;YWdhaW4=\x07");
+
+    assert_eq!(
+        events(session),
+        (
+            vec![
+                clipboard_write(ClipboardTarget::Standard, "hello"),
+                clipboard_write(ClipboardTarget::Primary, "world"),
+                clipboard_write(ClipboardTarget::Selection, "again"),
+            ],
+            0,
+        ),
+    );
+
+    unsafe { kt_session_free(session) };
+}
+
+/// A payload past the cap is refused whole rather than cut short. Nothing
+/// tells the user their copy arrived as its first megabyte, so a truncated
+/// clipboard is worse than one that did not change.
+#[test]
+fn a_clipboard_payload_over_the_cap_is_refused_rather_than_cut_short() {
+    // The 1MiB the core keeps private. If the two ever disagree, this is what
+    // notices.
+    const CAP: usize = 1024 * 1024;
+
+    // Base64 of "aaa": four characters in, three bytes out, so a repeat of it
+    // decodes to a payload of a size this test can aim.
+    let payload = |bytes: usize| {
+        [
+            b"\x1b]52;c;".as_slice(),
+            &b"YWFh".repeat(bytes / 3),
+            b"\x07",
+        ]
+        .concat()
+    };
+
+    let session = detached(4, 1);
+
+    feed(session, &payload(CAP));
+    let (taken, dropped) = events(session);
+    assert_eq!(taken.len(), 1, "a payload within the cap is carried");
+    assert_eq!(dropped, 0);
+
+    feed(session, &payload(CAP + 3));
+
+    assert_eq!(
+        events(session),
+        (Vec::new(), 0),
+        "the write is refused, not queued as a prefix of itself",
+    );
+
+    unsafe { kt_session_free(session) };
+}
+
+/// The queue is finite because a child can ring the bell faster than anyone
+/// drains it. Losing events is allowed — everything a screen needs to be
+/// right is in the snapshot — but losing them silently is not.
+#[test]
+fn events_past_the_cap_are_counted_rather_than_queued() {
+    // The 64 the core keeps private, restated here for the same reason the
+    // writer queue's cap is.
+    const CAP: usize = 64;
+    const OVER: usize = 10;
+
+    let session = detached(4, 1);
+
+    feed(session, &b"\x07".repeat(CAP + OVER));
+
+    let (taken, dropped) = events(session);
+    assert_eq!(taken.len(), CAP, "the queue held its cap and no more");
+    assert_eq!(dropped, OVER as u64);
+    assert_eq!(
+        events(session),
+        (Vec::new(), 0),
+        "the count empties with the queue, so one overrun is reported once",
+    );
+
+    unsafe { kt_session_free(session) };
+}
+
+/// A child that could read the clipboard could read whatever the user last
+/// copied — a password among it. The engine drops the request without telling
+/// us, so there is nothing to answer with and nothing goes out.
+#[test]
+fn a_clipboard_read_request_gets_nothing_back() {
+    let session = detached(4, 1);
+    feed(session, b"\x1b]52;c;aGVsbG8=\x07");
+    events(session);
+
+    feed(session, b"\x1b]52;c;?\x07");
+
+    assert!(writes(session).is_empty(), "an answer went to the child");
+    assert_eq!(
+        events(session),
+        (Vec::new(), 0),
+        "a read request is not a write and must not reach the app as one",
+    );
+
+    unsafe { kt_session_free(session) };
+}
+
 #[test]
 fn null_arguments_are_reported_rather_than_dereferenced() {
     assert_eq!(
@@ -1143,6 +1324,10 @@ fn null_arguments_are_reported_rather_than_dereferenced() {
     );
     assert_eq!(
         unsafe { kt_session_take_writes(ptr::null_mut(), ptr::null_mut()) },
+        KtStatus::NullArgument,
+    );
+    assert_eq!(
+        unsafe { kt_session_take_events(ptr::null_mut(), ptr::null_mut()) },
         KtStatus::NullArgument,
     );
 

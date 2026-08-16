@@ -79,6 +79,64 @@ typedef int32_t KtStatus;
 #endif // __cplusplus
 
 /**
+ * Which kind of event a [`KtEvent`] is, and so which of its fields carry
+ * anything.
+ */
+enum KtEventKind
+#if defined(__cplusplus) || __STDC_VERSION__ >= 202311L
+  : uint8_t
+#endif // defined(__cplusplus) || __STDC_VERSION__ >= 202311L
+ {
+  /**
+   * The child rang the bell.
+   */
+  KT_EVENT_KIND_BELL = 0,
+  /**
+   * The child asked for text to be put on a clipboard.
+   */
+  KT_EVENT_KIND_CLIPBOARD_WRITE = 1,
+};
+#ifndef __cplusplus
+#if __STDC_VERSION__ >= 202311L
+typedef enum KtEventKind KtEventKind;
+#else
+typedef uint8_t KtEventKind;
+#endif // __STDC_VERSION__ >= 202311L
+#endif // __cplusplus
+
+/**
+ * Which clipboard a write is bound for.
+ *
+ * The engine normalizes each protocol's own selectors onto these three
+ * before a write reaches us, so they are all a write can name.
+ */
+enum KtClipboardTarget
+#if defined(__cplusplus) || __STDC_VERSION__ >= 202311L
+  : uint8_t
+#endif // defined(__cplusplus) || __STDC_VERSION__ >= 202311L
+ {
+  /**
+   * The system clipboard.
+   */
+  KT_CLIPBOARD_TARGET_STANDARD = 0,
+  /**
+   * The selection clipboard.
+   */
+  KT_CLIPBOARD_TARGET_SELECTION = 1,
+  /**
+   * The primary selection.
+   */
+  KT_CLIPBOARD_TARGET_PRIMARY = 2,
+};
+#ifndef __cplusplus
+#if __STDC_VERSION__ >= 202311L
+typedef enum KtClipboardTarget KtClipboardTarget;
+#else
+typedef uint8_t KtClipboardTarget;
+#endif // __STDC_VERSION__ >= 202311L
+#endif // __cplusplus
+
+/**
  * How much of the screen changed since the last snapshot was taken.
  *
  * The variants are ordered by how much they cover, so the larger of two is
@@ -349,6 +407,70 @@ typedef struct {
 } KtBytes;
 
 /**
+ * Borrowed UTF-8, valid for as long as whatever lent it stays put.
+ *
+ * Not null-terminated: read `len` bytes. What has been taken out of the text
+ * is the lending field's to say: a snapshot's title and working directory
+ * have had their control characters removed and so hold no interior nulls,
+ * a clipboard payload is whatever the child asked to copy.
+ */
+typedef struct {
+  /**
+   * The bytes.
+   */
+  const uint8_t *bytes;
+  /**
+   * How many of them.
+   */
+  size_t len;
+} KtText;
+
+/**
+ * One thing that happened, whose happening is the whole of its meaning.
+ */
+typedef struct {
+  /**
+   * Which kind of event this is.
+   */
+  KtEventKind kind;
+  /**
+   * Which clipboard the text is bound for. Set only for a clipboard write.
+   */
+  KtClipboardTarget clipboard_target;
+  /**
+   * What to put on that clipboard, borrowed for as long as the run it came
+   * in is. Empty for any other kind.
+   *
+   * Nothing has been taken out of it: it is what the child asked to copy,
+   * control characters and all. Stripping those would eat the newlines out
+   * of a copied paragraph, and untrusted bytes are made safe where they
+   * re-enter — the paste path. cf. `docs/adr/0007-input-security.md`
+   */
+  KtText text;
+} KtEvent;
+
+/**
+ * Borrowed run of events, valid until the call that lent them is made again.
+ */
+typedef struct {
+  /**
+   * The events, oldest first.
+   */
+  const KtEvent *events;
+  /**
+   * How many of them.
+   */
+  size_t len;
+  /**
+   * How many events were dropped for want of room since the last take. A
+   * dropped event never makes the screen wrong: everything that has to be
+   * true is in the snapshot. The count empties with the queue, so one
+   * overrun is reported once.
+   */
+  uint64_t dropped;
+} KtEvents;
+
+/**
  * A colour, already resolved out of the palette.
  */
 typedef struct {
@@ -443,23 +565,6 @@ typedef struct {
    */
   KtCursorShape shape;
 } KtCursor;
-
-/**
- * Borrowed UTF-8, valid until the snapshot it came from is freed.
- *
- * Not null-terminated: read `len` bytes. Control characters have already been
- * removed, so there are no interior nulls either.
- */
-typedef struct {
-  /**
-   * The bytes.
-   */
-  const uint8_t *bytes;
-  /**
-   * How many of them.
-   */
-  size_t len;
-} KtText;
 
 /**
  * Borrowed view of a snapshot's contents.
@@ -601,6 +706,28 @@ KtStatus kt_session_set_selection(KtSession *session, const KtSelectionRange *ra
  * pointer to a `KtBytes`.
  */
 KtStatus kt_session_take_writes(KtSession *session, KtBytes *out);
+
+/**
+ * Take the events a session has queued for the app, emptying the queue.
+ *
+ * `out` receives a run borrowed from the session, valid until the next call
+ * to this function on it or until the session is freed, along with the
+ * number of events dropped for want of room since the last take. A length of
+ * 0 means nothing was queued, which is not a failure.
+ *
+ * Unlike the writer queue this is not a detached-only drain: events are the
+ * app's to consume, and a session with a PTY behind it has no one else to
+ * consume them. Drain until the queue is empty on every wake.
+ *
+ * Works on a defunct session, for the same reason taking its snapshot does:
+ * what it queued before it broke is still what it queued.
+ *
+ * # Safety
+ *
+ * `session` must be a live handle and `out` must be a valid, writable
+ * pointer to a `KtEvents`.
+ */
+KtStatus kt_session_take_events(KtSession *session, KtEvents *out);
 
 /**
  * Take the latest snapshot, emptying the session's mailbox.

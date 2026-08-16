@@ -6,9 +6,11 @@
 //! No engine type appears in any signature outside those two modules.
 
 pub mod mailbox;
+pub mod queue;
 pub mod session;
 pub mod snapshot;
 
+pub use queue::{ClipboardTarget, Event};
 pub use session::{SelectionRange, Session};
 pub use snapshot::{
     Attribute, Cell, Cursor, CursorShape, Dirty, Rgb, Row, RowFlag, ScreenState, Snapshot,
