@@ -4,7 +4,12 @@
 
 `libghostty-vt-sys` builds the VT engine from ghostty sources with Zig, so a
 **Zig 0.15.x** toolchain must be on `PATH`. The pinned ghostty commit rejects
-0.16 at comptime. `brew install zig@0.15` or the official 0.15.2 tarball.
+0.16 at comptime. CI installs the tarball and pins the version in `ci.yml`;
+locally, `brew install zig@0.15` or the official 0.15.2 tarball.
+
+`zig@0.15` is **keg-only**: brew does not link it, so installing it changes
+nothing until it goes on `PATH` ahead of whatever `zig` resolves to now. Do
+not `brew link` it — that switches every other consumer of `zig` too.
 
 On macOS 26 that Zig cannot link: the 26 SDK's `libSystem.B.tbd` dropped the
 `arm64-macos` target, and 0.15.2 does not know the replacement. Zig locates the
@@ -19,6 +24,20 @@ for arg in "$@"; do
 done
 exec /usr/bin/xcrun "$@"
 ```
+
+With the shim at `~/.local/bin/xcrun`, one line covers both:
+
+```sh
+export PATH="$HOME/.local/bin:/opt/homebrew/opt/zig@0.15/bin:$PATH"
+```
+
+That shim answers for every `xcrun` the shell runs, not just knotty's builds.
+Anything else that wants the 26 SDK will get 15.4 instead, so scope it per
+directory if that becomes a problem. CI does not need it at all: `ci.yml` pins
+the runner to `macos-15`, whose SDK 0.15.2 can still link.
+
+Wrong Zig fails deep — a `@compileError` inside ghostty's `build.zig` wrapped
+in a build-script panic. `zig version` before blaming the crate.
 
 ## Golden harness
 
