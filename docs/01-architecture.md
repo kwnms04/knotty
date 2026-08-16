@@ -12,7 +12,7 @@
 
 VT 엔진과 knotty-core는 둘 다 "코어"로 불리기 쉽습니다. 이 문서에서 **VT 엔진**은 `libghostty-vt`를, **코어**는 knotty-core를 가리킵니다.
 
-관련: [0001](adr/0001-portable-core.md) 이식 가능한 코어 · [0002](adr/0002-libghostty-vt-core.md) VT 엔진 선택 · [0004](adr/0004-hide-vt-engine-types.md) 타입 은닉
+관련: [0001](adr/0001-portable-core.md) 이식 가능한 코어 · [0002](adr/0002-libghostty-vt-core.md) VT 엔진 선택 · [0004](adr/0004-hide-vt-engine-types.md) 타입 은닉 · [0012](adr/0012-own-the-binding-layer.md) 바인딩 계층 소유
 
 ## 3 Flows
 
