@@ -4,13 +4,15 @@
 
 | 층 | 소유 | 비고 |
 |---|---|---|
-| **VT 엔진** (`libghostty-vt`) | 파싱, 터미널 상태, 스크롤백, 리플로우, 셀 폭, 선택, 입력 인코딩 | 외부 라이브러리. 타입은 경계를 넘지 않음 |
+| **VT 엔진** (ghostty의 `libghostty-vt`) | 파싱, 터미널 상태, 스크롤백, 리플로우, 셀 폭, 선택, 입력 인코딩 | 외부 C 라이브러리. 타입은 경계를 넘지 않음 |
 | **knotty-core** (Rust) | PTY, I/O 스레드, writer 큐, 이벤트 큐, 스냅샷 변환, 메일박스 | OS 비의존 로직이 여기 모임 |
 | **knotty-config** (Rust) | TOML 파싱·검증·기본값 병합 | 경계로는 직렬화 블롭 하나만 |
 | **knotty-ffi** (C ABI) | 유일한 언어 경계 | 생성된 헤더가 진실 |
 | **App/** (Swift) | AppKit + Metal, IME, 입력, 레이아웃, 테마, 정책 | macOS 전용. hot path 접근 불가 |
 
-VT 엔진과 knotty-core는 둘 다 "코어"로 불리기 쉽습니다. 이 문서에서 **VT 엔진**은 `libghostty-vt`를, **코어**는 knotty-core를 가리킵니다.
+VT 엔진과 knotty-core는 둘 다 "코어"로 불리기 쉽습니다. 이 문서에서 **VT 엔진**은 ghostty가 내보내는 C 라이브러리를, **코어**는 knotty-core를 가리킵니다.
+
+`libghostty-vt`라는 이름은 둘을 가리킵니다 — 그 C 라이브러리, 그리고 그것을 감싼 서드파티 Rust 크레이트. knotty가 의존하는 것은 bindgen 계층인 `libghostty-vt-sys`뿐이고, 그 위 safe 계층은 knotty가 씁니다. cf. [0012](adr/0012-own-the-binding-layer.md)
 
 관련: [0001](adr/0001-portable-core.md) 이식 가능한 코어 · [0002](adr/0002-libghostty-vt-core.md) VT 엔진 선택 · [0004](adr/0004-hide-vt-engine-types.md) 타입 은닉 · [0012](adr/0012-own-the-binding-layer.md) 바인딩 계층 소유
 
