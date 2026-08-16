@@ -226,7 +226,7 @@ checksum = "3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07896ee72867612f2"
 [[package]]
 name = "libghostty-vt"
 version = "0.2.1"
-source = "git+https://github.com/kwnms04/libghostty-rs?branch=knotty-stopgap#a86fa1abbdba590e010206366c9ee3cb9b4c7090"
+source = "git+https://github.com/kwnms04/libghostty-rs?branch=knotty-stopgap#745f6be803d9440b6bd993fd9f9dd5df7e75048a"
 dependencies = [
  "bitflags",
  "int-enum",
@@ -236,7 +236,7 @@ dependencies = [
 [[package]]
 name = "libghostty-vt-sys"
 version = "0.2.1"
-source = "git+https://github.com/kwnms04/libghostty-rs?branch=knotty-stopgap#a86fa1abbdba590e010206366c9ee3cb9b4c7090"
+source = "git+https://github.com/kwnms04/libghostty-rs?branch=knotty-stopgap#745f6be803d9440b6bd993fd9f9dd5df7e75048a"
 
 [[package]]
 name = "linux-raw-sys"

@@ -3,41 +3,36 @@
 ## Build prerequisites
 
 `libghostty-vt-sys` builds the VT engine from ghostty sources with Zig, so a
-**Zig 0.15.x** toolchain must be on `PATH`. The pinned ghostty commit rejects
-0.16 at comptime. CI installs the tarball and pins the version in `ci.yml`;
-locally, `brew install zig@0.15` or the official 0.15.2 tarball.
+**Zig 0.15.x** toolchain is needed. The pinned ghostty commit rejects 0.16 at
+comptime. `brew install zig@0.15` or the official 0.15.2 tarball.
 
-`zig@0.15` is **keg-only**: brew does not link it, so installing it changes
-nothing until it goes on `PATH` ahead of whatever `zig` resolves to now. Do
-not `brew link` it — that switches every other consumer of `zig` too.
-
-On macOS 26 that Zig cannot link: the 26 SDK's `libSystem.B.tbd` dropped the
-`arm64-macos` target, and 0.15.2 does not know the replacement. Zig locates the
-SDK by running `xcrun --show-sdk-path`, so put an `xcrun` ahead of the real one
-on `PATH` that answers with the 15.4 SDK the Command Line Tools still ship:
+Two environment variables point the build at it, so nothing has to move on
+`PATH`:
 
 ```sh
-#!/bin/sh
-for arg in "$@"; do
-  [ "$arg" = "--show-sdk-path" ] &&
-    echo /Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk && exit 0
-done
-exec /usr/bin/xcrun "$@"
+export ZIG=/opt/homebrew/opt/zig@0.15/bin/zig
+export ZIG_SYSROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk
 ```
 
-With the shim at `~/.local/bin/xcrun`, one line covers both:
+`ZIG` names the toolchain outright. Without it the build takes whatever `zig`
+resolves to, which on a host that also has 0.16 means choosing between them
+globally — `brew install zig@0.15` alone changes nothing, because brew keeps
+it keg-only and unlinked.
 
-```sh
-export PATH="$HOME/.local/bin:/opt/homebrew/opt/zig@0.15/bin:$PATH"
-```
+`ZIG_SYSROOT` is for macOS 26, whose SDK 0.15.2 cannot link against: its
+`libSystem.B.tbd` dropped the `arm64-macos` target. Zig finds the SDK by
+spawning `xcrun` and reads no environment variable that would say otherwise,
+so the alternative is shadowing `xcrun` on `PATH` for every process in the
+shell. This passes `--sysroot` to `zig build` instead, which skips the
+detection.
 
-That shim answers for every `xcrun` the shell runs, not just knotty's builds.
-Anything else that wants the 26 SDK will get 15.4 instead, so scope it per
-directory if that becomes a problem. CI does not need it at all: `ci.yml` pins
-the runner to `macos-15`, whose SDK 0.15.2 can still link.
+Both are hooks in the patched `libghostty-vt-sys`; cf.
+[0012](docs/adr/0012-own-the-binding-layer.md). Neither is set in CI and
+neither has to be: `ci.yml` installs the pinned tarball onto `PATH`, and its
+`macos-15` runner ships an SDK 0.15.2 can link.
 
 Wrong Zig fails deep — a `@compileError` inside ghostty's `build.zig` wrapped
-in a build-script panic. `zig version` before blaming the crate.
+in a build-script panic. Check `$ZIG` before blaming the crate.
 
 ## Golden harness
 
