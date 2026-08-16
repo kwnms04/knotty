@@ -38,6 +38,35 @@ pub struct SelectionRange {
 /// queue grows until the process dies.
 const WRITE_QUEUE_CAP: usize = 8 * 1024 * 1024;
 
+/// How the engine answers a title query: `OSC l <title> ST`.
+const TITLE_REPORT_PREFIX: &[u8] = b"\x1b]l";
+
+/// The same answer carrying no title.
+const EMPTY_TITLE_REPORT: &[u8] = b"\x1b]l\x1b\\";
+
+/// Empty out an answer that would carry writable state back to the child.
+///
+/// A title query (`CSI 21 t`) is answered with the title, and a PTY write is
+/// keyboard input as far as the shell can tell — so output nobody trusts can
+/// set the title to a command, query it back, and have it typed. The engine
+/// emits this one answer with no callback to fill in, which is why it is
+/// caught here on the wire rather than refused earlier. The answer still goes
+/// out: a program waiting on one must not hang. cf.
+/// `docs/adr/0007-input-security.md`.
+///
+/// The icon label query is the other half of the pair the ADR names. Its
+/// report is not written here because nothing emits one: an answer the filter
+/// never sees costs a prefix to match and proves nothing when it does.
+//
+// `03-core.md` gives this to the `listener` module, which does not exist yet;
+// until it does, it sits beside the queue it feeds.
+fn sanitized_answer(bytes: &[u8]) -> &[u8] {
+    if bytes.starts_with(TITLE_REPORT_PREFIX) {
+        return EMPTY_TITLE_REPORT;
+    }
+    bytes
+}
+
 /// Bytes on their way to the child.
 ///
 /// Every write the terminal makes lands here, so nothing waits on a PTY that
@@ -114,7 +143,7 @@ impl Session {
         let writes = Rc::new(RefCell::new(WriteQueue::default()));
         terminal.on_pty_write({
             let writes = Rc::clone(&writes);
-            move |_, bytes| writes.borrow_mut().push(bytes)
+            move |_, bytes| writes.borrow_mut().push(sanitized_answer(bytes))
         })?;
 
         Ok(Self {

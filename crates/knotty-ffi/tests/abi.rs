@@ -950,6 +950,69 @@ fn nothing_queued_is_an_empty_run_rather_than_a_failure() {
     unsafe { kt_session_free(session) };
 }
 
+/// The engine reports the title with no callback of ours in the way, so
+/// untrusted output can plant a command in the title and have the answer
+/// delivered to the shell as keystrokes. cf. `docs/adr/0007-input-security.md`.
+#[test]
+fn a_title_query_is_answered_without_the_title_in_it() {
+    let session = detached(4, 1);
+    feed(session, b"\x1b]2;echo pwned\x07");
+
+    // The title has to be set for the query to have anything to leak: a
+    // filter kept honest by a broken setter is not kept honest at all.
+    let snapshot = take(session);
+    assert_eq!(text(view(snapshot).title), "echo pwned");
+    unsafe { kt_snapshot_free(snapshot) };
+
+    feed(session, b"\x1b[21t");
+
+    assert_eq!(
+        writes(session),
+        b"\x1b]l\x1b\\",
+        "the answer goes out carrying nothing — silence would hang a program \
+         waiting on one",
+    );
+
+    unsafe { kt_session_free(session) };
+}
+
+/// The filter reads each answer on its way out, so one that merely looks like
+/// a title report — same introducer, different report — has to pass whole.
+#[test]
+fn answers_other_than_the_title_report_are_left_alone() {
+    let session = detached(4, 1);
+
+    feed(session, b"\x1b]4;1;?\x1b\\");
+
+    assert_eq!(writes(session), b"\x1b]4;1;rgb:cccc/6666/6666\x1b\\");
+
+    unsafe { kt_session_free(session) };
+}
+
+/// Pushing and popping the title stack writes state rather than reading it
+/// back, so nothing about it is the filter's business.
+///
+/// What the stack itself does is out of reach here: the pinned engine parses
+/// both sequences and then drops them, keeping no stack, so a popped title
+/// never returns. This holds them to what is observable — that neither is
+/// answered on the wire, and neither disturbs the title.
+#[test]
+fn the_title_stack_is_driven_without_anything_being_answered() {
+    let session = detached(4, 1);
+    feed(session, b"\x1b]2;hello\x07");
+
+    feed(session, b"\x1b[22;2t");
+    feed(session, b"\x1b[23;2t");
+
+    assert!(writes(session).is_empty(), "a write was answered");
+
+    let snapshot = take(session);
+    assert_eq!(text(view(snapshot).title), "hello");
+
+    unsafe { kt_snapshot_free(snapshot) };
+    unsafe { kt_session_free(session) };
+}
+
 /// The cap is what keeps a child that never reads from growing the queue
 /// without bound, so overrunning it has to be its own status: a caller that
 /// cannot tell it from a rejected sequence cannot tell the user either.
