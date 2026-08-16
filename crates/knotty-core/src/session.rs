@@ -7,7 +7,7 @@ use libghostty_vt::screen::Screen;
 use libghostty_vt::selection::Selection;
 use libghostty_vt::terminal::{
     ClipboardLocation, ClipboardWriteError, ConformanceLevel, DeviceAttributeFeature,
-    DeviceAttributes, DeviceType, Point, PointCoordinate, PrimaryDeviceAttributes,
+    DeviceAttributes, DeviceType, Mode, Point, PointCoordinate, PrimaryDeviceAttributes,
     SecondaryDeviceAttributes, TertiaryDeviceAttributes,
 };
 use libghostty_vt::{RenderState, Terminal, TerminalOptions};
@@ -192,6 +192,11 @@ pub struct Session {
     // Shared with the engine callbacks, for the same reason the writer queue
     // is.
     events: Rc<RefCell<EventQueue>>,
+    // How the consumer is told to come and look, and whether it is owed a
+    // telling. Neither is the engine's business: when a frame gets drawn is
+    // between the session and whoever draws.
+    wake: Option<Box<dyn Fn()>>,
+    wake_owed: bool,
 }
 
 impl Session {
@@ -293,7 +298,20 @@ impl Session {
             writes,
             drained: Vec::new(),
             events,
+            wake: None,
+            wake_owed: false,
         })
+    }
+
+    /// Set what to call when the session has something new to be taken, or
+    /// clear it with `None`.
+    ///
+    /// The call is made on the thread that drove the session, from inside the
+    /// call that published — so it may do nothing but wake its own thread.
+    /// Re-entering the session from it would re-enter state the running call
+    /// still holds.
+    pub fn set_wake(&mut self, wake: Option<Box<dyn Fn()>>) {
+        self.wake = wake;
     }
 
     /// Select a range of the viewport, or clear the selection with `None`.
@@ -388,9 +406,14 @@ impl Session {
         self.mailbox.take()
     }
 
-    /// Capture the terminal and publish it, unless nothing changed.
+    /// Capture the terminal and publish it, unless nothing changed, then wake
+    /// the consumer if the round left it anything.
     fn publish(&mut self) -> Result<()> {
         let has_selection = self.has_selection()?;
+        // An event is as much reason to wake as a frame is, and a bell marks
+        // no cell — so a screen that did not move can still leave something
+        // to take.
+        let mut something_to_take = self.events.borrow_mut().take_arrival();
         if let Some(mut snapshot) =
             snapshot::capture(&mut self.render, &self.terminal, &self.last_screen)?
         {
@@ -403,7 +426,46 @@ impl Session {
                 snapshot.absorb_marks_of(&dropped);
             }
             self.mailbox.publish(snapshot);
+            something_to_take = true;
         }
+        self.emit_wake(something_to_take)
+    }
+
+    /// Wake the consumer if it is owed one, unless a synchronized output block
+    /// is open.
+    ///
+    /// A block is the child saying its screen is mid-draw, so waking inside
+    /// one hands over a half-drawn frame. Held back is the wake, not the
+    /// publication: the mailbox keeps only the newest snapshot, so the frames
+    /// published inside a block are passed over unseen rather than queued up.
+    /// And what is held back is a single owed wake rather than one per frame,
+    /// which is what makes the end of a block exactly one.
+    ///
+    /// A block the child never closes is a timeout's to break, and a timeout
+    /// needs a clock. A detached session runs on its caller's thread and has
+    /// none, so that arrives with the I/O thread.
+    ///
+    /// What is read here is the mode as the round left it, not every time it
+    /// moved during the round: the engine reports no mode change, and scanning
+    /// the bytes ourselves would take the parser back off it. So a round that
+    /// closes one block and opens the next holds the first one's wake until
+    /// the second closes. The mailbox keeps only the newest snapshot, so what
+    /// that costs is the delay and not the frame — and the timeout is its
+    /// upper bound once there is one.
+    fn emit_wake(&mut self, owed: bool) -> Result<()> {
+        self.wake_owed |= owed;
+        if !self.wake_owed || self.terminal.mode(Mode::SYNC_OUTPUT)? {
+            return Ok(());
+        }
+        // Owed with nobody to tell stays owed, so a consumer that registers
+        // late is told about what it was not there for rather than having to
+        // know to look.
+        let Some(wake) = &self.wake else {
+            return Ok(());
+        };
+
+        self.wake_owed = false;
+        wake();
         Ok(())
     }
 }

@@ -360,6 +360,17 @@ typedef struct KtSession KtSession;
 typedef struct KtSnapshot KtSnapshot;
 
 /**
+ * What a session calls when it has something new to be taken.
+ *
+ * `userdata` comes back exactly as it was handed to [`kt_session_set_wake`].
+ *
+ * The call is made on the thread that drove the session, from inside the call
+ * that published. **It may do nothing but wake its own thread** — a call back
+ * across this boundary re-enters a session the running call still holds.
+ */
+typedef void (*KtWake)(void *userdata);
+
+/**
  * A selection's two endpoints, in viewport coordinates.
  *
  * Both ends are inclusive, and either may come first: the pair records which
@@ -674,6 +685,34 @@ void kt_session_free(KtSession *session);
  * bytes. `bytes` may be null only when `len` is 0.
  */
 KtStatus kt_session_feed(KtSession *session, const uint8_t *bytes, size_t len);
+
+/**
+ * Register what a session calls when it has something new to be taken, or
+ * clear it by passing null.
+ *
+ * Called once per publication that left something behind — a new snapshot, a
+ * new event, or both. A feed that changed nothing calls nothing, so a
+ * consumer that draws on this never draws a frame it did not need.
+ *
+ * Wakes coalesce, so on each one take the snapshot and drain the queues until
+ * they are empty.
+ *
+ * While the child holds a synchronized output block open the call is held
+ * back, and the close of the block makes it exactly once — a frame published
+ * inside a block is a half-drawn screen, and the newest is the only one a
+ * consumer would have got anyway.
+ *
+ * What was published while no callback was registered stays owed, and the
+ * next publication carries it — so a consumer that attaches late is told
+ * there is something to take rather than having to know to look.
+ *
+ * # Safety
+ *
+ * `session` must be a live handle. `userdata` is never read here, only handed
+ * back, but whatever it points at must outlive the session or be cleared out
+ * of it first.
+ */
+KtStatus kt_session_set_wake(KtSession *session, KtWake wake, void *userdata);
 
 /**
  * Select a range of the viewport, or clear the selection by passing null.

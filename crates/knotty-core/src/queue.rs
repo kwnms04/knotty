@@ -40,21 +40,35 @@ pub enum Event {
 /// safe by construction: nothing a screen has to get right is in here.
 const EVENT_QUEUE_CAP: usize = 64;
 
-/// Events waiting for the app, and a count of the ones that did not fit.
+/// Events waiting for the app, a count of the ones that did not fit, and
+/// whether anything has arrived since the session last asked.
 #[derive(Debug, Default)]
 pub struct EventQueue {
     events: Vec<Event>,
     dropped: u64,
+    /// Whether anything reached the queue since this was last asked.
+    arrived: bool,
 }
 
 impl EventQueue {
     /// Queue `event`, or count it dropped when the queue is at its cap.
     pub fn push(&mut self, event: Event) {
+        self.arrived = true;
         if self.events.len() >= EVENT_QUEUE_CAP {
             self.dropped = self.dropped.saturating_add(1);
             return;
         }
         self.events.push(event);
+    }
+
+    /// Whether an event arrived since this was last asked.
+    ///
+    /// Asking clears it, the rule the writer queue's overrun flag already
+    /// follows. A dropped event counts as an arrival: what this answers is
+    /// whether there is something to come and look at, and a queue overflowing
+    /// is that too.
+    pub fn take_arrival(&mut self) -> bool {
+        std::mem::take(&mut self.arrived)
     }
 
     /// Take everything queued, oldest first, along with how many events were

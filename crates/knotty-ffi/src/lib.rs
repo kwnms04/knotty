@@ -3,6 +3,7 @@
 //! Every identifier that crosses the boundary is an opaque pointer or a
 //! `repr(C)` struct, and no VT engine type appears here.
 
+use std::ffi::c_void;
 use std::ptr;
 
 use knotty_core::{Error, Event, Session, Snapshot};
@@ -114,6 +115,15 @@ impl From<&Event> for KtEvent {
         }
     }
 }
+
+/// What a session calls when it has something new to be taken.
+///
+/// `userdata` comes back exactly as it was handed to [`kt_session_set_wake`].
+///
+/// The call is made on the thread that drove the session, from inside the call
+/// that published. **It may do nothing but wake its own thread** — a call back
+/// across this boundary re-enters a session the running call still holds.
+pub type KtWake = Option<extern "C" fn(userdata: *mut c_void)>;
 
 /// ABI version of this library.
 ///
@@ -339,6 +349,46 @@ pub unsafe extern "C" fn kt_session_feed(
     };
 
     session.drive(|session| session.feed(bytes))
+}
+
+/// Register what a session calls when it has something new to be taken, or
+/// clear it by passing null.
+///
+/// Called once per publication that left something behind — a new snapshot, a
+/// new event, or both. A feed that changed nothing calls nothing, so a
+/// consumer that draws on this never draws a frame it did not need.
+///
+/// Wakes coalesce, so on each one take the snapshot and drain the queues until
+/// they are empty.
+///
+/// While the child holds a synchronized output block open the call is held
+/// back, and the close of the block makes it exactly once — a frame published
+/// inside a block is a half-drawn screen, and the newest is the only one a
+/// consumer would have got anyway.
+///
+/// What was published while no callback was registered stays owed, and the
+/// next publication carries it — so a consumer that attaches late is told
+/// there is something to take rather than having to know to look.
+///
+/// # Safety
+///
+/// `session` must be a live handle. `userdata` is never read here, only handed
+/// back, but whatever it points at must outlive the session or be cleared out
+/// of it first.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kt_session_set_wake(
+    session: *mut KtSession,
+    wake: KtWake,
+    userdata: *mut c_void,
+) -> KtStatus {
+    let Some(session) = (unsafe { session.as_mut() }) else {
+        return KtStatus::NullArgument;
+    };
+
+    session.guard(|session| {
+        session.set_wake(wake.map(|wake| Box::new(move || wake(userdata)) as Box<dyn Fn()>));
+        KtStatus::Ok
+    })
 }
 
 /// Select a range of the viewport, or clear the selection by passing null.

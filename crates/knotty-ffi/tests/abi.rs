@@ -1,6 +1,7 @@
 //! The public C ABI is the seam: everything here goes through the same
 //! entry points a real consumer calls.
 
+use std::ffi::c_void;
 use std::mem::MaybeUninit;
 use std::ptr;
 
@@ -8,8 +9,8 @@ use knotty_ffi::{
     Attribute, Cell, ClipboardTarget, Cursor, CursorShape, Dirty, KtBytes, KtEventKind, KtEvents,
     KtSession, KtSnapshot, KtSnapshotView, KtStatus, KtText, Rgb, Row, RowFlag, SelectionRange,
     Underline, kt_abi_version, kt_session_feed, kt_session_free, kt_session_new_detached,
-    kt_session_set_selection, kt_session_take_events, kt_session_take_snapshot,
-    kt_session_take_writes, kt_snapshot_free, kt_snapshot_view,
+    kt_session_set_selection, kt_session_set_wake, kt_session_take_events,
+    kt_session_take_snapshot, kt_session_take_writes, kt_snapshot_free, kt_snapshot_view,
 };
 
 /// Ghostty's own defaults. A change here is an upstream palette change, not a
@@ -172,6 +173,22 @@ fn events(session: *mut KtSession) -> (Vec<Happened>, u64) {
         })
         .collect();
     (taken, queued.dropped)
+}
+
+/// All a real wake callback is allowed to do is set a flag its own thread
+/// reads. Counting is that, plus enough to tell one wake from two.
+extern "C" fn count_a_wake(userdata: *mut c_void) {
+    unsafe { *userdata.cast::<u32>() += 1 };
+}
+
+/// Point the session at a counter and hand it back. The box stays put while
+/// the session holds its address.
+fn wake_counter(session: *mut KtSession) -> Box<u32> {
+    let mut count = Box::new(0u32);
+    let status =
+        unsafe { kt_session_set_wake(session, Some(count_a_wake), (&raw mut *count).cast()) };
+    assert_eq!(status, KtStatus::Ok);
+    count
 }
 
 /// Read borrowed text the way a consumer does: bytes and a length, no
@@ -1308,6 +1325,110 @@ fn a_clipboard_read_request_gets_nothing_back() {
     unsafe { kt_session_free(session) };
 }
 
+/// Without this a consumer has to poll to find out whether there is a frame,
+/// which is the idle cost the whole design exists to avoid. A bell is in here
+/// because it marks no cell: an event is as much reason to come and look as a
+/// frame is.
+#[test]
+fn a_wake_says_when_there_is_something_to_take() {
+    let session = detached(4, 1);
+    let count = wake_counter(session);
+
+    feed(session, b"x");
+    assert_eq!(*count, 1, "a new screen went unannounced");
+
+    feed(session, b"\x07");
+    assert_eq!(*count, 2, "a bell changes no cell but is still an event");
+
+    unsafe { kt_session_free(session) };
+}
+
+/// A wake the consumer cannot act on is a frame it draws for nothing. The
+/// query here is the case that decides the rule: bytes came in and an answer
+/// went out, but the screen did not move and nothing happened the app has to
+/// hear about — so what the child is owed is not what the consumer is.
+#[test]
+fn a_feed_that_changes_nothing_wakes_nobody() {
+    let session = detached(4, 1);
+    let count = wake_counter(session);
+    feed(session, b"x");
+    let before = *count;
+
+    feed(session, b"\x1b[c");
+
+    assert!(!writes(session).is_empty(), "the query went unanswered");
+    assert_eq!(*count, before, "queued writer traffic woke the consumer");
+
+    unsafe { kt_session_free(session) };
+}
+
+/// Waking inside a block hands over the half-drawn screen the block exists to
+/// hide, so what the consumer must observe is one wake at the close and none
+/// before it.
+#[test]
+fn a_synchronized_output_block_holds_the_wake_back_until_it_closes() {
+    let session = detached(4, 1);
+    let count = wake_counter(session);
+
+    feed(session, b"\x1b[?2026h");
+    feed(session, b"a");
+    feed(session, b"b");
+    assert_eq!(*count, 0, "a half-drawn screen reached the consumer");
+
+    feed(session, b"\x1b[?2026l");
+
+    assert_eq!(*count, 1, "a closed block is one wake, not one per frame");
+
+    // The next screen is announced as any other would be: closing the block
+    // settled what was owed and left nothing behind.
+    feed(session, b"c");
+    assert_eq!(*count, 2);
+
+    unsafe { kt_session_free(session) };
+}
+
+/// A block that opened and drew nothing owes nothing: what unblocks a held
+/// wake is a frame, not the closing sequence.
+#[test]
+fn a_synchronized_output_block_with_nothing_in_it_wakes_nobody() {
+    let session = detached(4, 1);
+    let count = wake_counter(session);
+    feed(session, b"x");
+    let before = *count;
+
+    feed(session, b"\x1b[?2026h\x1b[?2026l");
+
+    assert_eq!(*count, before, "an empty block ended in a wake of its own");
+
+    unsafe { kt_session_free(session) };
+}
+
+/// A consumer that goes away must be able to say so before it does, or the
+/// session calls into what is no longer there. What it missed while away is
+/// still owed, so it does not have to know to go looking on its way back.
+#[test]
+fn clearing_the_wake_stops_the_calls_without_losing_what_they_would_have_said() {
+    let session = detached(4, 1);
+    let count = wake_counter(session);
+    feed(session, b"x");
+
+    assert_eq!(
+        unsafe { kt_session_set_wake(session, None, ptr::null_mut()) },
+        KtStatus::Ok,
+    );
+    feed(session, b"y");
+    assert_eq!(*count, 1, "a cleared callback was still called");
+
+    // Nothing new in this feed, so the one wake the fresh counter sees can
+    // only be the one "y" was owed.
+    let count = wake_counter(session);
+    feed(session, b"");
+
+    assert_eq!(*count, 1, "the screen drawn while nobody listened was lost");
+
+    unsafe { kt_session_free(session) };
+}
+
 #[test]
 fn null_arguments_are_reported_rather_than_dereferenced() {
     assert_eq!(
@@ -1328,6 +1449,10 @@ fn null_arguments_are_reported_rather_than_dereferenced() {
     );
     assert_eq!(
         unsafe { kt_session_take_events(ptr::null_mut(), ptr::null_mut()) },
+        KtStatus::NullArgument,
+    );
+    assert_eq!(
+        unsafe { kt_session_set_wake(ptr::null_mut(), None, ptr::null_mut()) },
         KtStatus::NullArgument,
     );
 

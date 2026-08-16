@@ -105,3 +105,11 @@ int kt_consumer_is_selected(const KtSnapshotView *view, uint16_t row, uint16_t c
 /* M0 has no session with a PTY behind it, so the only thing to pin is that
  * the code a PTY session's feed returns exists and keeps its value. */
 _Static_assert(KT_STATUS_NOT_DETACHED == 8, "the PTY feed contract moved");
+
+/* A wake runs on the core's thread and may do nothing but flag the consumer's
+ * own, which is why it takes no lock and reads nothing back. */
+static void kt_consumer_on_wake(void *userdata) { *(int *)userdata = 1; }
+
+KtStatus kt_consumer_draw_when_told(KtSession *session, int *needs_frame) {
+    return kt_session_set_wake(session, kt_consumer_on_wake, needs_frame);
+}
