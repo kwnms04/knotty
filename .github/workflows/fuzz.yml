@@ -1,0 +1,90 @@
+name: Fuzz
+
+# Off the pull-request path on purpose. A coverage-guided fuzzer wants a
+# nightly toolchain and an hour of runner time, and a check that gates a merge
+# may have neither. So it runs on its own clock, and `ci.yml` stays what a PR
+# waits on.
+on:
+  schedule:
+    - cron: '0 4 * * *'
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  # Same reason as ci.yml: the pinned ghostty commit rejects Zig 0.16.
+  ZIG_VERSION: 0.15.2
+  # M1's exit criterion is an hour without a crash, so an hour is what a run
+  # is. A nightly run that found nothing is the criterion being met again.
+  FUZZ_SECONDS: 3600
+
+jobs:
+  feed:
+    # Linux only. The target is the portable core of adr/0001 and nothing in it
+    # is platform-specific, so a second runner would buy a second copy of the
+    # same hour.
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Zig
+        run: |
+          set -euo pipefail
+          zig_dir="zig-x86_64-linux-${ZIG_VERSION}"
+          curl -fsSL "https://ziglang.org/download/${ZIG_VERSION}/${zig_dir}.tar.xz" \
+            | tar -xJ
+          echo "${PWD}/${zig_dir}" >> "${GITHUB_PATH}"
+
+      - run: rustup toolchain install nightly --profile minimal
+
+      - run: cargo install cargo-fuzz --locked
+
+      # `fuzz/` heads a workspace of its own, so the root `--workspace` runs in
+      # ci.yml cannot see it. Without these two the target is the one file in
+      # the repo no lint has ever read.
+      - run: cargo fmt --manifest-path fuzz/Cargo.toml --all -- --check
+
+      - run: cargo clippy --manifest-path fuzz/Cargo.toml --all-targets -- -D warnings
+
+      # What one run learned is where the next one starts. The key carries the
+      # run id so it never hits: every run restores the newest prefix match and
+      # saves the corpus it grew under a key of its own.
+      - uses: actions/cache@v4
+        with:
+          path: fuzz/corpus/feed
+          key: fuzz-corpus-feed-${{ github.run_id }}
+          restore-keys: fuzz-corpus-feed-
+
+      # The golden recordings come along as a second corpus directory, read but
+      # never written to. Real terminal streams are a better place to start
+      # than random bytes, and referring to them beats copying them in — two
+      # sets of the same recordings would have to be kept in step.
+      #
+      # `-fork=1` because the run is an hour long. AddressSanitizer's allocator
+      # holds onto pages it never hands back, so a single process climbs past
+      # libFuzzer's RSS limit and is killed for an out-of-memory the core did
+      # not cause — the same target built without a sanitizer sits flat at
+      # 34MB. Forking gives each batch of inputs a fresh process, which puts
+      # that growth back where it started.
+      #
+      # Fork mode ignores timeouts and out-of-memories by default and stops
+      # only on crashes. `-ignore_timeouts=0` takes the first half back: an
+      # input the parser never finishes is a bug this is here to find, and no
+      # sanitizer invents one. Out-of-memory stays ignored, because under
+      # forking that is the growth above and not knotty's — which does mean an
+      # allocation the core lets run away is a night this job passes. Bounding
+      # what a session may allocate is what would make it catchable.
+      - name: Fuzz feed
+        run: >
+          cargo +nightly fuzz run feed
+          fuzz/corpus/feed crates/knotty-harness/recordings
+          -- -fork=1 -ignore_timeouts=0 -max_total_time=${{ env.FUZZ_SECONDS }}
+
+      # The input that crashed. It reproduces with
+      # `cargo +nightly fuzz run feed <file>`, and belongs in
+      # `fuzz/corpus/feed/` once the crash is fixed.
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: fuzz-artifacts
+          path: fuzz/artifacts/feed
