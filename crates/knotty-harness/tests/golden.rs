@@ -69,3 +69,16 @@ fn htop() {
 fn unicode() {
     check("unicode");
 }
+
+/// Not a capture: no application was going to ring the bell, copy to the
+/// clipboard, ask for the title back and open a synchronized output block in
+/// the same run, and the four recordings above touch none of them. So the
+/// stream is written by hand, in that order, with the block spanning a chunk
+/// boundary — a block that fits in one feed says nothing about suppression.
+///
+/// The enquiry and tertiary attributes queries are here for the same reason.
+/// tmux asks the other three the terminal answers; nothing asks these two.
+#[test]
+fn synthetic() {
+    check("synthetic");
+}

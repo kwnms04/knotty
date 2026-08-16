@@ -1,31 +1,45 @@
-//! Replay a recorded terminal stream and describe the screen it produced.
+//! Replay a recorded terminal stream and describe what it produced.
 //!
 //! The description is what a golden file holds, so it has to be a total
-//! function of the snapshot: everything a consumer can read is in it, and
-//! nothing else is. Comparing two of them is comparing bytes.
+//! function of what a consumer gets: the screen, the bytes queued for the
+//! child, the events queued for the app, and how many times the session said
+//! there was something to take. Comparing two of them is comparing bytes.
 //!
 //! Everything here goes through the public C ABI. The harness is only worth
 //! anything if the path it checks is the path an application takes.
 
+use std::cell;
+use std::ffi::c_void;
 use std::fmt::Write as _;
 use std::ptr;
 
 use knotty_ffi::{
-    Attribute, Cell, CursorShape, Dirty, KtSnapshotView, KtStatus, KtText, RowFlag, Underline,
-    kt_session_feed, kt_session_free, kt_session_new_detached, kt_session_take_snapshot,
-    kt_snapshot_free, kt_snapshot_view,
+    Attribute, Cell, ClipboardTarget, CursorShape, Dirty, KtBytes, KtEvent, KtEventKind, KtEvents,
+    KtSnapshotView, KtStatus, KtText, RowFlag, Underline, kt_session_feed, kt_session_free,
+    kt_session_new_detached, kt_session_set_wake, kt_session_take_events, kt_session_take_snapshot,
+    kt_session_take_writes, kt_snapshot_free, kt_snapshot_view,
 };
 
 /// The format the goldens are written in. Bump it when the encoding changes,
 /// so a stale golden fails loudly rather than diffing line by line.
-const FORMAT: &str = "knotty-golden 1";
+const FORMAT: &str = "knotty-golden 2";
 
 /// A recorded stream arrives from a PTY in pieces, not all at once, and an
 /// escape sequence can straddle two of them. Replaying in chunks keeps the
 /// harness honest about that.
 const CHUNK: usize = 1024;
 
-/// Feed a recording to a fresh session and describe the screen it left.
+/// Count one wake into the counter `userdata` points at.
+///
+/// A detached session drives everything on the calling thread, so a `Cell` is
+/// all the counter needs — nothing here crosses threads. It stays spelled out
+/// because `Cell` is already the grid's.
+extern "C" fn count_wake(userdata: *mut c_void) {
+    let wakes = unsafe { &*userdata.cast::<cell::Cell<u32>>() };
+    wakes.set(wakes.get() + 1);
+}
+
+/// Feed a recording to a fresh session and describe what it left behind.
 ///
 /// # Errors
 ///
@@ -36,12 +50,38 @@ pub fn replay(recording: &[u8], cols: u16, rows: u16, scrollback: usize) -> Resu
         kt_session_new_detached(cols, rows, scrollback, &mut session)
     })?;
 
+    // The wake callback is handed a pointer to this, so it has to outlive the
+    // session — which is freed at the end of this call, before it goes.
+    let wakes = cell::Cell::new(0);
+
     let described = (|| {
+        check("kt_session_set_wake", unsafe {
+            kt_session_set_wake(
+                session,
+                Some(count_wake),
+                ptr::from_ref(&wakes).cast_mut().cast(),
+            )
+        })?;
+
         for chunk in recording.chunks(CHUNK) {
             check("kt_session_feed", unsafe {
                 kt_session_feed(session, chunk.as_ptr(), chunk.len())
             })?;
         }
+
+        // Both runs are borrowed from the session and stay valid until the
+        // same call is made again, which it is not.
+        let mut writes = std::mem::MaybeUninit::<KtBytes>::uninit();
+        check("kt_session_take_writes", unsafe {
+            kt_session_take_writes(session, writes.as_mut_ptr())
+        })?;
+        let writes = unsafe { writes.assume_init() };
+
+        let mut events = std::mem::MaybeUninit::<KtEvents>::uninit();
+        check("kt_session_take_events", unsafe {
+            kt_session_take_events(session, events.as_mut_ptr())
+        })?;
+        let events = unsafe { events.assume_init() };
 
         let mut snapshot = ptr::null_mut();
         check("kt_session_take_snapshot", unsafe {
@@ -50,8 +90,14 @@ pub fn replay(recording: &[u8], cols: u16, rows: u16, scrollback: usize) -> Resu
 
         let mut view = std::mem::MaybeUninit::<KtSnapshotView>::uninit();
         let status = unsafe { kt_snapshot_view(snapshot, view.as_mut_ptr()) };
-        let described =
-            check("kt_snapshot_view", status).map(|()| describe(&unsafe { view.assume_init() }));
+        let described = check("kt_snapshot_view", status).map(|()| {
+            describe(
+                &unsafe { view.assume_init() },
+                &writes,
+                &events,
+                wakes.get(),
+            )
+        });
 
         unsafe { kt_snapshot_free(snapshot) };
         described
@@ -68,11 +114,12 @@ fn check(call: &str, status: KtStatus) -> Result<(), String> {
     }
 }
 
-/// Write out everything the snapshot says.
-fn describe(view: &KtSnapshotView) -> String {
+/// Write out everything the session handed back.
+fn describe(view: &KtSnapshotView, writes: &KtBytes, events: &KtEvents, wakes: u32) -> String {
     let mut out = String::new();
 
     let _ = writeln!(out, "{FORMAT}");
+    describe_outbound(&mut out, writes, events, wakes);
     let _ = writeln!(out, "size {} {}", view.cols, view.rows);
     let _ = writeln!(out, "dirty {}", dirty_name(view.dirty));
     let _ = writeln!(
@@ -104,6 +151,38 @@ fn describe(view: &KtSnapshotView) -> String {
         describe_row(&mut out, view, row);
     }
     out
+}
+
+/// Everything that left the session by a route other than the screen: what
+/// was queued for the child, what was queued for the app, and how many times
+/// the session said there was something to take.
+fn describe_outbound(out: &mut String, writes: &KtBytes, events: &KtEvents, wakes: u32) {
+    let _ = writeln!(out, "wakes {wakes}");
+
+    let queued = if writes.len == 0 {
+        &[][..]
+    } else {
+        unsafe { std::slice::from_raw_parts(writes.bytes, writes.len) }
+    };
+    let _ = writeln!(out, "writes {}", quoted_bytes(queued));
+
+    let _ = writeln!(out, "events {} dropped {}", events.len, events.dropped);
+    for index in 0..events.len {
+        let event = unsafe { *events.events.add(index) };
+        describe_event(out, index, &event);
+    }
+}
+
+fn describe_event(out: &mut String, index: usize, event: &KtEvent) {
+    let _ = match event.kind {
+        KtEventKind::Bell => writeln!(out, "event {index} bell"),
+        KtEventKind::ClipboardWrite => writeln!(
+            out,
+            "event {index} clipboard-write {} {}",
+            clipboard_target_name(event.clipboard_target),
+            quoted(text_of(event.text)),
+        ),
+    };
 }
 
 fn describe_row(out: &mut String, view: &KtSnapshotView, row: u16) {
@@ -213,6 +292,37 @@ fn quoted(text: impl AsRef<str>) -> String {
     format!("\"{escaped}\"")
 }
 
+/// Bytes as themselves where they are printable ASCII and as `\xNN` where
+/// they are not.
+///
+/// What the terminal answers a query with is mostly an escape sequence, so a
+/// reader can see whether the answer carries what it should — which is the
+/// whole point of writing the writer queue down. Hex throughout would hide
+/// that behind arithmetic.
+fn quoted_bytes(bytes: &[u8]) -> String {
+    let mut out = String::from("\"");
+    for &byte in bytes {
+        match byte {
+            b'\\' => out.push_str("\\\\"),
+            b'"' => out.push_str("\\\""),
+            0x20..=0x7e => out.push(char::from(byte)),
+            other => {
+                let _ = write!(out, "\\x{other:02x}");
+            }
+        }
+    }
+    out.push('"');
+    out
+}
+
+fn clipboard_target_name(target: ClipboardTarget) -> &'static str {
+    match target {
+        ClipboardTarget::Standard => "standard",
+        ClipboardTarget::Selection => "selection",
+        ClipboardTarget::Primary => "primary",
+    }
+}
+
 fn rgb(r: u8, g: u8, b: u8) -> String {
     format!("{r:02x}{g:02x}{b:02x}")
 }
@@ -296,7 +406,14 @@ pub fn diff(golden: &str, produced: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::diff;
+    use super::{diff, quoted_bytes};
+
+    #[test]
+    fn queued_bytes_are_readable_where_they_can_be_and_escaped_where_they_cannot() {
+        assert_eq!(quoted_bytes(b"\x1b]l\x1b\\"), r#""\x1b]l\x1b\\""#);
+        assert_eq!(quoted_bytes("é".as_bytes()), r#""\xc3\xa9""#);
+        assert_eq!(quoted_bytes(b"say \"hi\""), r#""say \"hi\"""#);
+    }
 
     #[test]
     fn identical_descriptions_do_not_differ() {

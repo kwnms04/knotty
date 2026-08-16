@@ -37,11 +37,16 @@ in a build-script panic. Check `$ZIG` before blaming the crate.
 ## Golden harness
 
 `crates/knotty-harness` replays recorded terminal streams through the public C
-ABI and compares the resulting screen with a committed golden. `cargo test`
-checks them; only `KNOTTY_UPDATE_GOLDENS=1 cargo test -p knotty-harness`
-writes them. Re-record by capturing an application under `script(1)` and
-cutting the stream while its screen is still drawn — a normal exit restores
-the primary screen and leaves the golden blank.
+ABI and compares what came out with a committed golden: the screen, the bytes
+queued for the child, the events queued for the app, and the wake count.
+`cargo test` checks them; only `KNOTTY_UPDATE_GOLDENS=1 cargo test -p
+knotty-harness` writes them. Re-record by capturing an application under
+`script(1)` and cutting the stream while its screen is still drawn — a normal
+exit restores the primary screen and leaves the golden blank.
+
+`recordings/synthetic.vt` is the exception: it is written by hand, not
+captured, because no application rings the bell, copies to the clipboard,
+queries its title and opens a synchronized output block in one run.
 
 ## Generated header
 

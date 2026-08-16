@@ -1,4 +1,7 @@
-knotty-golden 1
+knotty-golden 2
+wakes 3
+writes ""
+events 0 dropped 0
 size 80 24
 dirty full
 selection none
