@@ -46,6 +46,29 @@ jobs:
 
       - run: zig version
 
+      # ghostty's own build pulls its dependencies — imgui, zigimg, vaxis — as
+      # tarballs from GitHub, and without this every run demanded those
+      # endpoints be healthy. On 2026-08-17 they were not: three of six job
+      # attempts inside an hour died on 429, 502 and 503, none of them anything
+      # to do with the change under test. A gate that fails at random is one
+      # somebody turns off, which is the same reason `07-definition-of-done.md`
+      # keeps the benches off CI.
+      #
+      # Keyed on the lockfile because the pin that decides which dependencies
+      # exist — `GHOSTTY_COMMIT`, in the patched `-sys` build script — is not a
+      # file in this repo. It is a proxy, so an unrelated dependency bump costs
+      # one cold fetch; the restore key is what keeps that from being a full
+      # one, since Zig fetches only the packages it did not find.
+      #
+      # This shrinks the exposure rather than removing it: the ghostty clone
+      # itself still happens every run.
+      - name: Cache Zig packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/zig
+          key: zig-pkg-${{ matrix.runner }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: zig-pkg-${{ matrix.runner }}-
+
       - run: cargo fmt --all -- --check
 
       - run: cargo clippy --workspace --all-targets -- -D warnings
