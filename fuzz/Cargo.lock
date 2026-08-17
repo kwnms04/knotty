@@ -104,7 +104,7 @@ dependencies = [
 [[package]]
 name = "libghostty-vt-sys"
 version = "0.2.1"
-source = "git+https://github.com/kwnms04/libghostty-rs?branch=knotty-stopgap#745f6be803d9440b6bd993fd9f9dd5df7e75048a"
+source = "git+https://github.com/kwnms04/libghostty-rs?branch=knotty-build-hooks#ffd302efce81739e0f4eba14a7c1a69486d370d5"
 
 [[package]]
 name = "linux-raw-sys"

@@ -19,11 +19,10 @@ libghostty-vt-sys = "=0.2.1"
 # `kwnms04/knotty#10`.
 rustix = { version = "1.1", features = ["event", "pipe", "process", "pty", "termios"] }
 
-# Permanent, not a stopgap. The build hooks `ZIG` and `ZIG_SYSROOT` are here
-# and AGENTS.md says what each is for; the two soundness fixes that used to sit
-# beside them went out with the safe wrapper, so the diff is `build.rs` and
-# nothing else. This section staying is the steady state rather than a leftover
-# to clear — the cost is re-cutting the branch on each engine bump, which is
+# Permanent, not a stopgap. The branch is one commit on top of 0.2.1 and it
+# touches `build.rs` alone — the hooks `ZIG` and `ZIG_SYSROOT`, which AGENTS.md
+# explains. This section staying is the steady state rather than a leftover to
+# clear; the cost is re-cutting that one commit on each engine bump, which is
 # what was traded for not depending on an upstream release. cf. ADR 0012.
 [patch.crates-io]
-libghostty-vt-sys = { git = "https://github.com/kwnms04/libghostty-rs", branch = "knotty-stopgap" }
+libghostty-vt-sys = { git = "https://github.com/kwnms04/libghostty-rs", branch = "knotty-build-hooks" }

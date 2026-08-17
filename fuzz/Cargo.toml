@@ -21,7 +21,7 @@ knotty-core = { path = "../crates/knotty-core" }
 # fuzzing the core against a differently built engine fuzzes a different crate
 # than CI builds. Both are permanent; cf. ADR 0012.
 [patch.crates-io]
-libghostty-vt-sys = { git = "https://github.com/kwnms04/libghostty-rs", branch = "knotty-stopgap" }
+libghostty-vt-sys = { git = "https://github.com/kwnms04/libghostty-rs", branch = "knotty-build-hooks" }
 
 [[bin]]
 name = "feed"
