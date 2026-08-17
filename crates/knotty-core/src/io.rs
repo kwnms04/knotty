@@ -231,8 +231,12 @@ impl Pty {
             .stdout(Stdio::from(far.try_clone()?))
             .stderr(Stdio::from(far.try_clone()?))
             .env("TERM", TERM);
+        // The crate's other exception to the ban on `unsafe`, and the smaller
+        // one: there is no safe way to ask for work between fork and exec.
+        //
         // SAFETY: both calls are async-signal-safe, which is the whole of what
         // a child between fork and exec may make.
+        #[allow(unsafe_code, reason = "no safe spelling of a pre-exec hook")]
         unsafe {
             command.pre_exec(move || {
                 // A session of its own, and then the terminal as its

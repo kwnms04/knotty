@@ -1,21 +1,7 @@
-//! C3 — the single conversion point between VT engine types and kt types.
+//! What a consumer is handed: one immutable frame of terminal state.
 //!
-//! Nothing outside this module names a VT engine type in a signature.
-
-use libghostty_vt::render::{
-    CellIteration, CellIterator, CursorVisualStyle, Dirty as VtDirty, RowIterator, RowSelection,
-    Snapshot as Frame,
-};
-use libghostty_vt::screen::{CellContentTag, CellWide};
-use libghostty_vt::{RenderState, Terminal};
-
-use crate::{Error, Result};
-
-impl From<libghostty_vt::Error> for Error {
-    fn from(_: libghostty_vt::Error) -> Self {
-        Self::Engine
-    }
-}
+//! Types only. Filling them in is [`crate::vt`]'s, which is the one place the
+//! engine is read. cf. `docs/adr/0005-flat-snapshot.md`
 
 /// A colour, already resolved out of the palette.
 #[repr(C)]
@@ -27,16 +13,6 @@ pub struct Rgb {
     pub g: u8,
     /// Blue component.
     pub b: u8,
-}
-
-impl From<libghostty_vt::style::RgbColor> for Rgb {
-    fn from(color: libghostty_vt::style::RgbColor) -> Self {
-        Self {
-            r: color.r,
-            g: color.g,
-            b: color.b,
-        }
-    }
 }
 
 /// Cell attributes, OR-ed together into a cell's `attributes` field.
@@ -95,25 +71,6 @@ pub enum Underline {
     Unknown = 255,
 }
 
-impl From<libghostty_vt::style::Underline> for Underline {
-    fn from(underline: libghostty_vt::style::Underline) -> Self {
-        use libghostty_vt::style::Underline as Vt;
-
-        match underline {
-            Vt::None => Self::None,
-            Vt::Single => Self::Single,
-            Vt::Double => Self::Double,
-            Vt::Curly => Self::Curly,
-            Vt::Dotted => Self::Dotted,
-            Vt::Dashed => Self::Dashed,
-            // The engine's enum is non-exhaustive. Say so rather than picking
-            // a kind, so an upstream addition shows up instead of hiding
-            // inside one of the kinds we do know.
-            _ => Self::Unknown,
-        }
-    }
-}
-
 /// How much of the screen changed since the last snapshot was taken.
 ///
 /// The variants are ordered by how much they cover, so the larger of two is
@@ -128,16 +85,6 @@ pub enum Dirty {
     Partial = 1,
     /// Everything changed, as on a switch to or from the alternate screen.
     Full = 2,
-}
-
-impl From<VtDirty> for Dirty {
-    fn from(dirty: VtDirty) -> Self {
-        match dirty {
-            VtDirty::Clean => Self::Clean,
-            VtDirty::Partial => Self::Partial,
-            VtDirty::Full => Self::Full,
-        }
-    }
 }
 
 /// Row state, OR-ed together into a row's `flags` field.
@@ -168,20 +115,6 @@ pub enum CursorShape {
     BlockHollow = 3,
     /// A shape this version of the engine knows and knotty does not.
     Unknown = 255,
-}
-
-impl From<CursorVisualStyle> for CursorShape {
-    fn from(style: CursorVisualStyle) -> Self {
-        match style {
-            CursorVisualStyle::Block => Self::Block,
-            CursorVisualStyle::Bar => Self::Bar,
-            CursorVisualStyle::Underline => Self::Underline,
-            CursorVisualStyle::BlockHollow => Self::BlockHollow,
-            // The engine's enum is non-exhaustive; say so rather than picking
-            // a shape, so an upstream addition shows up.
-            _ => Self::Unknown,
-        }
-    }
 }
 
 /// Where the cursor is and how it looks.
@@ -306,253 +239,4 @@ impl Snapshot {
             row.flags |= dropped.flags & RowFlag::Dirty as u8;
         }
     }
-}
-
-/// Flatten the terminal's render state into a snapshot.
-///
-/// Returns `Ok(None)` when nothing changed since the last capture, so a
-/// caller publishes at most once per unit of work and never for a frame that
-/// would be identical. `previous` is the screen state of the last capture:
-/// the engine's dirty tracking does not cover it, so a title or cursor move
-/// on an otherwise still screen would go unpublished without it.
-///
-/// `even_if_unchanged` is for a caller with something to say that the screen
-/// cannot show, and takes that answer away: it always yields a frame.
-pub(crate) fn capture(
-    render: &mut RenderState<'static>,
-    terminal: &Terminal<'static, 'static>,
-    previous: &ScreenState,
-    even_if_unchanged: bool,
-) -> Result<Option<Snapshot>> {
-    let frame = render.update(terminal)?;
-    let dirty = Dirty::from(frame.dirty()?);
-    let screen = screen_state_of(&frame, terminal)?;
-    if !even_if_unchanged && dirty == Dirty::Clean && screen == *previous {
-        return Ok(None);
-    }
-
-    let cols = frame.cols()?;
-    let rows = frame.rows()?;
-    let defaults = frame.colors()?;
-    // Any cell the iterators do not reach still has to honour the promise that
-    // its colours are the terminal's defaults.
-    let blank = Cell {
-        foreground: defaults.foreground.into(),
-        background: defaults.background.into(),
-        ..Cell::default()
-    };
-    let mut cells = vec![blank; usize::from(cols) * usize::from(rows)];
-    let mut row_state = vec![Row::default(); usize::from(rows)];
-    let mut graphemes = Vec::new();
-    let mut cluster = Vec::new();
-
-    let mut row_iter = RowIterator::new()?;
-    let mut cell_iter = CellIterator::new()?;
-    let mut rows_iteration = row_iter.update(&frame)?;
-    let mut y = 0usize;
-    while let Some(row) = rows_iteration.next() {
-        row_state[y] = row_state_of(row.dirty()?, row.raw_row()?.is_wrapped()?, row.selection()?);
-        // The engine tracks the two dirty layers separately, so clearing the
-        // global one leaves these set. Clear them here, while we have the row.
-        row.set_dirty(false)?;
-
-        let mut cells_iteration = cell_iter.update(row)?;
-        let mut x = 0usize;
-        while let Some(cell) = cells_iteration.next() {
-            let style = cell.style()?;
-            let raw = cell.raw_cell()?;
-
-            let (codepoint, overflow) = if raw.content_tag()? == CellContentTag::CodepointGrapheme {
-                (
-                    spill(cell, &mut graphemes, &mut cluster)?,
-                    Attribute::Overflow as u16,
-                )
-            } else {
-                (raw.codepoint()?, 0)
-            };
-
-            cells[y * usize::from(cols) + x] = Cell {
-                codepoint,
-                // The engine resolves palette indices for us; an unset colour
-                // falls back to the terminal's current default.
-                foreground: cell.fg_color()?.unwrap_or(defaults.foreground).into(),
-                background: cell.bg_color()?.unwrap_or(defaults.background).into(),
-                attributes: attributes_of(&style) | structure_of(raw.wide()?) | overflow,
-                underline: style.underline.into(),
-            };
-            x += 1;
-        }
-        y += 1;
-    }
-
-    // Consume the dirty state we just acted on, so an unchanged terminal
-    // reports clean on the next capture.
-    frame.set_dirty(VtDirty::Clean)?;
-
-    Ok(Some(Snapshot {
-        cols,
-        rows,
-        dirty,
-        // The caller fills this in: whether a selection exists is session
-        // state, not something the render state can be asked.
-        has_selection: false,
-        screen,
-        cells,
-        row_state,
-        graphemes,
-    }))
-}
-
-fn row_state_of(dirty: bool, wrapped: bool, selection: Option<RowSelection>) -> Row {
-    let mut flags = 0;
-    if dirty {
-        flags |= RowFlag::Dirty as u8;
-    }
-    if wrapped {
-        flags |= RowFlag::Wrapped as u8;
-    }
-    if selection.is_some() {
-        flags |= RowFlag::Selected as u8;
-    }
-
-    Row {
-        flags,
-        selection_start: selection.map_or(0, |range| range.start_x),
-        selection_end: selection.map_or(0, |range| range.end_x),
-    }
-}
-
-fn screen_state_of(
-    frame: &Frame<'_, '_>,
-    terminal: &Terminal<'static, 'static>,
-) -> Result<ScreenState> {
-    let position = frame.cursor_viewport()?;
-    Ok(ScreenState {
-        cursor: Cursor {
-            x: position.map_or(0, |at| at.x),
-            y: position.map_or(0, |at| at.y),
-            // A cursor outside the viewport cannot be drawn either.
-            visible: position.is_some() && frame.cursor_visible()?,
-            shape: frame.cursor_visual_style()?.into(),
-        },
-        title: without_control_characters(terminal.title()?),
-        pwd: without_control_characters(&path_of(terminal.pwd()?)),
-    })
-}
-
-/// Strip control characters, newlines included.
-///
-/// These values come from the program on the other end, which is untrusted,
-/// and they end up in window titles and restore files.
-fn without_control_characters(text: &str) -> String {
-    text.chars().filter(|c| !c.is_control()).collect()
-}
-
-/// Reduce a working directory report to an absolute path.
-///
-/// The field promises an absolute path, so a report that does not yield one —
-/// a relative directory, a URI with no path, an escape that does not spell
-/// UTF-8 — publishes nothing rather than something a consumer would have to
-/// second-guess.
-fn path_of(reported: &str) -> String {
-    decoded_path(reported)
-        .filter(|path| path.starts_with('/'))
-        .unwrap_or_default()
-}
-
-/// OSC 7 reports a `file://` URI; OSC 1337 reports a bare path, which needs
-/// no undoing.
-fn decoded_path(reported: &str) -> Option<String> {
-    let Some(after_scheme) = reported.strip_prefix("file://") else {
-        return Some(reported.to_owned());
-    };
-    // Drop the authority. knotty has no notion of which host it is on, so a
-    // path reported by another one is taken at face value.
-    let encoded = &after_scheme[after_scheme.find('/')?..];
-
-    percent_decoded(encoded)
-}
-
-fn percent_decoded(encoded: &str) -> Option<String> {
-    let bytes = encoded.as_bytes();
-    let mut decoded = Vec::with_capacity(bytes.len());
-    let mut index = 0;
-    while index < bytes.len() {
-        let escape = (bytes[index] == b'%')
-            .then(|| bytes.get(index + 1..index + 3))
-            .flatten()
-            // from_str_radix takes a leading sign, so `%+A` would decode as
-            // one. Only two hex digits are an escape.
-            .filter(|digits| digits.iter().all(u8::is_ascii_hexdigit))
-            .and_then(|digits| u8::from_str_radix(std::str::from_utf8(digits).ok()?, 16).ok());
-
-        match escape {
-            Some(byte) => {
-                decoded.push(byte);
-                index += 3;
-            }
-            None => {
-                decoded.push(bytes[index]);
-                index += 1;
-            }
-        }
-    }
-
-    // A decoding that does not spell UTF-8 is not a path we can offer, and
-    // handing back the still-encoded text would be a different lie.
-    String::from_utf8(decoded).ok()
-}
-
-/// Append a cell's codepoints to the grapheme table, returning the index the
-/// cell should carry.
-///
-/// `cluster` is scratch space the caller keeps across cells so that spilling
-/// one does not allocate.
-fn spill(
-    cell: &CellIteration<'_, '_>,
-    graphemes: &mut Vec<u32>,
-    cluster: &mut Vec<char>,
-) -> Result<u32> {
-    // Nothing bounds the table: a cell contributes its whole cluster, and
-    // there is no ceiling on either the cluster length or the cell count. The
-    // cell addresses the table with a u32, so refuse rather than truncate.
-    let index = u32::try_from(graphemes.len()).map_err(|_| Error::TooLarge)?;
-
-    cluster.resize(cell.graphemes_len()?, '\0');
-    cell.graphemes_buf(cluster)?;
-
-    let len = u32::try_from(cluster.len()).map_err(|_| Error::TooLarge)?;
-    graphemes.push(len);
-    graphemes.extend(cluster.iter().map(|codepoint| *codepoint as u32));
-
-    Ok(index)
-}
-
-fn structure_of(wide: CellWide) -> u16 {
-    match wide {
-        CellWide::Wide => Attribute::Wide as u16,
-        CellWide::SpacerTail => Attribute::WideTail as u16,
-        // Narrow needs no flag, and SpacerHead is a soft-wrap artefact that
-        // draws as nothing either way.
-        _ => 0,
-    }
-}
-
-fn attributes_of(style: &libghostty_vt::style::Style) -> u16 {
-    let mut attributes = 0;
-    for (present, attribute) in [
-        (style.bold, Attribute::Bold),
-        (style.faint, Attribute::Faint),
-        (style.italic, Attribute::Italic),
-        (style.blink, Attribute::Blink),
-        (style.inverse, Attribute::Inverse),
-        (style.invisible, Attribute::Invisible),
-        (style.strikethrough, Attribute::Strikethrough),
-        (style.overline, Attribute::Overline),
-    ] {
-        if present {
-            attributes |= attribute as u16;
-        }
-    }
-    attributes
 }

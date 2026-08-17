@@ -9,19 +9,11 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use libghostty_vt::screen::Screen;
-use libghostty_vt::selection::Selection;
-use libghostty_vt::terminal::{
-    ClipboardLocation, ClipboardWriteError, ConformanceLevel, DeviceAttributeFeature,
-    DeviceAttributes, DeviceType, Mode, Point, PointCoordinate, PrimaryDeviceAttributes,
-    SecondaryDeviceAttributes, TertiaryDeviceAttributes,
-};
-use libghostty_vt::{RenderState, Terminal, TerminalOptions};
-
 use crate::io::{self, Input, Pty, Waker};
 use crate::mailbox::Mailbox;
-use crate::queue::{ClipboardTarget, Event, EventQueue};
-use crate::snapshot::{self, ScreenState, Snapshot};
+use crate::queue::{Event, EventQueue};
+use crate::snapshot::{ScreenState, Snapshot};
+use crate::vt::{ClipboardRefusal, Listener, Screen, Terminal};
 use crate::{Error, Result};
 
 /// What a session calls when it has something new to be taken.
@@ -117,25 +109,6 @@ const ANSWERBACK: &str = "knotty";
 /// `libghostty` the engine falls back to.
 const VERSION_REPORT: &str = concat!("knotty ", env!("CARGO_PKG_VERSION"));
 
-/// What knotty answers a device attributes query with.
-///
-/// A VT220 with color, which is what the engine implements. DA2's firmware
-/// field is a version number and stays 0 while knotty is 0.x — it is set by
-/// hand, not from the crate version. DA3's unit id is meaningless for an
-/// emulator.
-const DEVICE_ATTRIBUTES: DeviceAttributes = DeviceAttributes {
-    primary: PrimaryDeviceAttributes::new(
-        ConformanceLevel::VT220,
-        &[DeviceAttributeFeature::ANSI_COLOR],
-    ),
-    secondary: SecondaryDeviceAttributes {
-        device_type: DeviceType::VT220,
-        firmware_version: 0,
-        rom_cartridge: 0,
-    },
-    tertiary: TertiaryDeviceAttributes { unit_id: 0 },
-};
-
 /// How the engine answers a title query: `OSC l <title> ST`.
 const TITLE_REPORT_PREFIX: &[u8] = b"\x1b]l";
 
@@ -163,16 +136,6 @@ fn sanitized_answer(bytes: &[u8]) -> &[u8] {
         return EMPTY_TITLE_REPORT;
     }
     bytes
-}
-
-impl From<ClipboardLocation> for ClipboardTarget {
-    fn from(location: ClipboardLocation) -> Self {
-        match location {
-            ClipboardLocation::Standard => Self::Standard,
-            ClipboardLocation::Selection => Self::Selection,
-            ClipboardLocation::Primary => Self::Primary,
-        }
-    }
 }
 
 /// Bytes on their way to the child.
@@ -225,8 +188,7 @@ impl WriteQueue {
 ///
 /// [`feed`]: Session::feed
 pub struct Session {
-    terminal: Terminal<'static, 'static>,
-    render: RenderState<'static>,
+    terminal: Terminal,
     // Shared rather than owned outright: a PTY session's consumer takes from
     // this on its own thread while the I/O thread publishes into it. The
     // mailbox is the only thing here that crosses, which is what adr/0003
@@ -235,10 +197,9 @@ pub struct Session {
     // Which screen the selection was made on, or None when there is none.
     //
     // A snapshot has to say whether a selection exists even when no visible
-    // row falls inside one, and the engine's own answer is out of reach: the
-    // C API has it, but the pinned safe wrapper keeps the raw handle private.
-    // So knotty keeps its own record. See `Session::has_selection` for what
-    // that costs.
+    // row falls inside one, and the render state answers only per row. So
+    // knotty keeps its own record. See `Session::has_selection` for what that
+    // costs, and `03-core.md` C3 for what would retire it.
     selection_screen: Option<Screen>,
     // What the last capture said about the screen outside the grid, so that a
     // title or cursor change on an otherwise still screen still publishes.
@@ -277,99 +238,87 @@ impl Session {
     /// The engine's handles are single-threaded, so whatever thread calls this
     /// is the only one that may drive the session afterwards.
     pub fn new(cols: u16, rows: u16, max_scrollback: usize) -> Result<Self> {
-        let mut terminal = Terminal::new(TerminalOptions {
-            cols,
-            rows,
-            max_scrollback,
-        })?;
-        let render = RenderState::new()?;
-
         let writes = Rc::new(RefCell::new(WriteQueue::default()));
-        terminal.on_pty_write({
-            let writes = Rc::clone(&writes);
-            move |_, bytes| writes.borrow_mut().push(sanitized_answer(bytes))
-        })?;
-
-        // What the core knows about itself, and nothing more. The pixel size
-        // is the renderer's to answer and the color scheme the app's, so those
-        // queries get no callback and the engine stays silent on them — knotty
-        // does not invent a value it cannot know. One callback covers all
-        // three size reports, so the size in cells goes silent with the two in
-        // pixels rather than being answered alongside made-up pixels.
-        //
-        // `03-core.md` gives these to the `listener` module, which does not
-        // exist yet; until it does, they sit at the one place a session wires
-        // the engine up.
-        terminal.on_device_attributes(|_| Some(DEVICE_ATTRIBUTES))?;
-        terminal.on_enquiry(|_| Some(ANSWERBACK))?;
-        terminal.on_xtversion(|_| Some(VERSION_REPORT))?;
-
-        // What the app has to be told rather than shown. Neither leaves a
-        // mark on the screen, so a consumer that misses one has no second way
-        // to learn it happened.
+        // What the app has to be told rather than shown. Neither a bell nor a
+        // clipboard write leaves a mark on the screen, so a consumer that
+        // misses one has no second way to learn it happened.
         let events = Arc::new(Mutex::new(EventQueue::default()));
-        terminal.on_bell({
-            let events = Arc::clone(&events);
-            move |_| events.lock().expect("event queue lock").push(Event::Bell)
-        })?;
-        terminal.on_clipboard_write({
-            let events = Arc::clone(&events);
-            move |_, write| {
-                // The refusals below are how the engine's callback says no.
-                // OSC 52 carries no acknowledgement, so nothing reaches the
-                // child either way — what they buy is that the app is never
-                // handed a payload it should not act on.
-                //
-                // A write carrying no representations at all is how the engine
-                // asks for the clipboard to be cleared. It lands here as no
-                // matching representation, and refusing it is the answer we
-                // want: acting on it faithfully would wipe what the user last
-                // copied on the say-so of the child.
-                let Some(content) = write
-                    .contents()
-                    .find(|content| content.mime == CLIPBOARD_MIME)
-                else {
-                    return Err(ClipboardWriteError::Unsupported);
-                };
-                // A representation of no length is an explicit empty one,
-                // which the engine's contract says does not clear the
-                // clipboard. An app that wrote it faithfully would wipe what
-                // the user last copied, so it stops here rather than going
-                // out as a copy of nothing.
-                if content.data.is_empty() {
-                    return Ok(());
-                }
-                if content.data.len() > CLIPBOARD_TEXT_CAP {
-                    return Err(ClipboardWriteError::Denied);
-                }
-                // The payload is base64 of whatever the child chose to send,
-                // so it is bytes and nothing promises they are text. What is
-                // not UTF-8 is malformed as `text/plain`, and the event
-                // carries `KtText`, which promises UTF-8 to the app. So it is
-                // refused here rather than decoded lossily. cf. ADR 0012
-                let Ok(text) = str::from_utf8(content.data) else {
-                    return Err(ClipboardWriteError::InvalidData);
-                };
 
-                events
-                    .lock()
-                    .expect("event queue lock")
-                    .push(Event::ClipboardWrite {
-                        target: write.location().into(),
-                        text: text.to_owned(),
-                    });
-                Ok(())
-            }
-        })?;
+        // `03-core.md` gives this table to the `listener` module, which does
+        // not exist yet; until it does, it sits at the one place a session
+        // wires the engine up.
+        //
+        // What is not here matters as much as what is. The pixel size is the
+        // renderer's to answer and the color scheme the app's, so those
+        // queries get no handler and the engine stays silent on them — knotty
+        // does not invent a value it cannot know. One handler covers all three
+        // size reports, so the size in cells goes silent with the two in
+        // pixels rather than being answered alongside made-up pixels. And a
+        // clipboard read is never forwarded at all, so there is nothing to
+        // answer and nothing goes out: answering would hand the child whatever
+        // the user last copied. cf. `docs/adr/0007-input-security.md`
+        let listener = Listener {
+            answerback: ANSWERBACK,
+            version: VERSION_REPORT,
+            pty_write: Box::new({
+                let writes = Rc::clone(&writes);
+                move |bytes| writes.borrow_mut().push(sanitized_answer(bytes))
+            }),
+            bell: Box::new({
+                let events = Arc::clone(&events);
+                move || events.lock().expect("event queue lock").push(Event::Bell)
+            }),
+            clipboard_write: Box::new({
+                let events = Arc::clone(&events);
+                move |target, write| {
+                    // The refusals below are how the callback says no. OSC 52
+                    // carries no acknowledgement, so nothing reaches the child
+                    // either way — what they buy is that the app is never
+                    // handed a payload it should not act on.
+                    //
+                    // A write carrying no representations at all is how the
+                    // engine asks for the clipboard to be cleared. It lands
+                    // here as no matching representation, and refusing it is
+                    // the answer we want: acting on it faithfully would wipe
+                    // what the user last copied on the say-so of the child.
+                    let Some(data) = write.representation(CLIPBOARD_MIME) else {
+                        return Err(ClipboardRefusal::Unsupported);
+                    };
+                    // A representation of no length is an explicit empty one,
+                    // which the engine's contract says does not clear the
+                    // clipboard. An app that wrote it faithfully would wipe
+                    // what the user last copied, so it stops here rather than
+                    // going out as a copy of nothing.
+                    if data.is_empty() {
+                        return Ok(());
+                    }
+                    if data.len() > CLIPBOARD_TEXT_CAP {
+                        return Err(ClipboardRefusal::Denied);
+                    }
+                    // The payload is base64 of whatever the child chose to
+                    // send, so it is bytes and nothing promises they are text.
+                    // What is not UTF-8 is malformed as `text/plain`, and the
+                    // event carries `KtText`, which promises UTF-8 to the app.
+                    // So it is refused here rather than decoded lossily. cf.
+                    // ADR 0012
+                    let Ok(text) = str::from_utf8(data) else {
+                        return Err(ClipboardRefusal::InvalidData);
+                    };
 
-        // A clipboard read gets no callback because the engine drops the
-        // request without telling us: there is nothing to answer, so nothing
-        // goes out. Answering would hand the child whatever the user last
-        // copied. cf. `docs/adr/0007-input-security.md`
+                    events
+                        .lock()
+                        .expect("event queue lock")
+                        .push(Event::ClipboardWrite {
+                            target,
+                            text: text.to_owned(),
+                        });
+                    Ok(())
+                }
+            }),
+        };
 
         Ok(Self {
-            terminal,
-            render,
+            terminal: Terminal::new(cols, rows, max_scrollback, listener)?,
             mailbox: Arc::new(Mailbox::new()),
             selection_screen: None,
             last_screen: ScreenState::default(),
@@ -412,24 +361,7 @@ impl Session {
     ///
     /// Publishes a snapshot: the selection is part of what a consumer draws.
     pub fn set_selection(&mut self, range: Option<SelectionRange>) -> Result<()> {
-        match range {
-            Some(range) => {
-                let at = |x, y| Point::Viewport(PointCoordinate { x, y: u32::from(y) });
-                let start = self
-                    .terminal
-                    .grid_ref(at(range.start_x, range.start_y))
-                    .map_err(|_| Error::OutOfRange)?;
-                let end = self
-                    .terminal
-                    .grid_ref(at(range.end_x, range.end_y))
-                    .map_err(|_| Error::OutOfRange)?;
-                self.terminal
-                    .set_selection(Some(&Selection::new(start, end, range.rectangle)))?;
-            }
-            None => {
-                self.terminal.set_selection(None)?;
-            }
-        }
+        self.terminal.set_selection(range)?;
         self.selection_screen = match range {
             Some(_) => Some(self.terminal.active_screen()?),
             None => None,
@@ -444,8 +376,8 @@ impl Session {
     /// that changes, so knotty's record only holds while the screen does. A
     /// sequence that resets the terminal outright also drops the selection and
     /// is not detectable here, so this can read true for a while after such a
-    /// reset. Exposing the engine's own answer needs the wrapper to hand out
-    /// the raw handle.
+    /// reset. The terminal can be asked for its selection outright, which the
+    /// facade now reaches and this does not yet use. cf. `03-core.md` C3
     fn has_selection(&self) -> Result<bool> {
         Ok(match self.selection_screen {
             Some(screen) => screen == self.terminal.active_screen()?,
@@ -462,7 +394,7 @@ impl Session {
     /// the writer queue. The screen is published either way: what the child
     /// missed hearing does not make the frame wrong.
     pub fn feed(&mut self, bytes: &[u8]) -> Result<()> {
-        self.terminal.vt_write(bytes);
+        self.terminal.feed(bytes);
 
         // Read before publishing, which can return early: an overrun left
         // standing would surface on some later feed that overran nothing.
@@ -543,12 +475,10 @@ impl Session {
         // no cell — so a screen that did not move can still leave something
         // to take.
         let mut something_to_take = self.events.lock().expect("event queue lock").take_arrival();
-        if let Some(mut snapshot) = snapshot::capture(
-            &mut self.render,
-            &self.terminal,
-            &self.last_screen,
-            even_if_unchanged,
-        )? {
+        if let Some(mut snapshot) = self
+            .terminal
+            .capture(&self.last_screen, even_if_unchanged)?
+        {
             snapshot.has_selection = has_selection;
             self.last_screen = snapshot.screen.clone();
             // The mailbox keeps only the newest snapshot, so publishing over
@@ -596,7 +526,7 @@ impl Session {
         // Asked whether or not anything is owed: a block given up on may well
         // close on a round that has nothing to show, and the rule has to come
         // back with it either way.
-        let open = self.terminal.mode(Mode::SYNC_OUTPUT)?;
+        let open = self.terminal.sync_output_open()?;
         if !open {
             self.given_up_on_block = false;
         }
@@ -710,7 +640,7 @@ fn settle(broken: &AtomicBool, consumer: &Mutex<Consumer>, run: impl FnOnce() ->
 /// A session with a child process behind a pseudoterminal.
 ///
 /// One thread per session owns the engine and everything that touches it: the
-/// safe wrapper's handles are single-threaded, so they never leave it. What
+/// engine's handles are single-threaded, so they never leave it. What
 /// crosses back to the app is the mailbox, the event queue, and the wake —
 /// none of which is the engine's. cf. `docs/adr/0003-snapshot-mailbox.md`
 ///

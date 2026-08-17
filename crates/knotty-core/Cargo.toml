@@ -6,7 +6,7 @@ publish.workspace = true
 version.workspace = true
 
 [dependencies]
-libghostty-vt.workspace = true
+libghostty-vt-sys.workspace = true
 rustix.workspace = true
 
 # A bench target rather than a binary, for the two things that buys: `cargo

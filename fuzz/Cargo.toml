@@ -16,12 +16,11 @@ cargo-fuzz = true
 libfuzzer-sys = "0.4"
 knotty-core = { path = "../crates/knotty-core" }
 
-# The root manifest's stopgap, copied because a `[patch]` section only counts
-# in the workspace it heads and this is a workspace of its own. Both copies go
-# together: fuzzing the core without the soundness fixes fuzzes a different
-# crate than CI builds. Cf. ADR 0012; both disappear with the facade.
+# A copy of the root manifest's, because a `[patch]` section only counts in the
+# workspace it heads and this is a workspace of its own. The two move together:
+# fuzzing the core against a differently built engine fuzzes a different crate
+# than CI builds. Both are permanent; cf. ADR 0012.
 [patch.crates-io]
-libghostty-vt = { git = "https://github.com/kwnms04/libghostty-rs", branch = "knotty-stopgap" }
 libghostty-vt-sys = { git = "https://github.com/kwnms04/libghostty-rs", branch = "knotty-stopgap" }
 
 [[bin]]
