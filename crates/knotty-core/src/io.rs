@@ -15,8 +15,9 @@ use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicUsize, Ordering};
 use std::sync::mpsc::Receiver;
+use std::time::Duration;
 
-use rustix::event::{PollFd, PollFlags, poll};
+use rustix::event::{PollFd, PollFlags, Timespec, poll};
 use rustix::fs::{Mode, OFlags};
 use rustix::io::{Errno, ioctl_fioclex, ioctl_fionbio};
 use rustix::pty::{OpenptFlags, grantpt, openpt, ptsname, unlockpt};
@@ -210,12 +211,16 @@ impl Pty {
         ))
     }
 
-    /// Block until the terminal has something, has room, or a nudge arrives.
+    /// Block until the terminal has something, has room, a nudge arrives, or
+    /// `no_longer_than` runs out.
     ///
     /// `want_room` asks about room only when there is something to put in it:
     /// a terminal with nothing queued for it is writable at all times, and
     /// waiting on that would be a loop that never sleeps.
-    pub fn wait(&self, want_room: bool) -> Result<Ready> {
+    ///
+    /// A wait that ran out answers with nothing ready, which is the truth: it
+    /// is the caller's own deadline coming round, not the terminal's news.
+    pub fn wait(&self, want_room: bool, no_longer_than: Option<Duration>) -> Result<Ready> {
         let mut wanted = PollFlags::IN;
         if want_room {
             wanted |= PollFlags::OUT;
@@ -224,8 +229,12 @@ impl Pty {
             PollFd::new(&self.terminal, wanted),
             PollFd::new(&self.nudge, PollFlags::IN),
         ];
+        let deadline = no_longer_than.map(|left| Timespec {
+            tv_sec: left.as_secs() as _,
+            tv_nsec: left.subsec_nanos() as _,
+        });
         loop {
-            match poll(&mut waiting, None) {
+            match poll(&mut waiting, deadline.as_ref()) {
                 Ok(_) => break,
                 Err(Errno::INTR) => continue,
                 Err(error) => return Err(error.into()),
@@ -347,7 +356,12 @@ pub fn run(
         backlog.fetch_add(answers.len(), Ordering::Relaxed);
         bound_for_child.extend_from_slice(answers);
 
-        let ready = terminal.wait(!bound_for_child.is_empty())?;
+        // A held-back block is waited no longer than it has left, so that the
+        // wait itself is what gives up on one the child never closes. The
+        // clock is asked here because this is the only thread that waits: a
+        // detached session goes back to its caller between rounds and never
+        // sits still long enough for one to run out. cf. `03-core.md` C5
+        let ready = terminal.wait(!bound_for_child.is_empty(), session.wait_out_sync_block())?;
         if stopping.load(Ordering::Relaxed) {
             return Ok(());
         }

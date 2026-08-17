@@ -1883,6 +1883,37 @@ fn a_child_that_dies_inside_a_synchronized_block_still_wakes_its_consumer() {
     unsafe { kt_session_free(session) };
 }
 
+/// A block the child opens and never closes would hold the screen for as long
+/// as that child runs. Only the thread that waits can break it — the child
+/// says nothing more, so no round comes round on its own. cf. `03-core.md` C5
+#[test]
+fn a_block_the_child_leaves_open_is_given_up_on() {
+    // `exec` so the block stays open with nothing following it: what has to
+    // reach the consumer is a wake no later output could have carried.
+    let session = pty(
+        24,
+        4,
+        &[
+            "/bin/sh",
+            "-c",
+            "printf '\\033[?2026hheld open'; exec sleep 30",
+        ],
+    );
+    let count = shared_wake_counter(session);
+
+    let deadline = Instant::now() + PATIENCE;
+    while count.load(Ordering::Relaxed) == 0 && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(5));
+    }
+
+    assert!(
+        count.load(Ordering::Relaxed) > 0,
+        "the screen stayed frozen behind a block nobody closed",
+    );
+
+    unsafe { kt_session_free(session) };
+}
+
 /// Releasing a session is the user closing the window, and a child left behind
 /// by that is a process nobody can talk to and nobody will collect.
 #[test]

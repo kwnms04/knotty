@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicBool, AtomicI32, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
+use std::time::{Duration, Instant};
 
 use libghostty_vt::screen::Screen;
 use libghostty_vt::selection::Selection;
@@ -77,6 +78,17 @@ const STILL_RUNNING: i32 = -1;
 /// A child that never reads is the case this exists for: without a cap the
 /// queue grows until the process dies.
 const WRITE_QUEUE_CAP: usize = 8 * 1024 * 1024;
+
+/// How long a synchronized output block may hold a wake back before it is
+/// given up on.
+///
+/// Generous on purpose, because the wrong firing is the common one: a block
+/// crossing a slow link takes its time and is doing nothing wrong, and a
+/// timeout short enough to catch it tears an honest screen every time it
+/// fires. The program that really leaves a block open is rare, and costs one
+/// tear once. Not a setting — an app has nothing to go on that would make it a
+/// better answer than this one.
+const SYNC_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// The largest clipboard payload knotty will carry.
 ///
@@ -248,6 +260,15 @@ pub struct Session {
     // between the session and whoever draws.
     wake: Option<Wake>,
     wake_owed: bool,
+    // When the owed wake was first held back by an open synchronized output
+    // block, or `None` when nothing is being held back. This is the clock the
+    // timeout runs on, and it is read by whoever waits — which is the I/O
+    // thread. A detached session has no such waiter, so its blocks are never
+    // given up on. cf. `03-core.md` C5
+    held_since: Option<Instant>,
+    // Whether the block now open has been given up on. While it stands nothing
+    // is held back; closing the block clears it.
+    given_up_on_block: bool,
 }
 
 impl Session {
@@ -357,6 +378,8 @@ impl Session {
             events,
             wake: None,
             wake_owed: false,
+            held_since: None,
+            given_up_on_block: false,
         })
     }
 
@@ -550,24 +573,67 @@ impl Session {
     /// And what is held back is a single owed wake rather than one per frame,
     /// which is what makes the end of a block exactly one.
     ///
-    /// A block the child never closes is a timeout's to break, and a timeout
-    /// needs a clock. A detached session runs on its caller's thread and has
-    /// none, so that arrives with the I/O thread.
+    /// A block the child never closes is [`wait_out_sync_block`]'s to break,
+    /// after which nothing is held back until the block closes — so what is
+    /// checked here is the block's standing and not only that one is open.
     ///
     /// What is read here is the mode as the round left it, not every time it
     /// moved during the round: the engine reports no mode change, and scanning
     /// the bytes ourselves would take the parser back off it. So a round that
     /// closes one block and opens the next holds the first one's wake until
     /// the second closes. The mailbox keeps only the newest snapshot, so what
-    /// that costs is the delay and not the frame — and the timeout is its
-    /// upper bound once there is one.
+    /// that costs is the delay and not the frame, and the timeout bounds it.
+    ///
+    /// A block given up on comes back from it by that same reading — a round
+    /// that ends outside a block — so one that closes the given-up block and
+    /// opens the next in the same breath carries the giving-up into it. That
+    /// is as close as this gets to telling one block from the next: the round
+    /// is the only boundary anything here can see.
+    ///
+    /// [`wait_out_sync_block`]: Session::wait_out_sync_block
     fn emit_wake(&mut self, owed: bool) -> Result<()> {
         self.wake_owed |= owed;
-        if !self.wake_owed || self.terminal.mode(Mode::SYNC_OUTPUT)? {
+        // Asked whether or not anything is owed: a block given up on may well
+        // close on a round that has nothing to show, and the rule has to come
+        // back with it either way.
+        let open = self.terminal.mode(Mode::SYNC_OUTPUT)?;
+        if !open {
+            self.given_up_on_block = false;
+        }
+
+        if self.wake_owed && open && !self.given_up_on_block {
+            // The clock starts at the first wake held back rather than at the
+            // opening of the block: before there is something to show, a
+            // timeout has nothing to release.
+            self.held_since.get_or_insert_with(Instant::now);
             return Ok(());
         }
+
         self.pay_wake();
         Ok(())
+    }
+
+    /// Give up on a block that has held a wake back too long, answering with
+    /// how much longer the one still open may hold it.
+    ///
+    /// `None` means there is nothing to come back for: no wake is being held,
+    /// or the one that was has just gone out. Whoever waits on the terminal
+    /// waits no longer than what this answers, and asks again when it returns.
+    ///
+    /// The block is given up on rather than let through a frame per timeout: a
+    /// frame each time over turns a frozen screen into a slow one, and that
+    /// program's screen is wrong either way. Drawing it at the speed the user
+    /// can watch it go wrong is the better of the two.
+    pub(crate) fn wait_out_sync_block(&mut self) -> Option<Duration> {
+        let held = self.held_since?;
+        match SYNC_TIMEOUT.checked_sub(held.elapsed()) {
+            Some(left) if !left.is_zero() => Some(left),
+            _ => {
+                self.given_up_on_block = true;
+                self.pay_wake();
+                None
+            }
+        }
     }
 
     /// Settle the owed wake, if one is owed and anyone is there to take it.
@@ -576,6 +642,10 @@ impl Session {
     /// is told about what it was not there for rather than having to know to
     /// look.
     fn pay_wake(&mut self) {
+        // Whoever settles it, a wake on its way out is no longer a wake being
+        // held back — including the child's exit, which pays one from outside
+        // the rule. cf. `note_child_exit`
+        self.held_since = None;
         if !self.wake_owed {
             return;
         }
@@ -863,8 +933,9 @@ impl Drop for PtySession {
 mod tests {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+    use std::time::Instant;
 
-    use super::{Consumer, Mutex, Session, settle};
+    use super::{Consumer, Mutex, SYNC_TIMEOUT, Session, settle};
     use crate::queue::Event;
     use crate::{Error, Result};
 
@@ -931,6 +1002,139 @@ mod tests {
 
         assert!(!broken.load(Ordering::Relaxed));
         assert_eq!(told.load(Ordering::Relaxed), 0);
+    }
+
+    /// A session and the count of what its consumer was told.
+    fn watched() -> (Session, Arc<AtomicU32>) {
+        let mut session = session();
+        let told = Arc::new(AtomicU32::new(0));
+        session.set_wake(Some(Box::new({
+            let told = Arc::clone(&told);
+            move || {
+                told.fetch_add(1, Ordering::Relaxed);
+            }
+        })));
+
+        (session, told)
+    }
+
+    /// Open a block and draw inside it, which is a wake held back.
+    fn holding() -> (Session, Arc<AtomicU32>) {
+        let (mut session, told) = watched();
+        session
+            .feed(b"\x1b[?2026hhalf drawn")
+            .expect("the feed to finish");
+        assert_eq!(told.load(Ordering::Relaxed), 0, "the block held nothing");
+
+        (session, told)
+    }
+
+    /// Put the block's clock back far enough that its time is up.
+    ///
+    /// The alternative is sleeping out the real timeout, which is a second of
+    /// test time to learn what the field already says.
+    fn overdue(session: &mut Session) {
+        session.held_since = Some(Instant::now() - SYNC_TIMEOUT);
+    }
+
+    /// A child that opens a block and never closes it would otherwise hold the
+    /// screen for good. The wake it held back goes out once, and the screen
+    /// starts moving again.
+    #[test]
+    fn a_block_open_past_the_timeout_wakes_the_consumer() {
+        let (mut session, told) = holding();
+
+        overdue(&mut session);
+        assert!(
+            session.wait_out_sync_block().is_none(),
+            "a block past its time was still being waited on",
+        );
+
+        assert_eq!(told.load(Ordering::Relaxed), 1);
+    }
+
+    /// A block given up on is given up on for good, not let through a frame
+    /// per timeout. cf. [`Session::wait_out_sync_block`]
+    #[test]
+    fn a_block_given_up_on_holds_nothing_back() {
+        let (mut session, told) = holding();
+        overdue(&mut session);
+        session.wait_out_sync_block();
+
+        session.feed(b"more").expect("the feed to finish");
+        session.feed(b"and more").expect("the feed to finish");
+
+        assert_eq!(told.load(Ordering::Relaxed), 3, "the block held again");
+        assert!(
+            session.wait_out_sync_block().is_none(),
+            "a block given up on was being waited on again",
+        );
+    }
+
+    /// A child that closes its block is behaving, and gets the suppression it
+    /// asks for afterwards — being given up on once is not held against it.
+    #[test]
+    fn a_block_that_closes_puts_the_suppression_back() {
+        let (mut session, told) = holding();
+        overdue(&mut session);
+        session.wait_out_sync_block();
+
+        session.feed(b"\x1b[?2026l").expect("the feed to finish");
+        let settled = told.load(Ordering::Relaxed);
+        session
+            .feed(b"\x1b[?2026hhalf drawn again")
+            .expect("the feed to finish");
+
+        assert_eq!(
+            told.load(Ordering::Relaxed),
+            settled,
+            "a block after a given-up one was not held back",
+        );
+    }
+
+    /// What the round costs, written down: closing the given-up block and
+    /// opening the next in one feed leaves the mode open at the end of it, and
+    /// the giving-up rides along into a block that did nothing wrong. The
+    /// round is the only boundary this side can see, so this is the edge of
+    /// what "the block closed" can mean — not a case worth scanning bytes for.
+    #[test]
+    fn a_block_opened_in_the_same_breath_as_the_last_one_closed_stays_given_up_on() {
+        let (mut session, told) = holding();
+        overdue(&mut session);
+        session.wait_out_sync_block();
+        let settled = told.load(Ordering::Relaxed);
+
+        session
+            .feed(b"\x1b[?2026l\x1b[?2026hhalf drawn again")
+            .expect("the feed to finish");
+
+        assert!(
+            told.load(Ordering::Relaxed) > settled,
+            "the round closed a block and opened one, and the mode says open",
+        );
+    }
+
+    /// The ordinary block, which is every block: it closes long before its
+    /// time is up, and the timeout is something it never meets.
+    #[test]
+    fn a_block_that_closes_in_time_never_comes_due() {
+        let (mut session, told) = holding();
+
+        assert!(
+            session
+                .wait_out_sync_block()
+                .is_some_and(|left| !left.is_zero()),
+            "a block that just opened was already out of time",
+        );
+        assert_eq!(told.load(Ordering::Relaxed), 0);
+
+        session.feed(b"\x1b[?2026l").expect("the feed to finish");
+
+        assert_eq!(told.load(Ordering::Relaxed), 1);
+        assert!(
+            session.wait_out_sync_block().is_none(),
+            "a closed block was still being waited on",
+        );
     }
 
     /// The fuzzer cannot stand in for these: neither input crashes once the
