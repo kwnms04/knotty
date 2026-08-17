@@ -66,15 +66,6 @@ const DEVICE_ATTRIBUTES: ffi::DeviceAttributes = ffi::DeviceAttributes {
     tertiary: ffi::DeviceAttributesTertiary { unit_id: 0 },
 };
 
-/// Which of the terminal's two screens is showing.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Screen {
-    /// The ordinary screen, the one with scrollback behind it.
-    Primary,
-    /// The alternate screen, which full-screen programs draw on.
-    Alternate,
-}
-
 /// Why a clipboard write was refused.
 ///
 /// Only the reasons knotty gives. The engine defines more, and none of them is
@@ -259,14 +250,27 @@ impl Terminal {
         Ok(open)
     }
 
-    /// Which screen is showing.
-    pub fn active_screen(&self) -> Result<Screen> {
-        // SAFETY: the tag's documented output type, read into a value of it.
-        let screen: ffi::TerminalScreen::Type =
-            unsafe { self.get(ffi::TerminalData::ACTIVE_SCREEN) }?;
-        match screen {
-            ffi::TerminalScreen::PRIMARY => Ok(Screen::Primary),
-            ffi::TerminalScreen::ALTERNATE => Ok(Screen::Alternate),
+    /// Whether the active screen has a selection.
+    ///
+    /// Only that there is one: the snapshot carries where it falls per row,
+    /// and the engine's answer is borrowed grid references that go stale on
+    /// the next feed.
+    pub fn has_selection(&self) -> Result<bool> {
+        // Not `get`: its reader zeroes the value, which leaves the sized
+        // struct's own size unfilled, and `check` would turn the answer this
+        // asks for into an error.
+        let mut selection = ffi::sized!(ffi::Selection);
+        // SAFETY: the tag's documented output type, sized as its ABI asks.
+        let code = unsafe {
+            ffi::ghostty_terminal_get(
+                self.raw,
+                ffi::TerminalData::SELECTION,
+                (&raw mut selection).cast(),
+            )
+        };
+        match code {
+            ffi::Result::SUCCESS => Ok(true),
+            ffi::Result::NO_VALUE => Ok(false),
             _ => Err(Error::Engine),
         }
     }

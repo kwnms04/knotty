@@ -13,7 +13,7 @@ use crate::io::{self, Input, Pty, Waker};
 use crate::mailbox::Mailbox;
 use crate::queue::{Event, EventQueue};
 use crate::snapshot::{ScreenState, Snapshot};
-use crate::vt::{ClipboardRefusal, Listener, Screen, Terminal};
+use crate::vt::{ClipboardRefusal, Listener, Terminal};
 use crate::{Error, Result};
 
 /// What a session calls when it has something new to be taken.
@@ -194,13 +194,6 @@ pub struct Session {
     // mailbox is the only thing here that crosses, which is what adr/0003
     // bought.
     mailbox: Arc<Mailbox<Snapshot>>,
-    // Which screen the selection was made on, or None when there is none.
-    //
-    // A snapshot has to say whether a selection exists even when no visible
-    // row falls inside one, and the render state answers only per row. So
-    // knotty keeps its own record. See `Session::has_selection` for what that
-    // costs, and `03-core.md` C3 for what would retire it.
-    selection_screen: Option<Screen>,
     // What the last capture said about the screen outside the grid, so that a
     // title or cursor change on an otherwise still screen still publishes.
     last_screen: ScreenState,
@@ -320,7 +313,6 @@ impl Session {
         Ok(Self {
             terminal: Terminal::new(cols, rows, max_scrollback, listener)?,
             mailbox: Arc::new(Mailbox::new()),
-            selection_screen: None,
             last_screen: ScreenState::default(),
             writes,
             drained: Vec::new(),
@@ -362,27 +354,7 @@ impl Session {
     /// Publishes a snapshot: the selection is part of what a consumer draws.
     pub fn set_selection(&mut self, range: Option<SelectionRange>) -> Result<()> {
         self.terminal.set_selection(range)?;
-        self.selection_screen = match range {
-            Some(_) => Some(self.terminal.active_screen()?),
-            None => None,
-        };
-
         self.publish(false)
-    }
-
-    /// Whether a selection exists.
-    ///
-    /// The engine's selection belongs to the active screen and is dropped when
-    /// that changes, so knotty's record only holds while the screen does. A
-    /// sequence that resets the terminal outright also drops the selection and
-    /// is not detectable here, so this can read true for a while after such a
-    /// reset. The terminal can be asked for its selection outright, which the
-    /// facade now reaches and this does not yet use. cf. `03-core.md` C3
-    fn has_selection(&self) -> Result<bool> {
-        Ok(match self.selection_screen {
-            Some(screen) => screen == self.terminal.active_screen()?,
-            None => false,
-        })
     }
 
     /// Process `bytes` to completion on the calling thread, publishing at most
@@ -470,7 +442,10 @@ impl Session {
     ///
     /// [`note_child_exit`]: Session::note_child_exit
     fn publish(&mut self, even_if_unchanged: bool) -> Result<()> {
-        let has_selection = self.has_selection()?;
+        // Asked of the engine rather than remembered: a snapshot has to say a
+        // selection exists even when no visible row falls inside one, and the
+        // render state answers only per row.
+        let has_selection = self.terminal.has_selection()?;
         // An event is as much reason to wake as a frame is, and a bell marks
         // no cell — so a screen that did not move can still leave something
         // to take.

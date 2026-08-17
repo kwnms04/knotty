@@ -901,6 +901,28 @@ fn switching_screens_takes_the_selection_with_it() {
 }
 
 #[test]
+fn resetting_the_terminal_takes_the_selection_with_it() {
+    let session = detached(6, 2);
+    feed(session, b"abcdef\r\nghijkl");
+    unsafe { kt_snapshot_free(take(session)) };
+
+    set_selection(session, Some(selection((1, 0), (3, 0))));
+    unsafe { kt_snapshot_free(take(session)) };
+
+    // `RIS` drops the selection without changing screens, so nothing knotty
+    // could keep beside the engine would notice.
+    feed(session, b"\x1bc");
+
+    let snapshot = take(session);
+    let view = view(snapshot);
+    assert!(!view.has_selection);
+    assert_eq!(selected_columns(&view), vec![None, None]);
+
+    unsafe { kt_snapshot_free(snapshot) };
+    unsafe { kt_session_free(session) };
+}
+
+#[test]
 fn a_selection_endpoint_outside_the_viewport_is_reported_as_such() {
     let session = detached(4, 2);
     feed(session, b"ab");
