@@ -1,8 +1,10 @@
-knotty-golden 2
+knotty-golden 3
 wakes 3
 writes "\x1b[?62;22c\x1b[>1;0;0c\x1bP>|knotty 0.0.0\x1b\\"
 events 0 dropped 0
 size 80 24
+child none
+session ok
 dirty full
 selection none
 cursor 2 14 visible block

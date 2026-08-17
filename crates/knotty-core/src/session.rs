@@ -1,8 +1,9 @@
 //! Session lifecycle and the publish path.
 
 use std::cell::RefCell;
+use std::panic::{self, AssertUnwindSafe};
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
@@ -47,6 +48,29 @@ pub struct SelectionRange {
     /// ends of a run of text.
     pub rectangle: bool,
 }
+
+/// What has become of a session's child.
+///
+/// Kept apart from whether the session itself still works. The two are
+/// different facts, and a child still running behind a session whose thread
+/// panicked is a real pairing — an app warns before closing on this one and
+/// stops taking input on the other.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ChildState {
+    /// There is no child. A detached session is fed by its caller and has
+    /// none.
+    None,
+    /// Still running.
+    Running,
+    /// Gone, with what it ended by — or 128 plus the signal that ended it,
+    /// which is the one number a shell reports either by.
+    Exited(i32),
+}
+
+/// What the shared exit cell reads as while the child is still running.
+///
+/// A code is a byte, or 128 plus a signal number, so nothing negative is one.
+const STILL_RUNNING: i32 = -1;
 
 /// How many bytes may wait for the PTY before further writes are dropped.
 ///
@@ -388,7 +412,7 @@ impl Session {
             None => None,
         };
 
-        self.publish()
+        self.publish(false)
     }
 
     /// Whether a selection exists.
@@ -420,7 +444,7 @@ impl Session {
         // Read before publishing, which can return early: an overrun left
         // standing would surface on some later feed that overran nothing.
         let overran = self.writes.borrow_mut().take_overrun();
-        self.publish()?;
+        self.publish(false)?;
 
         if overran {
             return Err(Error::WriteQueueFull);
@@ -441,13 +465,19 @@ impl Session {
     /// suppressing here would leave the news of the exit in a queue nobody was
     /// told to come for. cf. `03-core.md` C5
     ///
+    /// The frame goes out whether or not the screen moved, for the same reason:
+    /// a child that ends without printing leaves the grid exactly as it was,
+    /// and the snapshot is where the exit is the truth a consumer may not lose.
+    /// Without a frame to carry it, the last one anybody holds goes on saying
+    /// the child is running.
+    ///
     /// [`feed`]: Session::feed
     pub(crate) fn note_child_exit(&mut self, code: i32) -> Result<()> {
         self.events
             .lock()
             .expect("event queue lock")
             .push(Event::ChildExited { code });
-        self.publish()?;
+        self.publish(true)?;
         self.pay_wake();
         Ok(())
     }
@@ -479,15 +509,23 @@ impl Session {
 
     /// Capture the terminal and publish it, unless nothing changed, then wake
     /// the consumer if the round left it anything.
-    fn publish(&mut self) -> Result<()> {
+    ///
+    /// `even_if_unchanged` publishes a frame the screen did not move for, which
+    /// is for news that is not the screen's own. cf. [`note_child_exit`]
+    ///
+    /// [`note_child_exit`]: Session::note_child_exit
+    fn publish(&mut self, even_if_unchanged: bool) -> Result<()> {
         let has_selection = self.has_selection()?;
         // An event is as much reason to wake as a frame is, and a bell marks
         // no cell — so a screen that did not move can still leave something
         // to take.
         let mut something_to_take = self.events.lock().expect("event queue lock").take_arrival();
-        if let Some(mut snapshot) =
-            snapshot::capture(&mut self.render, &self.terminal, &self.last_screen)?
-        {
+        if let Some(mut snapshot) = snapshot::capture(
+            &mut self.render,
+            &self.terminal,
+            &self.last_screen,
+            even_if_unchanged,
+        )? {
             snapshot.has_selection = has_selection;
             self.last_screen = snapshot.screen.clone();
             // The mailbox keeps only the newest snapshot, so publishing over
@@ -573,6 +611,32 @@ impl Consumer {
     }
 }
 
+/// Run a session's I/O loop and settle up after it.
+///
+/// A loop that gave up mid-round and one that panicked are the same news to the
+/// app: nothing is driving the engine any more, so the session is broken rather
+/// than merely finished. Both leave the mark and tell the consumer once, so a
+/// window that has stopped working stops looking like one that works. A loop
+/// that returned of its own accord — the child ended, or the session is being
+/// released — left nothing to say.
+///
+/// Nothing of its own is done to the child. Returning from here drops the
+/// terminal, and dropping it is what puts a child down and collects it — the
+/// same path a released session takes, reached without a line of its own.
+/// Piling a timeout and a kill onto code that is already running wrong leaves
+/// nowhere to go when that fails too. cf. `03-core.md` C8
+fn settle(broken: &AtomicBool, consumer: &Mutex<Consumer>, run: impl FnOnce() -> Result<()>) {
+    // Unwind safety is asserted rather than proved: what the loop was holding
+    // is dropped as this returns, and what it shared is left where it stands
+    // for the app to take. Nothing here touches the engine again.
+    if matches!(panic::catch_unwind(AssertUnwindSafe(run)), Ok(Ok(()))) {
+        return;
+    }
+
+    broken.store(true, Ordering::Relaxed);
+    consumer.lock().expect("consumer lock").tell();
+}
+
 /// A session with a child process behind a pseudoterminal.
 ///
 /// One thread per session owns the engine and everything that touches it: the
@@ -595,6 +659,14 @@ pub struct PtySession {
     // ends add and the I/O thread takes away as the terminal accepts, because
     // a queue with an end on each thread cannot be counted on either alone.
     backlog: Arc<AtomicUsize>,
+    // What the child ended by, or `STILL_RUNNING`. Written by the I/O thread
+    // before it says the child is gone, so a consumer that comes for that
+    // telling finds the code already here.
+    child_exit: Arc<AtomicI32>,
+    // Whether the I/O thread gave up mid-round. Written by that thread as it
+    // leaves, and the only way the app's side learns that nothing is driving
+    // the engine any more.
+    broken: Arc<AtomicBool>,
     waker: Waker,
     stopping: Arc<AtomicBool>,
     // Taken in `drop`, which is the only place this is `None`.
@@ -615,6 +687,8 @@ impl PtySession {
         let (input, arriving) = mpsc::channel();
         let stopping = Arc::new(AtomicBool::new(false));
         let backlog = Arc::new(AtomicUsize::new(0));
+        let child_exit = Arc::new(AtomicI32::new(STILL_RUNNING));
+        let broken = Arc::new(AtomicBool::new(false));
         let consumer = Arc::new(Mutex::new(Consumer::default()));
         let (started, start) = mpsc::channel();
 
@@ -623,6 +697,8 @@ impl PtySession {
             .spawn({
                 let stopping = Arc::clone(&stopping);
                 let backlog = Arc::clone(&backlog);
+                let child_exit = Arc::clone(&child_exit);
+                let broken = Arc::clone(&broken);
                 let consumer = Arc::clone(&consumer);
                 move || {
                     // Built here rather than handed in: the engine's handles
@@ -637,18 +713,25 @@ impl PtySession {
                     };
                     // Always set, so the session inside never holds a debt of
                     // its own — `Consumer` is what holds one instead.
-                    session.set_wake(Some(Box::new(move || {
-                        consumer.lock().expect("consumer lock").tell();
+                    session.set_wake(Some(Box::new({
+                        let consumer = Arc::clone(&consumer);
+                        move || consumer.lock().expect("consumer lock").tell()
                     })));
 
                     let crossing = (Arc::clone(&session.mailbox), Arc::clone(&session.events));
                     if started.send(Ok(crossing)).is_err() {
                         return;
                     }
-                    // A loop that gave up mid-round leaves the session broken
-                    // rather than merely finished, and saying which is
-                    // `kwnms04/knotty#21`.
-                    let _ = io::run(&mut session, &mut terminal, &arriving, &backlog, &stopping);
+                    settle(&broken, &consumer, || {
+                        io::run(
+                            &mut session,
+                            &mut terminal,
+                            &arriving,
+                            &backlog,
+                            &child_exit,
+                            &stopping,
+                        )
+                    });
                 }
             })
             .map_err(Error::from)?;
@@ -662,10 +745,32 @@ impl PtySession {
             consumer,
             input,
             backlog,
+            child_exit,
+            broken,
             waker,
             stopping,
             thread: Some(thread),
         })
+    }
+
+    /// What has become of the child.
+    ///
+    /// A session with a PTY behind it always has one, so this is never
+    /// [`ChildState::None`].
+    pub fn child(&self) -> ChildState {
+        match self.child_exit.load(Ordering::Relaxed) {
+            STILL_RUNNING => ChildState::Running,
+            code => ChildState::Exited(code),
+        }
+    }
+
+    /// Whether the session's thread gave up mid-round, leaving nothing to
+    /// drive the engine.
+    ///
+    /// What it published before that stands. What it would have published
+    /// since does not exist.
+    pub fn broken(&self) -> bool {
+        self.broken.load(Ordering::Relaxed)
     }
 
     /// Set what to call when the session has something new to be taken, or
@@ -756,11 +861,76 @@ impl Drop for PtySession {
 
 #[cfg(test)]
 mod tests {
-    use super::Session;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+
+    use super::{Consumer, Mutex, Session, settle};
     use crate::queue::Event;
+    use crate::{Error, Result};
 
     fn session() -> Session {
         Session::new(80, 24, 0).expect("a session")
+    }
+
+    /// A consumer that counts what it was told, which is all a real one may do
+    /// from inside the call.
+    fn listening() -> (Mutex<Consumer>, Arc<AtomicU32>) {
+        let told = Arc::new(AtomicU32::new(0));
+        let consumer = Consumer {
+            wake: Some(Box::new({
+                let told = Arc::clone(&told);
+                move || {
+                    told.fetch_add(1, Ordering::Relaxed);
+                }
+            })),
+            owed: false,
+        };
+
+        (Mutex::new(consumer), told)
+    }
+
+    /// The I/O thread is the only thing driving a PTY session's engine, so a
+    /// panic in it takes the session with it — and the app has to be told,
+    /// since the last thing it heard was a screen that looked fine.
+    #[test]
+    fn a_loop_that_panics_leaves_the_session_broken_and_tells_the_consumer_once() {
+        let broken = AtomicBool::new(false);
+        let (consumer, told) = listening();
+
+        // Reaching the next line at all is half the point: a panic escaping
+        // the thread would take no one with it, but the session it left
+        // behind would look alive for good.
+        settle(&broken, &consumer, || panic!("on purpose"));
+
+        assert!(broken.load(Ordering::Relaxed), "the break went unrecorded");
+        assert_eq!(told.load(Ordering::Relaxed), 1);
+    }
+
+    /// A round that failed left the session as unattended as a panic did: the
+    /// loop is gone either way.
+    #[test]
+    fn a_loop_that_gave_up_mid_round_leaves_the_session_broken() {
+        let broken = AtomicBool::new(false);
+        let (consumer, told) = listening();
+
+        settle(&broken, &consumer, || Err(Error::Io));
+
+        assert!(broken.load(Ordering::Relaxed));
+        assert_eq!(told.load(Ordering::Relaxed), 1);
+    }
+
+    /// The ordinary way out: the child ended, or the session is being
+    /// released. Nothing broke, and a consumer told otherwise would put up a
+    /// dead window over a session that merely finished.
+    #[test]
+    fn a_loop_that_returned_of_its_own_accord_leaves_the_session_alone() {
+        let broken = AtomicBool::new(false);
+        let (consumer, told) = listening();
+
+        settle(&broken, &consumer, || Result::Ok(()));
+
+        assert!(!broken.load(Ordering::Relaxed));
+        assert_eq!(told.load(Ordering::Relaxed), 0);
     }
 
     /// The fuzzer cannot stand in for these: neither input crashes once the

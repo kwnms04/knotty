@@ -14,15 +14,16 @@ use std::fmt::Write as _;
 use std::ptr;
 
 use knotty_ffi::{
-    Attribute, Cell, ClipboardTarget, CursorShape, Dirty, KtBytes, KtEvent, KtEventKind, KtEvents,
-    KtSnapshotView, KtStatus, KtText, RowFlag, Underline, kt_session_feed, kt_session_free,
-    kt_session_new_detached, kt_session_set_wake, kt_session_take_events, kt_session_take_snapshot,
-    kt_session_take_writes, kt_snapshot_free, kt_snapshot_view,
+    Attribute, Cell, ClipboardTarget, CursorShape, Dirty, KtBytes, KtChildState, KtEvent,
+    KtEventKind, KtEvents, KtSessionState, KtSnapshotView, KtStatus, KtText, RowFlag, Underline,
+    kt_session_feed, kt_session_free, kt_session_new_detached, kt_session_set_wake,
+    kt_session_take_events, kt_session_take_snapshot, kt_session_take_writes, kt_snapshot_free,
+    kt_snapshot_view,
 };
 
 /// The format the goldens are written in. Bump it when the encoding changes,
 /// so a stale golden fails loudly rather than diffing line by line.
-const FORMAT: &str = "knotty-golden 2";
+const FORMAT: &str = "knotty-golden 3";
 
 /// A recorded stream arrives from a PTY in pieces, not all at once, and an
 /// escape sequence can straddle two of them. Replaying in chunks keeps the
@@ -121,6 +122,16 @@ fn describe(view: &KtSnapshotView, writes: &KtBytes, events: &KtEvents, wakes: u
     let _ = writeln!(out, "{FORMAT}");
     describe_outbound(&mut out, writes, events, wakes);
     let _ = writeln!(out, "size {} {}", view.cols, view.rows);
+    // Constant for every recording — a detached session has no child and no
+    // thread to lose. Written down anyway: what a replay must never say is
+    // that some child of its own is running, and a line that never moves is
+    // how that stays checked.
+    let _ = writeln!(
+        out,
+        "child {}",
+        child_name(view.child_state, view.child_exit_code)
+    );
+    let _ = writeln!(out, "session {}", session_name(view.session_state));
     let _ = writeln!(out, "dirty {}", dirty_name(view.dirty));
     let _ = writeln!(
         out,
@@ -331,6 +342,21 @@ fn clipboard_target_name(target: ClipboardTarget) -> &'static str {
 
 fn rgb(r: u8, g: u8, b: u8) -> String {
     format!("{r:02x}{g:02x}{b:02x}")
+}
+
+fn child_name(child: KtChildState, exit_code: i32) -> String {
+    match child {
+        KtChildState::None => "none".to_owned(),
+        KtChildState::Running => "running".to_owned(),
+        KtChildState::Exited => format!("exited {exit_code}"),
+    }
+}
+
+fn session_name(session: KtSessionState) -> &'static str {
+    match session {
+        KtSessionState::Ok => "ok",
+        KtSessionState::Broken => "broken",
+    }
 }
 
 fn dirty_name(dirty: Dirty) -> &'static str {

@@ -49,11 +49,10 @@ pub enum Event {
 /// means the child is producing faster than anything can act on. Dropping is
 /// safe by construction: nothing a screen has to get right is in here.
 ///
-/// [`Event::ChildExited`] is the one whose truth is meant to live outside here
-/// as well: the snapshot is to carry the child's state beside it, so that a
-/// consumer which missed the event still finds out. That field is
-/// `kwnms04/knotty#21`, and until it lands a queue that overflowed at the
-/// moment its child ended loses the news of it.
+/// [`Event::ChildExited`] is the one whose truth lives outside here as well:
+/// the snapshot carries the child's state beside it, so a consumer that missed
+/// the event still finds out. This queue is the immediate telling; the snapshot
+/// is what may not be lost.
 const EVENT_QUEUE_CAP: usize = 64;
 
 /// Events waiting for the app, a count of the ones that did not fit, and

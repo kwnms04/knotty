@@ -9,7 +9,7 @@
 
 /* Golden snapshot comparison depends on these layouts, so a change here is an
  * ABI change and must come with a version bump. */
-_Static_assert(KT_ABI_VERSION == 7, "ABI version moved without updating this consumer");
+_Static_assert(KT_ABI_VERSION == 8, "ABI version moved without updating this consumer");
 
 _Static_assert(sizeof(KtCell) == 16, "KtCell grew or shrank");
 _Static_assert(offsetof(KtCell, codepoint) == 0, "KtCell fields moved");
@@ -29,7 +29,7 @@ _Static_assert(offsetof(KtCursor, y) == 2, "KtCursor fields moved");
 _Static_assert(offsetof(KtCursor, visible) == 4, "KtCursor fields moved");
 _Static_assert(offsetof(KtCursor, shape) == 5, "KtCursor fields moved");
 
-_Static_assert(sizeof(KtSnapshotView) == 80, "KtSnapshotView grew or shrank");
+_Static_assert(sizeof(KtSnapshotView) == 88, "KtSnapshotView grew or shrank");
 _Static_assert(offsetof(KtSnapshotView, cols) == 0, "KtSnapshotView fields moved");
 _Static_assert(offsetof(KtSnapshotView, rows) == 2, "KtSnapshotView fields moved");
 _Static_assert(offsetof(KtSnapshotView, dirty) == 4, "KtSnapshotView fields moved");
@@ -41,6 +41,9 @@ _Static_assert(offsetof(KtSnapshotView, grapheme_count) == 32, "KtSnapshotView f
 _Static_assert(offsetof(KtSnapshotView, cursor) == 40, "KtSnapshotView fields moved");
 _Static_assert(offsetof(KtSnapshotView, title) == 48, "KtSnapshotView fields moved");
 _Static_assert(offsetof(KtSnapshotView, pwd) == 64, "KtSnapshotView fields moved");
+_Static_assert(offsetof(KtSnapshotView, child_state) == 80, "KtSnapshotView fields moved");
+_Static_assert(offsetof(KtSnapshotView, session_state) == 81, "KtSnapshotView fields moved");
+_Static_assert(offsetof(KtSnapshotView, child_exit_code) == 84, "KtSnapshotView fields moved");
 
 _Static_assert(sizeof(KtEvent) == 32, "KtEvent grew or shrank");
 _Static_assert(offsetof(KtEvent, kind) == 0, "KtEvent fields moved");
@@ -106,6 +109,27 @@ int kt_consumer_is_selected(const KtSnapshotView *view, uint16_t row, uint16_t c
     const KtRow *state = &view->row_state[row];
     return (state->flags & KT_ROW_FLAG_SELECTED) != 0 && col >= state->selection_start &&
            col <= state->selection_end;
+}
+
+/* The two states are read apart, because the app does two different things
+ * with them: a child still running is what makes closing the window worth a
+ * warning, and a session that broke is what makes the window stop taking
+ * input. Either can be true without the other. */
+int kt_consumer_warns_before_closing(const KtSnapshotView *view) {
+    return view->child_state == KT_CHILD_STATE_RUNNING;
+}
+
+int kt_consumer_takes_typing(const KtSnapshotView *view) {
+    return view->session_state == KT_SESSION_STATE_OK;
+}
+
+/* What the child ended by, for the window that stays up saying so. */
+int kt_consumer_exit_code(const KtSnapshotView *view, int *out_code) {
+    if (view->child_state != KT_CHILD_STATE_EXITED) {
+        return 0;
+    }
+    *out_code = view->child_exit_code;
+    return 1;
 }
 
 /* A session with a PTY behind it drains its own writer queue and takes its

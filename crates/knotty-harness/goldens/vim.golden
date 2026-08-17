@@ -1,8 +1,10 @@
-knotty-golden 2
+knotty-golden 3
 wakes 2
 writes ""
 events 0 dropped 0
 size 80 24
+child none
+session ok
 dirty full
 selection none
 cursor 0 23 visible block

@@ -11,12 +11,12 @@ use std::time::{Duration, Instant};
 use rustix::process::{Pid, test_kill_process};
 
 use knotty_ffi::{
-    Attribute, Cell, ClipboardTarget, Cursor, CursorShape, Dirty, KtBytes, KtEventKind, KtEvents,
-    KtSession, KtSnapshot, KtSnapshotView, KtStatus, KtText, Rgb, Row, RowFlag, SelectionRange,
-    Underline, kt_abi_version, kt_session_feed, kt_session_free, kt_session_new_detached,
-    kt_session_new_pty, kt_session_set_selection, kt_session_set_wake, kt_session_take_events,
-    kt_session_take_snapshot, kt_session_take_writes, kt_session_write, kt_snapshot_free,
-    kt_snapshot_view,
+    Attribute, Cell, ClipboardTarget, Cursor, CursorShape, Dirty, KtBytes, KtChildState,
+    KtEventKind, KtEvents, KtSession, KtSessionState, KtSnapshot, KtSnapshotView, KtStatus, KtText,
+    Rgb, Row, RowFlag, SelectionRange, Underline, kt_abi_version, kt_session_feed, kt_session_free,
+    kt_session_new_detached, kt_session_new_pty, kt_session_set_selection, kt_session_set_wake,
+    kt_session_take_events, kt_session_take_snapshot, kt_session_take_writes, kt_session_write,
+    kt_snapshot_free, kt_snapshot_view,
 };
 
 /// Ghostty's own defaults. A change here is an upstream palette change, not a
@@ -1695,6 +1695,34 @@ fn wait_for_exit(session: *mut KtSession) -> (Happened, Vec<String>) {
     (ended.expect("the loop runs until the exit arrives"), screen)
 }
 
+/// Watch the snapshots until one says what the wait was for, and answer with
+/// what that one said.
+///
+/// Nothing here drains the event queue: what a snapshot carries has to be
+/// readable by a consumer that only ever draws, since an event can be dropped
+/// and the truth about the child cannot.
+fn wait_for_snapshot<T>(
+    session: *mut KtSession,
+    wanted: &str,
+    read: impl Fn(&KtSnapshotView) -> Option<T>,
+) -> T {
+    let deadline = Instant::now() + PATIENCE;
+    let mut last = None;
+    while Instant::now() < deadline {
+        if let Some(snapshot) = take_if_any(session) {
+            let view = view(snapshot);
+            let found = read(&view);
+            last = Some((view.child_state, view.child_exit_code, view.session_state));
+            unsafe { kt_snapshot_free(snapshot) };
+            if let Some(found) = found {
+                return found;
+            }
+        }
+        thread::sleep(Duration::from_millis(5));
+    }
+    panic!("waited for {wanted}; the last snapshot said {last:?}");
+}
+
 /// Whether a process is still there, asked the way anything asks: a signal of
 /// no signal.
 ///
@@ -1746,6 +1774,54 @@ fn a_child_killed_by_a_signal_reports_the_code_a_shell_would() {
     let (ended, _) = wait_for_exit(session);
 
     assert_eq!(ended, child_exited(128 + 15));
+
+    unsafe { kt_session_free(session) };
+}
+
+/// The event is the immediate telling and the snapshot is the truth: events
+/// are finite and can be dropped, so a consumer that lost one would go on
+/// drawing a window whose shell is gone as a working one.
+///
+/// The child here prints nothing, so the exit is the only thing there has ever
+/// been to publish — a session that only published when the screen moved would
+/// leave the last frame anybody holds saying the child is running.
+#[test]
+fn a_child_that_ends_says_so_on_the_snapshot_as_well() {
+    let session = pty(24, 4, &["/bin/sh", "-c", "exit 7"]);
+
+    let (state, code) = wait_for_snapshot(session, "the child to end", |view| {
+        (view.child_state == KtChildState::Exited)
+            .then_some((view.session_state, view.child_exit_code))
+    });
+
+    assert_eq!(code, 7);
+    assert_eq!(
+        state,
+        KtSessionState::Ok,
+        "a child that ended took the session with it",
+    );
+
+    unsafe { kt_session_free(session) };
+}
+
+/// The other half of the pair, and what an app asks before it closes a window:
+/// a child still running is what makes the closing worth a warning.
+#[test]
+fn a_child_still_running_says_so_on_the_snapshot() {
+    let session = pty(
+        24,
+        4,
+        &["/bin/sh", "-c", "printf 'up and running'; exec sleep 30"],
+    );
+
+    let code = wait_for_snapshot(session, "the first frame", |view| {
+        (view.child_state == KtChildState::Running).then_some(view.child_exit_code)
+    });
+
+    assert_eq!(
+        code, 0,
+        "a running child was reported as ending with a code"
+    );
 
     unsafe { kt_session_free(session) };
 }

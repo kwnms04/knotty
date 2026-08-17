@@ -14,7 +14,7 @@
  * compares it with [`kt_abi_version`]. Mismatch means header and library
  * disagree about layouts, and the caller must not proceed.
  */
-#define KT_ABI_VERSION 7
+#define KT_ABI_VERSION 8
 
 /**
  * Outcome of a call across the boundary.
@@ -262,6 +262,67 @@ typedef uint8_t KtCursorShape;
 #endif // __cplusplus
 
 /**
+ * Whether a session has a child and what has become of it.
+ *
+ * Read apart from [`KtSessionState`]: the two are different facts, and a
+ * session whose thread panicked with its child still running is a real
+ * pairing. What decides whether closing the window needs a warning is this
+ * one; what decides whether the window still takes input is the other.
+ */
+enum KtChildState
+#if defined(__cplusplus) || __STDC_VERSION__ >= 202311L
+  : uint8_t
+#endif // defined(__cplusplus) || __STDC_VERSION__ >= 202311L
+ {
+  /**
+   * There is no child. A session with no PTY behind it is fed by its caller
+   * and has none.
+   */
+  KT_CHILD_STATE_NONE = 0,
+  /**
+   * The child is still running.
+   */
+  KT_CHILD_STATE_RUNNING = 1,
+  /**
+   * The child is gone, and `child_exit_code` says what by.
+   */
+  KT_CHILD_STATE_EXITED = 2,
+};
+#ifndef __cplusplus
+#if __STDC_VERSION__ >= 202311L
+typedef enum KtChildState KtChildState;
+#else
+typedef uint8_t KtChildState;
+#endif // __STDC_VERSION__ >= 202311L
+#endif // __cplusplus
+
+/**
+ * Whether a session still works.
+ */
+enum KtSessionState
+#if defined(__cplusplus) || __STDC_VERSION__ >= 202311L
+  : uint8_t
+#endif // defined(__cplusplus) || __STDC_VERSION__ >= 202311L
+ {
+  /**
+   * Working.
+   */
+  KT_SESSION_STATE_OK = 0,
+  /**
+   * Something inside it panicked. It keeps the last screen it published and
+   * takes no more input, which comes back as `KT_STATUS_DEFUNCT`.
+   */
+  KT_SESSION_STATE_BROKEN = 1,
+};
+#ifndef __cplusplus
+#if __STDC_VERSION__ >= 202311L
+typedef enum KtSessionState KtSessionState;
+#else
+typedef uint8_t KtSessionState;
+#endif // __STDC_VERSION__ >= 202311L
+#endif // __cplusplus
+
+/**
  * Cell attributes, OR-ed together into a cell's `attributes` field.
  *
  * The low byte is SGR state, the high byte is structure. Underlining is in
@@ -365,6 +426,11 @@ typedef struct KtSession KtSession;
 
 /**
  * Opaque handle to a snapshot.
+ *
+ * The screen is what the session published. The two states beside it are what
+ * the session said of itself when the snapshot was taken, and they travel with
+ * it so that a consumer draws one consistent answer rather than asking a
+ * session that has moved on since.
  */
 typedef struct KtSnapshot KtSnapshot;
 
@@ -649,6 +715,23 @@ typedef struct {
    * removed.
    */
   KtText pwd;
+  /**
+   * Whether the session has a child and whether it is still running. This
+   * is the truth about the child: the exit is an event as well, but events
+   * can be dropped and this cannot.
+   */
+  KtChildState child_state;
+  /**
+   * Whether the session still works. A broken one keeps the screen it has
+   * and refuses input.
+   */
+  KtSessionState session_state;
+  /**
+   * What the child exited with, or 128 plus the signal that ended it — the
+   * one number a shell reports either by. Set only when `child_state` is
+   * `KT_CHILD_STATE_EXITED`, and 0 otherwise.
+   */
+  int32_t child_exit_code;
 } KtSnapshotView;
 
 #ifdef __cplusplus
@@ -843,11 +926,16 @@ KtStatus kt_session_take_events(KtSession *session, KtEvents *out);
  * Take the latest snapshot, emptying the session's mailbox.
  *
  * Returns `KT_STATUS_NO_VALUE` when nothing has been published since the
- * last take. On success `out` receives an owned handle, to be released with
+ * last take, or `KT_STATUS_DEFUNCT` when nothing has been published and the
+ * session is past working — a broken session publishes no more, so a bare
+ * "nothing new" would be the last thing a consumer ever heard from one. On
+ * success `out` receives an owned handle, to be released with
  * [`kt_snapshot_free`]; otherwise it receives null.
  *
  * Works on a defunct session: what it holds is the last state that was
- * right, and handing that back is the whole point of keeping it.
+ * right, and handing that back is the whole point of keeping it. The snapshot
+ * says so — a session that broke while its child went on running reports both
+ * on the frame it hands over.
  *
  * # Safety
  *

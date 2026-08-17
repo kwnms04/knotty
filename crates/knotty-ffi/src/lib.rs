@@ -6,7 +6,7 @@
 use std::ffi::c_void;
 use std::ptr;
 
-use knotty_core::{Error, Event, PtySession, Session, Snapshot, Wake};
+use knotty_core::{ChildState, Error, Event, PtySession, Session, Snapshot, Wake};
 
 /// The snapshot's POD types. A C consumer gets these from the header; this
 /// re-export is how a Rust consumer names the same layouts.
@@ -139,6 +139,35 @@ impl From<&Event> for KtEvent {
     }
 }
 
+/// Whether a session has a child and what has become of it.
+///
+/// Read apart from [`KtSessionState`]: the two are different facts, and a
+/// session whose thread panicked with its child still running is a real
+/// pairing. What decides whether closing the window needs a warning is this
+/// one; what decides whether the window still takes input is the other.
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KtChildState {
+    /// There is no child. A session with no PTY behind it is fed by its caller
+    /// and has none.
+    None = 0,
+    /// The child is still running.
+    Running = 1,
+    /// The child is gone, and `child_exit_code` says what by.
+    Exited = 2,
+}
+
+/// Whether a session still works.
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KtSessionState {
+    /// Working.
+    Ok = 0,
+    /// Something inside it panicked. It keeps the last screen it published and
+    /// takes no more input, which comes back as `KT_STATUS_DEFUNCT`.
+    Broken = 1,
+}
+
 /// What a session calls when it has something new to be taken.
 ///
 /// `userdata` comes back exactly as it was handed to [`kt_session_set_wake`].
@@ -178,7 +207,7 @@ impl Userdata {
 /// A caller reads the constant from the header it compiled against and
 /// compares it with [`kt_abi_version`]. Mismatch means header and library
 /// disagree about layouts, and the caller must not proceed.
-pub const KT_ABI_VERSION: u32 = 7;
+pub const KT_ABI_VERSION: u32 = 8;
 
 /// Outcome of a call across the boundary.
 #[repr(i32)]
@@ -305,11 +334,34 @@ impl Driver {
             Self::Pty(session) => session.take_snapshot(),
         }
     }
+
+    /// What has become of the session's child.
+    fn child(&self) -> ChildState {
+        match self {
+            // Nothing is behind a detached session: the caller is what feeds
+            // it, and a caller is not a child.
+            Self::Detached(_) => ChildState::None,
+            Self::Pty(session) => session.child(),
+        }
+    }
+
+    /// Whether the session's own thread gave up, which only a session with a
+    /// thread can do.
+    fn broken(&self) -> bool {
+        match self {
+            Self::Detached(_) => false,
+            Self::Pty(session) => session.broken(),
+        }
+    }
 }
 
 /// Opaque handle to a session.
 pub struct KtSession {
     driver: Driver,
+    /// Whether a call at this boundary panicked. A session with a thread of
+    /// its own can break out of reach of any call, which the driver answers
+    /// for; both are the same news, and [`KtSession::is_defunct`] is where
+    /// they meet.
     defunct: bool,
     /// What the last event drain took. Kept alive because the run lent to the
     /// caller borrows the text out of it rather than copying it.
@@ -336,11 +388,17 @@ impl KtSession {
     /// The same, for a call that gives the session input — which a defunct
     /// session no longer takes.
     fn drive(&mut self, call: impl FnOnce(&mut Driver) -> KtStatus) -> KtStatus {
-        if self.defunct {
+        if self.is_defunct() {
             return KtStatus::Defunct;
         }
 
         self.guard(call)
+    }
+
+    /// Whether the session is past working, whether it broke under a call made
+    /// here or on a thread of its own.
+    fn is_defunct(&self) -> bool {
+        self.defunct || self.driver.broken()
     }
 }
 
@@ -362,7 +420,16 @@ fn guarded<T>(fallback: T, call: impl FnOnce() -> T) -> T {
 }
 
 /// Opaque handle to a snapshot.
-pub struct KtSnapshot(Snapshot);
+///
+/// The screen is what the session published. The two states beside it are what
+/// the session said of itself when the snapshot was taken, and they travel with
+/// it so that a consumer draws one consistent answer rather than asking a
+/// session that has moved on since.
+pub struct KtSnapshot {
+    frame: Snapshot,
+    child: ChildState,
+    session: KtSessionState,
+}
 
 /// Borrowed view of a snapshot's contents.
 ///
@@ -397,6 +464,17 @@ pub struct KtSnapshotView {
     /// Working directory as an absolute path, control characters already
     /// removed.
     pub pwd: KtText,
+    /// Whether the session has a child and whether it is still running. This
+    /// is the truth about the child: the exit is an event as well, but events
+    /// can be dropped and this cannot.
+    pub child_state: KtChildState,
+    /// Whether the session still works. A broken one keeps the screen it has
+    /// and refuses input.
+    pub session_state: KtSessionState,
+    /// What the child exited with, or 128 plus the signal that ended it — the
+    /// one number a shell reports either by. Set only when `child_state` is
+    /// `KT_CHILD_STATE_EXITED`, and 0 otherwise.
+    pub child_exit_code: i32,
 }
 
 /// Return the ABI version this library was built with.
@@ -766,11 +844,16 @@ pub unsafe extern "C" fn kt_session_take_events(
 /// Take the latest snapshot, emptying the session's mailbox.
 ///
 /// Returns `KT_STATUS_NO_VALUE` when nothing has been published since the
-/// last take. On success `out` receives an owned handle, to be released with
+/// last take, or `KT_STATUS_DEFUNCT` when nothing has been published and the
+/// session is past working — a broken session publishes no more, so a bare
+/// "nothing new" would be the last thing a consumer ever heard from one. On
+/// success `out` receives an owned handle, to be released with
 /// [`kt_snapshot_free`]; otherwise it receives null.
 ///
 /// Works on a defunct session: what it holds is the last state that was
-/// right, and handing that back is the whole point of keeping it.
+/// right, and handing that back is the whole point of keeping it. The snapshot
+/// says so — a session that broke while its child went on running reports both
+/// on the frame it hands over.
 ///
 /// # Safety
 ///
@@ -789,15 +872,50 @@ pub unsafe extern "C" fn kt_session_take_snapshot(
         return KtStatus::NullArgument;
     };
 
+    // Taken out of the guarded call rather than inside it, the way the event
+    // drain is: what the frame is stamped with has to be read off the session
+    // the guard has already borrowed.
+    //
     // Guarded rather than driven: a defunct session still hands back what it
     // last published, which is the whole reason for keeping it.
-    session.guard(|driver| match driver.take_snapshot() {
-        Some(snapshot) => {
-            unsafe { *out = Box::into_raw(Box::new(KtSnapshot(snapshot))) };
-            KtStatus::Ok
-        }
-        None => KtStatus::NoValue,
-    })
+    let mut taken = None;
+    let status = session.guard(|driver| {
+        taken = driver.take_snapshot();
+        KtStatus::Ok
+    });
+    let Some(frame) = taken else {
+        // A break with an empty mailbox is the one case where the state has no
+        // frame to ride on, and no frame is coming to carry it later.
+        return match status {
+            KtStatus::Ok if session.is_defunct() => KtStatus::Defunct,
+            KtStatus::Ok => KtStatus::NoValue,
+            // The take itself is what broke, and that is what to report.
+            panicked => panicked,
+        };
+    };
+
+    // Read after the frame rather than before it. The I/O thread writes the
+    // child's end down before publishing the frame that carries it, so a frame
+    // taken after that write is one whose state is already set — and reading
+    // first could hand that very frame over stamped as though the child were
+    // still running, with no frame after it to put that right. The other way
+    // round costs a screen one frame behind its own state, which the next take
+    // settles. cf. `03-core.md` C6
+    let child = session.driver.child();
+    let state = if session.is_defunct() {
+        KtSessionState::Broken
+    } else {
+        KtSessionState::Ok
+    };
+
+    unsafe {
+        *out = Box::into_raw(Box::new(KtSnapshot {
+            frame,
+            child,
+            session: state,
+        }))
+    };
+    KtStatus::Ok
 }
 
 /// Release a snapshot. Null is a no-op.
@@ -833,20 +951,32 @@ pub unsafe extern "C" fn kt_snapshot_view(
         return KtStatus::NullArgument;
     };
 
+    // The code is carried in a field of its own, so a kind that has none reads
+    // as 0 rather than as whatever the last one left — the same rule an event
+    // is filled in by.
+    let (child_state, child_exit_code) = match snapshot.child {
+        ChildState::None => (KtChildState::None, 0),
+        ChildState::Running => (KtChildState::Running, 0),
+        ChildState::Exited(code) => (KtChildState::Exited, code),
+    };
+
     guarded(KtStatus::Panicked, || {
         unsafe {
             *out = KtSnapshotView {
-                cols: snapshot.0.cols,
-                rows: snapshot.0.rows,
-                dirty: snapshot.0.dirty,
-                has_selection: snapshot.0.has_selection,
-                cells: snapshot.0.cells.as_ptr(),
-                row_state: snapshot.0.row_state.as_ptr(),
-                graphemes: snapshot.0.graphemes.as_ptr(),
-                grapheme_count: snapshot.0.graphemes.len(),
-                cursor: snapshot.0.screen.cursor,
-                title: snapshot.0.screen.title.as_str().into(),
-                pwd: snapshot.0.screen.pwd.as_str().into(),
+                cols: snapshot.frame.cols,
+                rows: snapshot.frame.rows,
+                dirty: snapshot.frame.dirty,
+                has_selection: snapshot.frame.has_selection,
+                cells: snapshot.frame.cells.as_ptr(),
+                row_state: snapshot.frame.row_state.as_ptr(),
+                graphemes: snapshot.frame.graphemes.as_ptr(),
+                grapheme_count: snapshot.frame.graphemes.len(),
+                cursor: snapshot.frame.screen.cursor,
+                title: snapshot.frame.screen.title.as_str().into(),
+                pwd: snapshot.frame.screen.pwd.as_str().into(),
+                child_state,
+                session_state: snapshot.session,
+                child_exit_code,
             }
         };
         KtStatus::Ok
@@ -861,10 +991,31 @@ mod tests {
     /// touches a session goes through, so panicking there is the same thing
     /// happening to a session that a bug in the core would do.
     ///
-    /// A panic on a PTY session's own thread is a different path and belongs
-    /// to `kwnms04/knotty#21`.
+    /// A panic on a PTY session's own thread reaches the same state by the
+    /// other road, and the core is where that one is tested — no call of the
+    /// app's is anywhere near it when it happens.
     fn panic_in(session: *mut KtSession) -> KtStatus {
         unsafe { &mut *session }.guard(|_| panic!("on purpose"))
+    }
+
+    /// Read a snapshot the way a consumer does. What it points at stays the
+    /// snapshot's, so the caller frees that after this and not before.
+    fn view_of(snapshot: *mut KtSnapshot) -> KtSnapshotView {
+        let mut view = std::mem::MaybeUninit::<KtSnapshotView>::uninit();
+        assert_eq!(
+            unsafe { kt_snapshot_view(snapshot, view.as_mut_ptr()) },
+            KtStatus::Ok,
+        );
+        unsafe { view.assume_init() }
+    }
+
+    fn take(session: *mut KtSession) -> *mut KtSnapshot {
+        let mut snapshot = ptr::null_mut();
+        assert_eq!(
+            unsafe { kt_session_take_snapshot(session, &mut snapshot) },
+            KtStatus::Ok,
+        );
+        snapshot
     }
 
     fn detached() -> *mut KtSession {
@@ -896,20 +1047,64 @@ mod tests {
         );
         assert_eq!(panic_in(session), KtStatus::Panicked);
 
+        // A defunct session still hands back what it last published.
+        let snapshot = take(session);
+        let view = view_of(snapshot);
+
+        assert_eq!(unsafe { (*view.cells).codepoint }, u32::from(b'o'));
+        assert_eq!(
+            view.session_state,
+            KtSessionState::Broken,
+            "the screen came back with nothing to say it can no longer be trusted",
+        );
+
+        unsafe { kt_snapshot_free(snapshot) };
+        unsafe { kt_session_free(session) };
+    }
+
+    /// The frame is what carries the state, and a broken session publishes no
+    /// more of them — so a consumer that had already taken the last one would
+    /// hear "nothing new" and go on drawing a window that is dead. The refusal
+    /// is what it hears instead.
+    #[test]
+    fn a_broken_session_with_nothing_left_to_hand_over_says_that_rather_than_no_value() {
+        let session = detached();
+        assert_eq!(
+            unsafe { kt_session_feed(session, b"ok".as_ptr(), 2) },
+            KtStatus::Ok,
+        );
+        assert_eq!(panic_in(session), KtStatus::Panicked);
+
+        // The one frame there was, taken the way a consumer takes it.
+        unsafe { kt_snapshot_free(take(session)) };
+
         let mut snapshot = ptr::null_mut();
         assert_eq!(
             unsafe { kt_session_take_snapshot(session, &mut snapshot) },
+            KtStatus::Defunct,
+        );
+        assert!(snapshot.is_null());
+
+        unsafe { kt_session_free(session) };
+    }
+
+    /// A detached session is fed by its caller, so there is no child to be
+    /// warned about on the way out — which is not the same fact as a child
+    /// that has ended.
+    #[test]
+    fn a_detached_session_reports_no_child_and_a_session_that_works() {
+        let session = detached();
+        assert_eq!(
+            unsafe { kt_session_feed(session, b"ok".as_ptr(), 2) },
             KtStatus::Ok,
-            "a defunct session still hands back what it last published",
         );
 
-        let mut view = std::mem::MaybeUninit::<KtSnapshotView>::uninit();
-        assert_eq!(
-            unsafe { kt_snapshot_view(snapshot, view.as_mut_ptr()) },
-            KtStatus::Ok,
-        );
-        let view = unsafe { view.assume_init() };
-        assert_eq!(unsafe { (*view.cells).codepoint }, u32::from(b'o'));
+        let snapshot = take(session);
+        let view = view_of(snapshot);
+
+        assert_eq!(view.child_state, KtChildState::None);
+        assert_eq!(view.child_exit_code, 0);
+        assert_eq!(view.session_state, KtSessionState::Ok);
 
         unsafe { kt_snapshot_free(snapshot) };
         unsafe { kt_session_free(session) };

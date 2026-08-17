@@ -315,15 +315,19 @@ impl Snapshot {
 /// would be identical. `previous` is the screen state of the last capture:
 /// the engine's dirty tracking does not cover it, so a title or cursor move
 /// on an otherwise still screen would go unpublished without it.
+///
+/// `even_if_unchanged` is for a caller with something to say that the screen
+/// cannot show, and takes that answer away: it always yields a frame.
 pub(crate) fn capture(
     render: &mut RenderState<'static>,
     terminal: &Terminal<'static, 'static>,
     previous: &ScreenState,
+    even_if_unchanged: bool,
 ) -> Result<Option<Snapshot>> {
     let frame = render.update(terminal)?;
     let dirty = Dirty::from(frame.dirty()?);
     let screen = screen_state_of(&frame, terminal)?;
-    if dirty == Dirty::Clean && screen == *previous {
+    if !even_if_unchanged && dirty == Dirty::Clean && screen == *previous {
         return Ok(None);
     }
 

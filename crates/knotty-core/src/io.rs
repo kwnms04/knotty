@@ -13,7 +13,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicUsize, Ordering};
 use std::sync::mpsc::Receiver;
 
 use rustix::event::{PollFd, PollFlags, poll};
@@ -313,11 +313,17 @@ impl Drop for Pty {
 /// `backlog` counts every byte still waiting for the child, whoever queued it,
 /// and is what the app's own writes are refused against — so it is added to
 /// here as the engine answers and taken from as the terminal accepts.
+///
+/// `child_exit` is where the child's code is left for the app's side to read.
+/// It is written before the exit is committed, so that a consumer coming for
+/// that telling finds the code already there. What the negative it starts out
+/// as means is the reader's, in `session`.
 pub fn run(
     session: &mut Session,
     terminal: &mut Pty,
     input: &Receiver<Input>,
     backlog: &AtomicUsize,
+    child_exit: &AtomicI32,
     stopping: &AtomicBool,
 ) -> Result<()> {
     let mut arrived = vec![0u8; READ_CHUNK];
@@ -365,7 +371,14 @@ pub fn run(
                 // seen here rather than watched for elsewhere — so the exit is
                 // committed after the last byte was fed and published, with no
                 // second mechanism to order the two. cf. `03-core.md` C6
-                Chunk::Ended => return session.note_child_exit(terminal.kill_and_reap()?),
+                // A reap that fails leaves no code to write down, and the
+                // round it fails in ends the session as broken — which is the
+                // state an app acts on ahead of anything the child did.
+                Chunk::Ended => {
+                    let code = terminal.kill_and_reap()?;
+                    child_exit.store(code, Ordering::Relaxed);
+                    return session.note_child_exit(code);
+                }
             }
         }
     }

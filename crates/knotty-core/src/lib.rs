@@ -16,7 +16,7 @@ pub mod session;
 pub mod snapshot;
 
 pub use queue::{ClipboardTarget, Event};
-pub use session::{PtySession, SelectionRange, Session, Wake};
+pub use session::{ChildState, PtySession, SelectionRange, Session, Wake};
 pub use snapshot::{
     Attribute, Cell, Cursor, CursorShape, Dirty, Rgb, Row, RowFlag, ScreenState, Snapshot,
     Underline,
