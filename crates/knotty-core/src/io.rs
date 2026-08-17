@@ -85,7 +85,59 @@ pub struct Pty {
     /// input from another thread cuts the wait short.
     nudge: Arc<OwnedFd>,
     /// Held so the child stays ours to wait on, and to collect on the way out.
-    child: Child,
+    ///
+    /// **Declared last on purpose.** Fields are dropped in declaration order,
+    /// so this one is collected with the terminal already closed. See
+    /// [`Kept`] for what that ordering is worth.
+    child: Kept,
+}
+
+/// The child, held so that letting go of it puts it down and collects it.
+///
+/// A type of its own because a `Drop` on [`Pty`] would run *before* any of
+/// [`Pty`]'s fields, our end of the terminal included — and there is no order
+/// to be had from within it. Carried on a field instead, the collecting runs
+/// after every field declared ahead of it, which is how it comes to happen
+/// with the terminal already closed.
+///
+/// That order is the whole of the matter. A child killed while the terminal
+/// still holds output nobody has taken cannot finish exiting until that
+/// output is drained or the terminal goes away, and the thread that would
+/// drain it is the very one waiting here — so waiting with our end still open
+/// is each side waiting for the other. Letting go first leaves the kernel
+/// nothing to wait for. cf. `03-core.md` C6
+struct Kept {
+    /// Ours to wait on for as long as this lives.
+    process: Child,
+}
+
+impl Kept {
+    /// Put the child down and collect it, answering with what it ended by.
+    ///
+    /// The signal is for the child that let go of its terminal and kept
+    /// running: knotty can no longer see it or talk to it, so waiting on one
+    /// would be waiting forever and leaving it would be leaving it for good.
+    /// A child that ended of its own accord — every ordinary one — is only
+    /// waiting to be collected by the time this is called, and a signal
+    /// changes nothing about what it ended with.
+    fn kill_and_reap(&mut self) -> Result<i32> {
+        let _ = self.process.kill();
+        Ok(exit_code(self.process.wait()?))
+    }
+}
+
+impl Drop for Kept {
+    /// Collect the child, so that letting go of a session leaves nothing of it
+    /// behind.
+    ///
+    /// This is the path for a session released while its child is still
+    /// running: closing the terminal alone is a hangup the child is free to
+    /// ignore, and an ignored one leaves a process the app can no longer
+    /// reach. A child already collected on the way out of the loop makes this
+    /// an error nobody has anything to do with.
+    fn drop(&mut self) {
+        let _ = self.kill_and_reap();
+    }
 }
 
 /// The one number a child's end is reported by.
@@ -202,7 +254,7 @@ impl Pty {
             Self {
                 terminal,
                 nudge: Arc::clone(&nudge),
-                child,
+                child: Kept { process: child },
             },
             Waker {
                 sender,
@@ -271,19 +323,6 @@ impl Pty {
         }
     }
 
-    /// Put the child down and collect it, answering with what it ended by.
-    ///
-    /// The signal is for the child that let go of its terminal and kept
-    /// running: knotty can no longer see it or talk to it, so waiting on one
-    /// would be waiting forever and leaving it would be leaving it for good.
-    /// A child that ended of its own accord — every ordinary one — is only
-    /// waiting to be collected by the time this is called, and a signal
-    /// changes nothing about what it ended with.
-    pub fn kill_and_reap(&mut self) -> Result<i32> {
-        let _ = self.child.kill();
-        Ok(exit_code(self.child.wait()?))
-    }
-
     /// Hand the child as much of `bytes` as the terminal will take, returning
     /// how much that was.
     pub fn write(&self, bytes: &[u8]) -> Result<usize> {
@@ -295,20 +334,6 @@ impl Pty {
             Err(Errno::IO | Errno::PIPE) => Ok(0),
             Err(error) => Err(error.into()),
         }
-    }
-}
-
-impl Drop for Pty {
-    /// Collect the child, so that letting go of a session leaves nothing of it
-    /// behind.
-    ///
-    /// This is the path for a session released while its child is still
-    /// running: closing the terminal alone is a hangup the child is free to
-    /// ignore, and an ignored one leaves a process the app can no longer
-    /// reach. A child already collected on the way out of the loop makes this
-    /// an error nobody has anything to do with.
-    fn drop(&mut self) {
-        let _ = self.kill_and_reap();
     }
 }
 
@@ -389,11 +414,73 @@ pub fn run(
                 // round it fails in ends the session as broken — which is the
                 // state an app acts on ahead of anything the child did.
                 Chunk::Ended => {
-                    let code = terminal.kill_and_reap()?;
+                    // The one collection that keeps our end open while it
+                    // waits, and it may only because an end here means every
+                    // handle on the far side is closed — a child holding
+                    // output back cannot have got us this far. A reading that
+                    // called an end any sooner would put this wait back where
+                    // [`Kept`] says it must not be.
+                    let code = terminal.child.kill_and_reap()?;
                     child_exit.store(code, Ordering::Relaxed);
                     return session.note_child_exit(code);
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::mpsc;
+    use std::thread;
+    use std::time::Duration;
+
+    use super::Pty;
+
+    /// How long a release is given before it counts as one that never ends.
+    const PATIENCE: Duration = Duration::from_secs(10);
+
+    /// The only place in this crate that starts a real child, because the
+    /// deadlock it guards lives below the parser: it is between a child
+    /// closing its terminal and whoever was meant to be draining that
+    /// terminal, and the loop above reaches it only by luck. Driving a
+    /// session from outside cannot hold the drain still long enough to see
+    /// it — the loop's own reads are what keep letting the child go.
+    #[test]
+    fn letting_go_of_a_terminal_nobody_drained_still_collects_the_child() {
+        // Outliving the test on purpose: the release under test is the one
+        // that has a live child to put down, and a child that ended on its own
+        // would be collected before the terminal ever mattered.
+        let (terminal, _waker) =
+            Pty::spawn(b"/bin/sh", &[b"-c".to_vec(), b"sleep 300".to_vec()], 4, 1)
+                .expect("a terminal with a child on it");
+
+        // Never read back, so the echo of it stays in the terminal's output
+        // queue — which is what a child on its way out waits to see drained.
+        //
+        // The volume is not the obvious way round. A terminal whose input
+        // queue is over its limit throws that queue away instead of refusing
+        // it, echoing little of what it dropped — so our end goes on accepting
+        // for as long as anyone cares to write, and only a fraction of this
+        // ever reaches the queue the test needs left full. There is no way to
+        // read back how full it is without the reading that would empty it,
+        // so the count is settled the only way left: a single chunk let the
+        // test pass against the very bug it guards, and this many does not.
+        let chunk = vec![b'x'; 64 * 1024];
+        for _ in 0..512 {
+            terminal.write(&chunk).expect("a write");
+        }
+
+        // Released on a thread of its own, so that a release which never ends
+        // is a test that fails rather than a suite that hangs.
+        let (released, waiting) = mpsc::channel();
+        thread::spawn(move || {
+            drop(terminal);
+            let _ = released.send(());
+        });
+
+        waiting
+            .recv_timeout(PATIENCE)
+            .expect("the child was put down and collected");
     }
 }
