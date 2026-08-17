@@ -1,29 +1,0 @@
-^D[?1049h[22;0;0t[?1h=[H[2J[?12l[?25h[?1000l[?1002l[?10e(B[m[K[36m
-󰡯 X11[39m [31m->[39m [31m[4m../private/var/select/X11(B[m[K[36m
-󰡯 X11R6[39m [31m->[39m [31m[4m../private/var/select/X11(B[m[K[36m[1m
- knotty (B[m   main [31m[1m?4 (B[m[33m!6 [31m[1m⇡6 (B[m[K[32m[1m
-❯(B[m[K
-[K
-[K
-[K
-[K
-[K
-[K
-[K
-[K[30m[42m
-[rec] 0:zsh*[38X[38C"kwnMBP.local" 17:32 14-Aug-26(B[m[?12l[?25h[15;3H[18t[14t(B[m[?12l[?25h[?1006l[?1000l[?1002l[?1003l[1;1H[1;24r[?25l[1;1Hprintf "\033[1;32mgreen\033[0m \033[4munderline\033[0m\n"; ls /usr[K[36m[1m
- knotty (B[m   main [31m[1m?4 (B[m[33m!6 [31m[1m⇡6 (B[m[K[32m[1m
-❯(B[m [32mprintf[39m [33m"\033[1;32mgreen\033[0m \033[4munderline\033[0m\n"[39m; [32mls[39m [4m/usr(B[m[K[32m[1m
-green(B                                                                  [15;1H~                        1[39m [31m->[39m [31m[4m../private/var/select/X11(B[m[K[36m
-󰡯 X11R6[39m [31m->[39m [31m[4m../private/var/select/X11(B[m[K[36m[1m
- knotty (B[m   main [31m[1m?4 (B[m[33m!6 [31m[1m⇡6 (B[m[K[32m[1m
-❯(B[m[K
-[K
-[K
-[K
-[K
-[K
-[K
-[K
-[K[30m[42m
-[rec] 0:zsh*[38X[38C"kwnMBP.local" 17:32 14-Aug-26(B[m[?12l[?25h[15;3H
