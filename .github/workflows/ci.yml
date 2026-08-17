@@ -62,8 +62,9 @@ jobs:
       #
       # This shrinks the exposure rather than removing it: the ghostty clone
       # itself still happens every run.
-      - name: Cache Zig packages
-        uses: actions/cache@v4
+      - name: Restore Zig packages
+        id: zig-cache
+        uses: actions/cache/restore@v4
         with:
           path: ~/.cache/zig
           key: zig-pkg-${{ matrix.runner }}-${{ hashFiles('Cargo.lock') }}
@@ -77,3 +78,28 @@ jobs:
       # KNOTTY_UPDATE_GOLDENS is set, which nothing here sets, so a screen that
       # changed fails the build rather than quietly becoming the new truth.
       - run: cargo test --workspace
+
+      # The stable key, which every later run hits outright and skips both of
+      # these steps for.
+      - name: Save Zig packages
+        if: success() && steps.zig-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.cache/zig
+          key: zig-pkg-${{ matrix.runner }}-${{ hashFiles('Cargo.lock') }}
+
+      # A run that died part-way through fetching still holds the packages it
+      # did get, and throwing those away is what made the first attempt at this
+      # loop: cold cache, fetch refused, nothing saved, cold cache again — three
+      # Linux runs in a row. Zig's package cache is content-addressed, so half
+      # of it is packages that are whole rather than a package that is half.
+      #
+      # Under a key of its own, so a partial cache can never occupy the stable
+      # one and stop it from ever being filled. The next attempt restores this
+      # by prefix and fetches only the remainder.
+      - name: Save partial Zig packages
+        if: failure()
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.cache/zig
+          key: zig-pkg-${{ matrix.runner }}-${{ hashFiles('Cargo.lock') }}-partial-${{ github.run_id }}-${{ github.run_attempt }}
