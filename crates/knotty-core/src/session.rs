@@ -843,6 +843,22 @@ impl PtySession {
         self.broken.load(Ordering::Relaxed)
     }
 
+    /// How many bytes are still waiting for the child.
+    ///
+    /// Everything queued and not yet handed to the terminal, whoever queued it
+    /// — what the app wrote and what the terminal answered. This is the count
+    /// [`write`] refuses against, and it falls back to zero as the child keeps
+    /// up.
+    ///
+    /// It is also the one place a caller can watch a write reach the terminal,
+    /// which is what the B5 bench times against. Nothing else says so: the
+    /// write itself happens on the I/O thread and tells no one.
+    ///
+    /// [`write`]: PtySession::write
+    pub fn backlog(&self) -> usize {
+        self.backlog.load(Ordering::Relaxed)
+    }
+
     /// Set what to call when the session has something new to be taken, or
     /// clear it with `None`.
     ///

@@ -8,3 +8,11 @@ version.workspace = true
 [dependencies]
 libghostty-vt.workspace = true
 rustix.workspace = true
+
+# A bench target rather than a binary, for the two things that buys: `cargo
+# bench` builds it optimized without being asked, and `cargo test` leaves it
+# alone. `cargo clippy --all-targets` still compiles it in CI, which is what
+# keeps it from rotting. See AGENTS.md for why nothing there runs it.
+[[bench]]
+name = "runaway"
+harness = false
