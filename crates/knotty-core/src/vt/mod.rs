@@ -13,8 +13,10 @@
 //! appears in a signature outside this module. cf.
 //! `docs/adr/0004-hide-vt-engine-types.md`
 //!
-//! Every `unsafe` in `knotty-core` is here. What the C API asks of a caller
-//! and what this module does about it is written at each call.
+//! The crate denies `unsafe` and lifts it here. This is the larger of the two
+//! places it is lifted — the other is a single pre-exec hook in [`crate::io`],
+//! which has no safe spelling. What the C API asks of a caller and what this
+//! module does about it is written at each call.
 
 // The one place the crate's ban is lifted. cf. `lib.rs`
 #![allow(unsafe_code)]
@@ -343,11 +345,8 @@ impl Terminal {
     ///
     /// `T` must be the output type `data` documents.
     unsafe fn get<T>(&self, data: ffi::TerminalData::Type) -> Result<T> {
-        let mut value = MaybeUninit::<T>::zeroed();
         // SAFETY: the caller's, as declared.
-        check(unsafe { ffi::ghostty_terminal_get(self.raw, data, value.as_mut_ptr().cast()) })?;
-        // SAFETY: a successful call initializes the value.
-        Ok(unsafe { value.assume_init() })
+        unsafe { read(|out| ffi::ghostty_terminal_get(self.raw, data, out)) }
     }
 
     /// Set a terminal option to whatever `value` points at, or to nothing.
@@ -389,6 +388,25 @@ fn check(code: ffi::Result::Type) -> Result<()> {
         return Ok(());
     }
     Err(Error::Engine)
+}
+
+/// Hand `get` somewhere to put a `T` and take back what it put there.
+///
+/// The engine's readers are all this shape — a tag, a pointer to write
+/// through, and a result code — and the delicate half is the same every time.
+/// It lives here once rather than at each of the five tag namespaces, which
+/// keep their own entry points so that a tag cannot be used against the handle
+/// it does not belong to.
+///
+/// # Safety
+///
+/// `T` must be the output type the tag `get` passes documents.
+unsafe fn read<T>(get: impl FnOnce(*mut c_void) -> ffi::Result::Type) -> Result<T> {
+    let mut value = MaybeUninit::<T>::zeroed();
+    check(get(value.as_mut_ptr().cast()))?;
+    // SAFETY: a successful call initializes the value, and the caller promised
+    // it is a `T`.
+    Ok(unsafe { value.assume_init() })
 }
 
 /// The engine's callback types with the null it also allows taken off, so that
@@ -482,6 +500,9 @@ unsafe extern "C" fn on_clipboard_write(
 ) -> ffi::ClipboardWriteResult::Type {
     // SAFETY: as `on_pty_write`.
     let listener = unsafe { listener_of(userdata) };
+    // SAFETY: the engine lends one of these for the length of this call.
+    // `as_ref` is the checked spelling: a null write is refused below rather
+    // than dereferenced.
     let Some(write) = (unsafe { write.as_ref() }) else {
         return ffi::ClipboardWriteResult::UNSUPPORTED;
     };

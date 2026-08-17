@@ -16,7 +16,7 @@ use std::ptr;
 
 use libghostty_vt_sys as ffi;
 
-use super::{Terminal, check};
+use super::{Terminal, check, read};
 use crate::snapshot::{
     Attribute, Cell, Cursor, CursorShape, Dirty, Rgb, Row, RowFlag, ScreenState, Snapshot,
     Underline,
@@ -65,8 +65,7 @@ impl Terminal {
         };
         let mut cells = vec![blank; usize::from(cols) * usize::from(rows)];
         let mut row_state = vec![Row::default(); usize::from(rows)];
-        let mut graphemes = Vec::new();
-        let mut cluster = Vec::new();
+        let mut graphemes = Graphemes::default();
 
         // SAFETY: `rows` is our own iterator, which this points at the frame
         // just updated. Its data is good until the next update.
@@ -100,8 +99,7 @@ impl Terminal {
             let mut x = 0usize;
             // SAFETY: as the row iterator above.
             while unsafe { ffi::ghostty_render_state_row_cells_next(self.cells) } {
-                cells[y * usize::from(cols) + x] =
-                    self.cell(defaults, &mut graphemes, &mut cluster)?;
+                cells[y * usize::from(cols) + x] = self.cell(defaults, &mut graphemes)?;
                 x += 1;
             }
             y += 1;
@@ -121,7 +119,7 @@ impl Terminal {
             screen,
             cells,
             row_state,
-            graphemes,
+            graphemes: graphemes.table,
         }))
     }
 
@@ -192,13 +190,10 @@ impl Terminal {
     fn row_state(&self) -> Result<Row> {
         // SAFETY: the tag's documented output type.
         let dirty: bool = unsafe { self.row_get(ffi::RenderStateRowData::DIRTY) }?;
-        // SAFETY: as above. The raw row is an opaque value, queried in turn.
+        // SAFETY: as above, and then the `bool` the wrap tag documents. The
+        // raw row is an opaque value, queried in turn.
         let raw: ffi::Row = unsafe { self.row_get(ffi::RenderStateRowData::RAW) }?;
-        let mut wrapped = false;
-        // SAFETY: `wrapped` is the `bool` out parameter the tag documents.
-        check(unsafe {
-            ffi::ghostty_row_get(raw, ffi::RowData::WRAP, ptr::from_mut(&mut wrapped).cast())
-        })?;
+        let wrapped: bool = unsafe { of_row(raw, ffi::RowData::WRAP) }?;
         let selection = self.row_selection()?;
 
         let mut flags = 0;
@@ -268,15 +263,7 @@ impl Terminal {
     }
 
     /// Read the cell the iterator is on.
-    ///
-    /// `cluster` is scratch space the caller keeps across cells so that
-    /// spilling one does not allocate.
-    fn cell(
-        &self,
-        defaults: Defaults,
-        graphemes: &mut Vec<u32>,
-        cluster: &mut Vec<u32>,
-    ) -> Result<Cell> {
+    fn cell(&self, defaults: Defaults, graphemes: &mut Graphemes) -> Result<Cell> {
         let mut style = ffi::sized!(ffi::Style);
         // SAFETY: the sized out parameter the tag documents.
         check(unsafe {
@@ -288,34 +275,16 @@ impl Terminal {
         })?;
 
         // SAFETY: the tag's documented output type. The raw cell is an opaque
-        // value, queried in turn.
+        // value, queried in turn below.
         let raw: ffi::Cell = unsafe { self.cell_get(ffi::RenderStateRowCellsData::RAW) }?;
-        let mut tag = ffi::CellContentTag::CODEPOINT;
-        // SAFETY: each is the out parameter its tag documents.
-        check(unsafe {
-            ffi::ghostty_cell_get(
-                raw,
-                ffi::CellData::CONTENT_TAG,
-                ptr::from_mut(&mut tag).cast(),
-            )
-        })?;
-        let mut wide = ffi::CellWide::NARROW;
-        check(unsafe {
-            ffi::ghostty_cell_get(raw, ffi::CellData::WIDE, ptr::from_mut(&mut wide).cast())
-        })?;
+        // SAFETY: each of the three is its tag's documented output type.
+        let tag: ffi::CellContentTag::Type = unsafe { of_cell(raw, ffi::CellData::CONTENT_TAG) }?;
+        let wide: ffi::CellWide::Type = unsafe { of_cell(raw, ffi::CellData::WIDE) }?;
 
         let (codepoint, overflow) = if tag == ffi::CellContentTag::CODEPOINT_GRAPHEME {
-            (self.spill(graphemes, cluster)?, Attribute::Overflow as u16)
+            (self.spill(graphemes)?, Attribute::Overflow as u16)
         } else {
-            let mut codepoint = 0u32;
-            check(unsafe {
-                ffi::ghostty_cell_get(
-                    raw,
-                    ffi::CellData::CODEPOINT,
-                    ptr::from_mut(&mut codepoint).cast(),
-                )
-            })?;
-            (codepoint, 0)
+            (unsafe { of_cell(raw, ffi::CellData::CODEPOINT) }?, 0)
         };
 
         Ok(Cell {
@@ -343,43 +312,47 @@ impl Terminal {
         match result {
             // SAFETY: a successful call initializes the value.
             ffi::Result::SUCCESS => Ok(Some(rgb(unsafe { color.assume_init() }))),
-            // How the engine says the cell has no colour of its own, which is
-            // the ordinary case rather than a failure.
-            ffi::Result::INVALID_VALUE => Ok(None),
+            // The cell carries no colour of its own, which is the ordinary case
+            // rather than a failure: the caller substitutes the terminal's
+            // default. The header names only the first of these, and the second
+            // is here because it is the same answer under the name the rest of
+            // the C API uses for it — refusing it would narrow what a colour is
+            // allowed to be absent by.
+            ffi::Result::INVALID_VALUE | ffi::Result::NO_VALUE => Ok(None),
             _ => Err(Error::Engine),
         }
     }
 
     /// Append the cell's codepoints to the grapheme table, returning the index
     /// the cell should carry.
-    fn spill(&self, graphemes: &mut Vec<u32>, cluster: &mut Vec<u32>) -> Result<u32> {
+    fn spill(&self, graphemes: &mut Graphemes) -> Result<u32> {
         // Nothing bounds the table: a cell contributes its whole cluster, and
         // there is no ceiling on either the cluster length or the cell count.
         // The cell addresses the table with a u32, so refuse rather than
         // truncate.
-        let index = u32::try_from(graphemes.len()).map_err(|_| Error::TooLarge)?;
+        let index = u32::try_from(graphemes.table.len()).map_err(|_| Error::TooLarge)?;
 
         // SAFETY: the tag's documented output type.
         let len: u32 = unsafe { self.cell_get(ffi::RenderStateRowCellsData::GRAPHEMES_LEN) }?;
-        cluster.resize(len as usize, 0);
+        graphemes.cluster.resize(len as usize, 0);
         if len > 0 {
             // The engine is handed a bare pointer and no length, so the buffer
             // being at least `len` long is this side's whole guarantee — which
             // is why the length is read first and the buffer sized from it.
             //
-            // SAFETY: `cluster` holds exactly the `len` codepoints the call
+            // SAFETY: the scratch holds exactly the `len` codepoints the call
             // writes.
             check(unsafe {
                 ffi::ghostty_render_state_row_cells_get(
                     self.cells,
                     ffi::RenderStateRowCellsData::GRAPHEMES_BUF,
-                    cluster.as_mut_ptr().cast(),
+                    graphemes.cluster.as_mut_ptr().cast(),
                 )
             })?;
         }
 
-        graphemes.push(len);
-        graphemes.extend_from_slice(cluster);
+        graphemes.table.push(len);
+        graphemes.table.extend_from_slice(&graphemes.cluster);
         Ok(index)
     }
 
@@ -389,13 +362,8 @@ impl Terminal {
     ///
     /// `T` must be the output type `data` documents.
     unsafe fn render_get<T>(&self, data: ffi::RenderStateData::Type) -> Result<T> {
-        let mut value = MaybeUninit::<T>::zeroed();
         // SAFETY: the caller's, as declared.
-        check(unsafe {
-            ffi::ghostty_render_state_get(self.render, data, value.as_mut_ptr().cast())
-        })?;
-        // SAFETY: a successful call initializes the value.
-        Ok(unsafe { value.assume_init() })
+        unsafe { read(|out| ffi::ghostty_render_state_get(self.render, data, out)) }
     }
 
     /// Read a value off the row the iterator is on.
@@ -404,13 +372,8 @@ impl Terminal {
     ///
     /// `T` must be the output type `data` documents.
     unsafe fn row_get<T>(&self, data: ffi::RenderStateRowData::Type) -> Result<T> {
-        let mut value = MaybeUninit::<T>::zeroed();
         // SAFETY: the caller's, as declared.
-        check(unsafe {
-            ffi::ghostty_render_state_row_get(self.rows, data, value.as_mut_ptr().cast())
-        })?;
-        // SAFETY: a successful call initializes the value.
-        Ok(unsafe { value.assume_init() })
+        unsafe { read(|out| ffi::ghostty_render_state_row_get(self.rows, data, out)) }
     }
 
     /// Read a value off the cell the iterator is on.
@@ -419,14 +382,42 @@ impl Terminal {
     ///
     /// `T` must be the output type `data` documents.
     unsafe fn cell_get<T>(&self, data: ffi::RenderStateRowCellsData::Type) -> Result<T> {
-        let mut value = MaybeUninit::<T>::zeroed();
         // SAFETY: the caller's, as declared.
-        check(unsafe {
-            ffi::ghostty_render_state_row_cells_get(self.cells, data, value.as_mut_ptr().cast())
-        })?;
-        // SAFETY: a successful call initializes the value.
-        Ok(unsafe { value.assume_init() })
+        unsafe { read(|out| ffi::ghostty_render_state_row_cells_get(self.cells, data, out)) }
     }
+}
+
+/// Read a value off an opaque row, which is queried apart from the iterator
+/// that produced it.
+///
+/// # Safety
+///
+/// `T` must be the output type `data` documents.
+unsafe fn of_row<T>(row: ffi::Row, data: ffi::RowData::Type) -> Result<T> {
+    // SAFETY: the caller's, as declared.
+    unsafe { read(|out| ffi::ghostty_row_get(row, data, out)) }
+}
+
+/// The same for an opaque cell.
+///
+/// # Safety
+///
+/// `T` must be the output type `data` documents.
+unsafe fn of_cell<T>(cell: ffi::Cell, data: ffi::CellData::Type) -> Result<T> {
+    // SAFETY: the caller's, as declared.
+    unsafe { read(|out| ffi::ghostty_cell_get(cell, data, out)) }
+}
+
+/// The snapshot's grapheme table and the scratch a cell is read into.
+///
+/// One value rather than two, because both are `Vec<u32>` and passing them
+/// side by side is an argument order nothing would catch getting wrong.
+#[derive(Default)]
+struct Graphemes {
+    /// What the snapshot carries away.
+    table: Vec<u32>,
+    /// Reused across cells so that spilling one does not allocate.
+    cluster: Vec<u32>,
 }
 
 /// The terminal's own foreground and background, which every cell that carries

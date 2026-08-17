@@ -92,9 +92,15 @@ knotty가 이미 빌드에 요구합니다. 그럼에도 기각합니다.
 
 ## 결과
 
-- **`knotty-core`에 `unsafe`가 들어옵니다.** 오늘은 0입니다. 파사드가 그
-  경계이며, 여기서 `unsafe`가 늘어나는 것은 설계대로입니다. 대신 그것은 knotty가
-  감사한 코드이고, `knotty-core`의 나머지와 `knotty-ffi` 바깥은 계속 0입니다
+- **`knotty-core`에 `unsafe`가 들어옵니다.** 파사드가 그 경계이며, 여기서
+  `unsafe`가 늘어나는 것은 설계대로입니다. 대신 그것은 knotty가 감사한
+  코드입니다.
+
+  나머지는 `#![deny(unsafe_code)]`로 막습니다. 예외는 둘 — `vt` 모듈과, `io`의
+  `Command::pre_exec` 한 문장입니다. 후자는 fork와 exec 사이에 무엇을 시키는
+  일에 안전한 표기가 없어서이고, 이 ADR을 쓸 당시 "오늘은 0"이라고 적었던 것은
+  그 지점을 세지 않은 것입니다. 예외가 둘이라는 사실 자체가 검사 가능한 형태로
+  남아 있는 편이 낫습니다
 - **`-sys`는 여전히 서드파티입니다.** `GHOSTTY_COMMIT` 핀, bindgen 재생성,
   플랫폼별 빌드 경로는 같은 유지보수자에게 계속 의존합니다. 절반만 떠나는
   것입니다
@@ -134,7 +140,7 @@ knotty가 이미 빌드에 요구합니다. 그럼에도 기각합니다.
   핀 이동(마일스톤 사이에서만 하는 일)까지 끝난 뒤 이 문단부터 고칩니다.
 - **비-UTF-8 클립보드 쓰기는 코어에서 거절합니다.** `session.rs`가
   `text/plain` 표현만 받으므로 UTF-8이 아닌 것은 그 MIME 타입으로서 malformed
-  입니다. `ClipboardWriteError::InvalidData`로 돌려보내며, 이는
+  입니다. `ClipboardRefusal::InvalidData`로 돌려보내며, 이는
   `CLIPBOARD_TEXT_CAP` 초과를 `Denied`로 막는 기존 동작과 같은 층위입니다.
   `KtEvent.text`가 `KtText`("Borrowed UTF-8")인 채로 유지되고 헤더는 변하지
   않습니다. v2에서 rich clipboard가 들어와 `text/plain` 아닌 표현을 받게 되면
