@@ -778,8 +778,8 @@ KtStatus kt_session_new_detached(uint16_t cols,
  * # Safety
  *
  * `argv` must point at `argc` readable `KtText`s, each of which must point at
- * its own `len` readable bytes. `out` must be a valid, writable pointer to a
- * `KtSession *`.
+ * its own `len` readable bytes — null only where that length is 0. `out` must
+ * be a valid, writable pointer to a `KtSession *`.
  */
 KtStatus kt_session_new_pty(uint16_t cols,
                             uint16_t rows,

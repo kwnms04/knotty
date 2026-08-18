@@ -1983,6 +1983,28 @@ fn null_arguments_are_reported_rather_than_dereferenced() {
         KtStatus::NullArgument,
     );
     assert!(nothing_to_run.is_null());
+    // An argument that says it has bytes and points at none is the same
+    // missing argument, and the boundary is where that is settled rather than
+    // in a read the caller was trusted not to have got wrong.
+    let missing_argument = [KtText {
+        bytes: ptr::null(),
+        len: 1,
+    }];
+    let mut nothing_to_run = ptr::null_mut();
+    assert_eq!(
+        unsafe {
+            kt_session_new_pty(
+                4,
+                1,
+                0,
+                missing_argument.as_ptr(),
+                missing_argument.len(),
+                &mut nothing_to_run,
+            )
+        },
+        KtStatus::NullArgument,
+    );
+    assert!(nothing_to_run.is_null());
     assert_eq!(
         unsafe { kt_session_feed(ptr::null_mut(), b"x".as_ptr(), 1) },
         KtStatus::NullArgument,
@@ -2007,6 +2029,23 @@ fn null_arguments_are_reported_rather_than_dereferenced() {
         unsafe { kt_session_set_wake(ptr::null_mut(), None, ptr::null_mut()) },
         KtStatus::NullArgument,
     );
+
+    // A run of bytes may be null only where it is empty: there is nothing to
+    // read either way, but a null slice is undefined behaviour at any length.
+    let session = detached(4, 1);
+    assert_eq!(
+        unsafe { kt_session_feed(session, ptr::null(), 1) },
+        KtStatus::NullArgument,
+    );
+    assert_eq!(
+        unsafe { kt_session_write(session, ptr::null(), 1) },
+        KtStatus::NullArgument,
+    );
+    assert_eq!(
+        unsafe { kt_session_feed(session, ptr::null(), 0) },
+        KtStatus::Ok,
+    );
+    unsafe { kt_session_free(session) };
 
     // Freeing null is a no-op, not a crash.
     unsafe { kt_session_free(ptr::null_mut()) };

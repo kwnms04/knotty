@@ -6,6 +6,8 @@
 use std::ffi::c_void;
 use std::ptr;
 
+mod entry;
+
 use knotty_core::{ChildState, Error, Event, PtySession, Session, Snapshot, Wake};
 
 /// The snapshot's POD types. A C consumer gets these from the header; this
@@ -499,18 +501,18 @@ pub unsafe extern "C" fn kt_session_new_detached(
     max_scrollback: usize,
     out: *mut *mut KtSession,
 ) -> KtStatus {
-    if out.is_null() {
-        return KtStatus::NullArgument;
-    }
-    unsafe { *out = ptr::null_mut() };
-    guarded(KtStatus::Panicked, || {
-        match Session::new(cols, rows, max_scrollback) {
-            Ok(session) => {
-                unsafe { *out = handle(Driver::Detached(session)) };
-                KtStatus::Ok
+    entry::answer(|| {
+        let out = unsafe { entry::out(out, ptr::null_mut()) }?;
+
+        Ok(guarded(KtStatus::Panicked, || {
+            match Session::new(cols, rows, max_scrollback) {
+                Ok(session) => {
+                    *out = handle(Driver::Detached(session));
+                    KtStatus::Ok
+                }
+                Err(error) => error.into(),
             }
-            Err(error) => error.into(),
-        }
+        }))
     })
 }
 
@@ -533,8 +535,8 @@ pub unsafe extern "C" fn kt_session_new_detached(
 /// # Safety
 ///
 /// `argv` must point at `argc` readable `KtText`s, each of which must point at
-/// its own `len` readable bytes. `out` must be a valid, writable pointer to a
-/// `KtSession *`.
+/// its own `len` readable bytes — null only where that length is 0. `out` must
+/// be a valid, writable pointer to a `KtSession *`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kt_session_new_pty(
     cols: u16,
@@ -544,33 +546,30 @@ pub unsafe extern "C" fn kt_session_new_pty(
     argc: usize,
     out: *mut *mut KtSession,
 ) -> KtStatus {
-    if out.is_null() {
-        return KtStatus::NullArgument;
-    }
-    unsafe { *out = ptr::null_mut() };
-    if argv.is_null() || argc == 0 {
-        return KtStatus::NullArgument;
-    }
-
-    // Copied rather than borrowed: the thread that runs the command outlives
-    // this call, and what the caller lent does not have to.
-    let argv: Vec<Vec<u8>> = unsafe { std::slice::from_raw_parts(argv, argc) }
-        .iter()
-        .map(|argument| match argument.len {
-            0 => Vec::new(),
-            len => unsafe { std::slice::from_raw_parts(argument.bytes, len) }.to_vec(),
-        })
-        .collect();
-    let (program, args) = argv.split_first().expect("argc is not zero");
-
-    guarded(KtStatus::Panicked, || {
-        match PtySession::new(program, args, cols, rows, max_scrollback) {
-            Ok(session) => {
-                unsafe { *out = handle(Driver::Pty(session)) };
-                KtStatus::Ok
-            }
-            Err(error) => error.into(),
+    entry::answer(|| {
+        let out = unsafe { entry::out(out, ptr::null_mut()) }?;
+        if argv.is_null() || argc == 0 {
+            return Err(KtStatus::NullArgument);
         }
+
+        // Copied rather than borrowed: the thread that runs the command
+        // outlives this call, and what the caller lent does not have to.
+        let argv: Vec<Vec<u8>> = unsafe { std::slice::from_raw_parts(argv, argc) }
+            .iter()
+            .map(|argument| unsafe { entry::borrowed(argument.bytes, argument.len) })
+            .map(|argument| argument.map(<[u8]>::to_vec))
+            .collect::<Result<_, _>>()?;
+        let (program, args) = argv.split_first().expect("argc is not zero");
+
+        Ok(guarded(KtStatus::Panicked, || {
+            match PtySession::new(program, args, cols, rows, max_scrollback) {
+                Ok(session) => {
+                    *out = handle(Driver::Pty(session));
+                    KtStatus::Ok
+                }
+                Err(error) => error.into(),
+            }
+        }))
     })
 }
 
@@ -609,18 +608,12 @@ pub unsafe extern "C" fn kt_session_feed(
     bytes: *const u8,
     len: usize,
 ) -> KtStatus {
-    let Some(session) = (unsafe { session.as_mut() }) else {
-        return KtStatus::NullArgument;
-    };
-    let bytes = if len == 0 {
-        &[][..]
-    } else if bytes.is_null() {
-        return KtStatus::NullArgument;
-    } else {
-        unsafe { std::slice::from_raw_parts(bytes, len) }
-    };
+    entry::answer(|| {
+        let session = unsafe { entry::at_mut(session) }?;
+        let bytes = unsafe { entry::borrowed(bytes, len) }?;
 
-    session.drive(|driver| driver.feed(bytes))
+        Ok(session.drive(|driver| driver.feed(bytes)))
+    })
 }
 
 /// Queue `len` bytes for the session's child.
@@ -644,18 +637,12 @@ pub unsafe extern "C" fn kt_session_write(
     bytes: *const u8,
     len: usize,
 ) -> KtStatus {
-    let Some(session) = (unsafe { session.as_mut() }) else {
-        return KtStatus::NullArgument;
-    };
-    let bytes = if len == 0 {
-        &[][..]
-    } else if bytes.is_null() {
-        return KtStatus::NullArgument;
-    } else {
-        unsafe { std::slice::from_raw_parts(bytes, len) }
-    };
+    entry::answer(|| {
+        let session = unsafe { entry::at_mut(session) }?;
+        let bytes = unsafe { entry::borrowed(bytes, len) }?;
 
-    session.drive(|driver| driver.write(bytes))
+        Ok(session.drive(|driver| driver.write(bytes)))
+    })
 }
 
 /// Register what a session calls when it has something new to be taken, or
@@ -688,16 +675,16 @@ pub unsafe extern "C" fn kt_session_set_wake(
     wake: KtWake,
     userdata: *mut c_void,
 ) -> KtStatus {
-    let Some(session) = (unsafe { session.as_mut() }) else {
-        return KtStatus::NullArgument;
-    };
+    entry::answer(|| {
+        let session = unsafe { entry::at_mut(session) }?;
 
-    session.guard(|driver| {
-        driver.set_wake(wake.map(|wake| {
-            let userdata = Userdata(userdata);
-            Box::new(move || wake(userdata.get())) as Wake
-        }));
-        KtStatus::Ok
+        Ok(session.guard(|driver| {
+            driver.set_wake(wake.map(|wake| {
+                let userdata = Userdata(userdata);
+                Box::new(move || wake(userdata.get())) as Wake
+            }));
+            KtStatus::Ok
+        }))
     })
 }
 
@@ -719,12 +706,14 @@ pub unsafe extern "C" fn kt_session_set_selection(
     session: *mut KtSession,
     range: *const SelectionRange,
 ) -> KtStatus {
-    let Some(session) = (unsafe { session.as_mut() }) else {
-        return KtStatus::NullArgument;
-    };
+    entry::answer(|| {
+        let session = unsafe { entry::at_mut(session) }?;
+        // Null is how a caller clears the selection, so this is the one
+        // pointer here that is allowed to be one.
+        let range = unsafe { range.as_ref() }.copied();
 
-    let range = unsafe { range.as_ref() }.copied();
-    session.drive(|driver| driver.set_selection(range))
+        Ok(session.drive(|driver| driver.set_selection(range)))
+    })
 }
 
 /// Take the bytes a detached session has queued for its child, emptying the
@@ -748,32 +737,30 @@ pub unsafe extern "C" fn kt_session_take_writes(
     session: *mut KtSession,
     out: *mut KtBytes,
 ) -> KtStatus {
-    if out.is_null() {
-        return KtStatus::NullArgument;
-    }
-    // What a call that never gets to the queue leaves behind. A successful
-    // drain overwrites this, empty or not, with the session's own buffer.
-    unsafe {
-        *out = KtBytes {
-            bytes: ptr::null(),
-            len: 0,
-        }
-    };
-    let Some(session) = (unsafe { session.as_mut() }) else {
-        return KtStatus::NullArgument;
-    };
+    entry::answer(|| {
+        // What a call that never gets to the queue leaves behind. A successful
+        // drain overwrites it, empty or not, with the session's own buffer.
+        let out = unsafe {
+            entry::out(
+                out,
+                KtBytes {
+                    bytes: ptr::null(),
+                    len: 0,
+                },
+            )
+        }?;
+        let session = unsafe { entry::at_mut(session) }?;
 
-    session.guard(|driver| match driver.take_writes() {
-        Ok(queued) => {
-            unsafe {
+        Ok(session.guard(|driver| match driver.take_writes() {
+            Ok(queued) => {
                 *out = KtBytes {
                     bytes: queued.as_ptr(),
                     len: queued.len(),
-                }
-            };
-            KtStatus::Ok
-        }
-        Err(refusal) => refusal,
+                };
+                KtStatus::Ok
+            }
+            Err(refusal) => refusal,
+        }))
     })
 }
 
@@ -800,45 +787,44 @@ pub unsafe extern "C" fn kt_session_take_events(
     session: *mut KtSession,
     out: *mut KtEvents,
 ) -> KtStatus {
-    if out.is_null() {
-        return KtStatus::NullArgument;
-    }
-    // What a call that never gets to the queue leaves behind. A successful
-    // drain overwrites this, empty or not.
-    unsafe {
-        *out = KtEvents {
-            events: ptr::null(),
-            len: 0,
-            dropped: 0,
-        }
-    };
-    let Some(session) = (unsafe { session.as_mut() }) else {
-        return KtStatus::NullArgument;
-    };
+    entry::answer(|| {
+        // What a call that never gets to the queue leaves behind. A successful
+        // drain overwrites it, empty or not.
+        let out = unsafe {
+            entry::out(
+                out,
+                KtEvents {
+                    events: ptr::null(),
+                    len: 0,
+                    dropped: 0,
+                },
+            )
+        }?;
+        let session = unsafe { entry::at_mut(session) }?;
 
-    // Taken out of the guarded call rather than inside it: what comes back
-    // has to be stored on the handle, which the guard has already borrowed.
-    let mut taken = None;
-    let status = session.guard(|driver| {
-        taken = Some(driver.take_events());
-        KtStatus::Ok
-    });
-    let Some((events, dropped)) = taken else {
-        return status;
-    };
+        // Taken out of the guarded call rather than inside it: what comes back
+        // has to be stored on the handle, which the guard has already
+        // borrowed.
+        let mut taken = None;
+        let status = session.guard(|driver| {
+            taken = Some(driver.take_events());
+            KtStatus::Ok
+        });
+        let Some((events, dropped)) = taken else {
+            return Ok(status);
+        };
 
-    // Dropping what the last drain lent is what invalidates its pointers,
-    // which is the contract above.
-    session.events = events;
-    session.event_views = session.events.iter().map(KtEvent::from).collect();
-    unsafe {
+        // Dropping what the last drain lent is what invalidates its pointers,
+        // which is the contract above.
+        session.events = events;
+        session.event_views = session.events.iter().map(KtEvent::from).collect();
         *out = KtEvents {
             events: session.event_views.as_ptr(),
             len: session.event_views.len(),
             dropped,
-        }
-    };
-    KtStatus::Ok
+        };
+        Ok(KtStatus::Ok)
+    })
 }
 
 /// Take the latest snapshot, emptying the session's mailbox.
@@ -864,58 +850,54 @@ pub unsafe extern "C" fn kt_session_take_snapshot(
     session: *mut KtSession,
     out: *mut *mut KtSnapshot,
 ) -> KtStatus {
-    if out.is_null() {
-        return KtStatus::NullArgument;
-    }
-    unsafe { *out = ptr::null_mut() };
-    let Some(session) = (unsafe { session.as_mut() }) else {
-        return KtStatus::NullArgument;
-    };
+    entry::answer(|| {
+        let out = unsafe { entry::out(out, ptr::null_mut()) }?;
+        let session = unsafe { entry::at_mut(session) }?;
 
-    // Taken out of the guarded call rather than inside it, the way the event
-    // drain is: what the frame is stamped with has to be read off the session
-    // the guard has already borrowed.
-    //
-    // Guarded rather than driven: a defunct session still hands back what it
-    // last published, which is the whole reason for keeping it.
-    let mut taken = None;
-    let status = session.guard(|driver| {
-        taken = driver.take_snapshot();
-        KtStatus::Ok
-    });
-    let Some(frame) = taken else {
-        // A break with an empty mailbox is the one case where the state has no
-        // frame to ride on, and no frame is coming to carry it later.
-        return match status {
-            KtStatus::Ok if session.is_defunct() => KtStatus::Defunct,
-            KtStatus::Ok => KtStatus::NoValue,
-            // The take itself is what broke, and that is what to report.
-            panicked => panicked,
+        // Taken out of the guarded call rather than inside it, the way the
+        // event drain is: what the frame is stamped with has to be read off
+        // the session the guard has already borrowed.
+        //
+        // Guarded rather than driven: a defunct session still hands back what
+        // it last published, which is the whole reason for keeping it.
+        let mut taken = None;
+        let status = session.guard(|driver| {
+            taken = driver.take_snapshot();
+            KtStatus::Ok
+        });
+        let Some(frame) = taken else {
+            // A break with an empty mailbox is the one case where the state
+            // has no frame to ride on, and no frame is coming to carry it
+            // later.
+            return Ok(match status {
+                KtStatus::Ok if session.is_defunct() => KtStatus::Defunct,
+                KtStatus::Ok => KtStatus::NoValue,
+                // The take itself is what broke, and that is what to report.
+                panicked => panicked,
+            });
         };
-    };
 
-    // Read after the frame rather than before it. The I/O thread writes the
-    // child's end down before publishing the frame that carries it, so a frame
-    // taken after that write is one whose state is already set — and reading
-    // first could hand that very frame over stamped as though the child were
-    // still running, with no frame after it to put that right. The other way
-    // round costs a screen one frame behind its own state, which the next take
-    // settles. cf. `03-core.md` C6
-    let child = session.driver.child();
-    let state = if session.is_defunct() {
-        KtSessionState::Broken
-    } else {
-        KtSessionState::Ok
-    };
+        // Read after the frame rather than before it. The I/O thread writes
+        // the child's end down before publishing the frame that carries it, so
+        // a frame taken after that write is one whose state is already set —
+        // and reading first could hand that very frame over stamped as though
+        // the child were still running, with no frame after it to put that
+        // right. The other way round costs a screen one frame behind its own
+        // state, which the next take settles. cf. `03-core.md` C6
+        let child = session.driver.child();
+        let state = if session.is_defunct() {
+            KtSessionState::Broken
+        } else {
+            KtSessionState::Ok
+        };
 
-    unsafe {
         *out = Box::into_raw(Box::new(KtSnapshot {
             frame,
             child,
             session: state,
-        }))
-    };
-    KtStatus::Ok
+        }));
+        Ok(KtStatus::Ok)
+    })
 }
 
 /// Release a snapshot. Null is a no-op.
@@ -944,24 +926,20 @@ pub unsafe extern "C" fn kt_snapshot_view(
     snapshot: *const KtSnapshot,
     out: *mut KtSnapshotView,
 ) -> KtStatus {
-    if out.is_null() {
-        return KtStatus::NullArgument;
-    }
-    let Some(snapshot) = (unsafe { snapshot.as_ref() }) else {
-        return KtStatus::NullArgument;
-    };
+    entry::answer(|| {
+        let out = unsafe { entry::at_mut(out) }?;
+        let snapshot = unsafe { entry::at(snapshot) }?;
 
-    // The code is carried in a field of its own, so a kind that has none reads
-    // as 0 rather than as whatever the last one left — the same rule an event
-    // is filled in by.
-    let (child_state, child_exit_code) = match snapshot.child {
-        ChildState::None => (KtChildState::None, 0),
-        ChildState::Running => (KtChildState::Running, 0),
-        ChildState::Exited(code) => (KtChildState::Exited, code),
-    };
+        // The code is carried in a field of its own, so a kind that has none
+        // reads as 0 rather than as whatever the last one left — the same rule
+        // an event is filled in by.
+        let (child_state, child_exit_code) = match snapshot.child {
+            ChildState::None => (KtChildState::None, 0),
+            ChildState::Running => (KtChildState::Running, 0),
+            ChildState::Exited(code) => (KtChildState::Exited, code),
+        };
 
-    guarded(KtStatus::Panicked, || {
-        unsafe {
+        Ok(guarded(KtStatus::Panicked, || {
             *out = KtSnapshotView {
                 cols: snapshot.frame.cols,
                 rows: snapshot.frame.rows,
@@ -977,9 +955,9 @@ pub unsafe extern "C" fn kt_snapshot_view(
                 child_state,
                 session_state: snapshot.session,
                 child_exit_code,
-            }
-        };
-        KtStatus::Ok
+            };
+            KtStatus::Ok
+        }))
     })
 }
 
