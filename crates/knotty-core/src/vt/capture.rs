@@ -113,9 +113,11 @@ impl Terminal {
             cols,
             rows,
             dirty,
-            // The caller fills this in: whether a selection exists is session
-            // state, not something the render state can be asked.
-            has_selection: false,
+            // Asked of the terminal rather than left to the caller to fill
+            // in: the render state answers only per row, and a selection
+            // scrolled out of the viewport falls on none of them while still
+            // existing. cf. `03-core.md` C3
+            has_selection: self.has_selection()?,
             screen,
             cells,
             row_state,

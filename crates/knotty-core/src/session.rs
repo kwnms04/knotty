@@ -394,10 +394,6 @@ impl Session {
     ///
     /// [`note_child_exit`]: Session::note_child_exit
     fn publish(&mut self, even_if_unchanged: bool) -> Result<()> {
-        // Asked of the engine rather than remembered: a snapshot has to say a
-        // selection exists even when no visible row falls inside one, and the
-        // render state answers only per row.
-        let has_selection = self.terminal.has_selection()?;
         // An event is as much reason to wake as a frame is, and a bell marks
         // no cell — so a screen that did not move can still leave something
         // to take.
@@ -406,7 +402,6 @@ impl Session {
             .terminal
             .capture(&self.last_screen, even_if_unchanged)?
         {
-            snapshot.has_selection = has_selection;
             self.last_screen = snapshot.screen.clone();
             // The mailbox keeps only the newest snapshot, so publishing over
             // an unconsumed one drops it. Carry its change marks across, or a
