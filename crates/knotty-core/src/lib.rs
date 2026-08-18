@@ -21,6 +21,7 @@ pub mod queue;
 pub mod session;
 pub mod snapshot;
 mod vt;
+mod writer;
 
 pub use queue::{ClipboardTarget, Event};
 pub use session::{ChildState, PtySession, SelectionRange, Session, Wake};

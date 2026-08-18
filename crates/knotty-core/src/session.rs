@@ -1,19 +1,18 @@
 //! Session lifecycle and the publish path.
 
-use std::cell::RefCell;
 use std::panic::{self, AssertUnwindSafe};
-use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use crate::io::{self, Input, Pty, Waker};
+use crate::io::{self, Pty, Waker};
 use crate::mailbox::Mailbox;
 use crate::queue::{Event, EventQueue};
 use crate::snapshot::{ScreenState, Snapshot};
 use crate::vt::{ClipboardRefusal, Listener, Terminal};
+use crate::writer::WriteQueue;
 use crate::{Error, Result};
 
 /// What a session calls when it has something new to be taken.
@@ -64,12 +63,6 @@ pub enum ChildState {
 ///
 /// A code is a byte, or 128 plus a signal number, so nothing negative is one.
 const STILL_RUNNING: i32 = -1;
-
-/// How many bytes may wait for the PTY before further writes are dropped.
-///
-/// A child that never reads is the case this exists for: without a cap the
-/// queue grows until the process dies.
-const WRITE_QUEUE_CAP: usize = 8 * 1024 * 1024;
 
 /// How long a synchronized output block may hold a wake back before it is
 /// given up on.
@@ -138,47 +131,6 @@ fn sanitized_answer(bytes: &[u8]) -> &[u8] {
     bytes
 }
 
-/// Bytes on their way to the child.
-///
-/// Every write the terminal makes lands here, so nothing waits on a PTY that
-/// may not be ready — or, in a detached session, that does not exist.
-//
-// `03-core.md` gives this to the `io` module, which owns the event loop and
-// the file descriptor. Neither exists yet, so it waits here.
-#[derive(Debug, Default)]
-struct WriteQueue {
-    bytes: Vec<u8>,
-    /// Whether bytes were dropped for want of room.
-    overran: bool,
-}
-
-impl WriteQueue {
-    /// Append `bytes`, or report that there was no room for them.
-    fn try_push(&mut self, bytes: &[u8]) -> bool {
-        if self.bytes.len() + bytes.len() > WRITE_QUEUE_CAP {
-            return false;
-        }
-        self.bytes.extend_from_slice(bytes);
-        true
-    }
-
-    /// The same for what the engine answers, which has no caller standing by
-    /// to be told: the drop is remembered instead.
-    fn push(&mut self, bytes: &[u8]) {
-        if !self.try_push(bytes) {
-            self.overran = true;
-        }
-    }
-
-    /// Whether bytes have been dropped since this was last asked.
-    ///
-    /// Asking clears it, so one overrun is reported once rather than held
-    /// against every later call.
-    fn take_overrun(&mut self) -> bool {
-        std::mem::take(&mut self.overran)
-    }
-}
-
 /// A terminal session.
 ///
 /// It owns no thread and no child process of its own: [`feed`] runs the VT
@@ -198,16 +150,16 @@ pub struct Session {
     // title or cursor change on an otherwise still screen still publishes.
     last_screen: ScreenState,
     // Shared with the engine callback, which outlives any single call and so
-    // cannot borrow the session. One thread drives both, so the borrows never
-    // overlap.
-    writes: Rc<RefCell<WriteQueue>>,
+    // cannot borrow the session — and, in a PTY session, with the app, which
+    // queues into it from its own thread. That second sharer is why the queue
+    // carries a lock of its own.
+    writes: Arc<WriteQueue>,
     // What the last drain handed out. Kept alive here because the boundary
     // lends the bytes rather than copying them.
     drained: Vec<u8>,
     // Shared with the engine callbacks, for the same reason the writer queue
     // is — and with the app, which is what drains it whether or not a PTY is
-    // behind the session. That second sharer is why this is a lock and the
-    // writer queue is not.
+    // behind the session.
     events: Arc<Mutex<EventQueue>>,
     // How the consumer is told to come and look, and whether it is owed a
     // telling. Neither is the engine's business: when a frame gets drawn is
@@ -231,7 +183,7 @@ impl Session {
     /// The engine's handles are single-threaded, so whatever thread calls this
     /// is the only one that may drive the session afterwards.
     pub fn new(cols: u16, rows: u16, max_scrollback: usize) -> Result<Self> {
-        let writes = Rc::new(RefCell::new(WriteQueue::default()));
+        let writes = Arc::new(WriteQueue::default());
         // What the app has to be told rather than shown. Neither a bell nor a
         // clipboard write leaves a mark on the screen, so a consumer that
         // misses one has no second way to learn it happened.
@@ -254,8 +206,8 @@ impl Session {
             answerback: ANSWERBACK,
             version: VERSION_REPORT,
             pty_write: Box::new({
-                let writes = Rc::clone(&writes);
-                move |bytes| writes.borrow_mut().push(sanitized_answer(bytes))
+                let writes = Arc::clone(&writes);
+                move |bytes| writes.push(sanitized_answer(bytes))
             }),
             bell: Box::new({
                 let events = Arc::clone(&events);
@@ -343,7 +295,7 @@ impl Session {
     /// them were queued: a prefix of what the user typed reaching the child is
     /// worse than none of it.
     pub fn write(&mut self, bytes: &[u8]) -> Result<()> {
-        if self.writes.borrow_mut().try_push(bytes) {
+        if self.writes.try_push(bytes) {
             return Ok(());
         }
         Err(Error::WriteQueueFull)
@@ -370,7 +322,7 @@ impl Session {
 
         // Read before publishing, which can return early: an overrun left
         // standing would surface on some later feed that overran nothing.
-        let overran = self.writes.borrow_mut().take_overrun();
+        let overran = self.writes.take_overrun();
         self.publish(false)?;
 
         if overran {
@@ -414,7 +366,7 @@ impl Session {
     /// The slice stays valid until the next take or until the session is
     /// dropped.
     pub fn take_writes(&mut self) -> &[u8] {
-        self.drained = std::mem::take(&mut self.writes.borrow_mut().bytes);
+        self.drained = self.writes.take();
         &self.drained
     }
 
@@ -629,11 +581,14 @@ pub struct PtySession {
     // Kept here rather than on the session, so that registering one does not
     // have to reach across to a thread that may be mid-parse.
     consumer: Arc<Mutex<Consumer>>,
-    input: Sender<Input>,
-    // How many bytes are waiting for the child, whoever queued them. Both
-    // ends add and the I/O thread takes away as the terminal accepts, because
-    // a queue with an end on each thread cannot be counted on either alone.
-    backlog: Arc<AtomicUsize>,
+    // Requests the I/O thread applies to the engine on the app's behalf. Only
+    // the selection travels this way: what is bound for the child goes in the
+    // queue below, which both threads reach.
+    selection: Sender<Option<SelectionRange>>,
+    // The bytes waiting for the child, whoever queued them. Shared with the
+    // session on the I/O thread rather than counted on each side, so the cap
+    // is checked where the bytes are.
+    writes: Arc<WriteQueue>,
     // What the child ended by, or `STILL_RUNNING`. Written by the I/O thread
     // before it says the child is gone, so a consumer that comes for that
     // telling finds the code already here.
@@ -659,9 +614,8 @@ impl PtySession {
         max_scrollback: usize,
     ) -> Result<Self> {
         let (mut terminal, waker) = Pty::spawn(program, args, cols, rows)?;
-        let (input, arriving) = mpsc::channel();
+        let (selection, arriving) = mpsc::channel();
         let stopping = Arc::new(AtomicBool::new(false));
-        let backlog = Arc::new(AtomicUsize::new(0));
         let child_exit = Arc::new(AtomicI32::new(STILL_RUNNING));
         let broken = Arc::new(AtomicBool::new(false));
         let consumer = Arc::new(Mutex::new(Consumer::default()));
@@ -671,7 +625,6 @@ impl PtySession {
             .name("knotty-io".to_owned())
             .spawn({
                 let stopping = Arc::clone(&stopping);
-                let backlog = Arc::clone(&backlog);
                 let child_exit = Arc::clone(&child_exit);
                 let broken = Arc::clone(&broken);
                 let consumer = Arc::clone(&consumer);
@@ -693,7 +646,12 @@ impl PtySession {
                         move || consumer.lock().expect("consumer lock").tell()
                     })));
 
-                    let crossing = (Arc::clone(&session.mailbox), Arc::clone(&session.events));
+                    let writes = Arc::clone(&session.writes);
+                    let crossing = (
+                        Arc::clone(&session.mailbox),
+                        Arc::clone(&session.events),
+                        Arc::clone(&writes),
+                    );
                     if started.send(Ok(crossing)).is_err() {
                         return;
                     }
@@ -702,7 +660,7 @@ impl PtySession {
                             &mut session,
                             &mut terminal,
                             &arriving,
-                            &backlog,
+                            &writes,
                             &child_exit,
                             &stopping,
                         )
@@ -713,13 +671,13 @@ impl PtySession {
 
         // The thread reports how its own construction went, so a session that
         // could not build its engine fails here rather than looking alive.
-        let (mailbox, events) = start.recv().map_err(|_| Error::Io)??;
+        let (mailbox, events, writes) = start.recv().map_err(|_| Error::Io)??;
         Ok(Self {
             mailbox,
             events,
             consumer,
-            input,
-            backlog,
+            selection,
+            writes,
             child_exit,
             broken,
             waker,
@@ -757,11 +715,13 @@ impl PtySession {
     ///
     /// It is also the one place a caller can watch a write reach the terminal,
     /// which is what the B5 bench times against. Nothing else says so: the
-    /// write itself happens on the I/O thread and tells no one.
+    /// write itself happens on the I/O thread and tells no one. Reading it
+    /// takes no lock, so watching it in a spin does not hold up the hand-over
+    /// being watched for.
     ///
     /// [`write`]: PtySession::write
     pub fn backlog(&self) -> usize {
-        self.backlog.load(Ordering::Relaxed)
+        self.writes.waiting()
     }
 
     /// Set what to call when the session has something new to be taken, or
@@ -786,20 +746,28 @@ impl PtySession {
     ///
     /// [`Error::WriteQueueFull`] when the child has left more waiting than the
     /// queue holds, in which case none of `bytes` was queued.
+    ///
+    /// [`Error::Io`] once the session's thread is gone, which it is once the
+    /// child is: nothing is left to hand the queue to the terminal.
     pub fn write(&self, bytes: &[u8]) -> Result<()> {
-        // The backlog is only ever taken from as the terminal accepts, so what
-        // this refuses against is what the child has not read — the case the
-        // cap exists for. cf. `02-ffi.md`
-        //
-        // Read and added to with no lock between: calls on one session are
-        // serialized by the boundary's own contract, so the only other hand
-        // here is the I/O thread's, and a subtraction it makes in between only
-        // makes this answer more generous.
-        if self.backlog.load(Ordering::Relaxed) + bytes.len() > WRITE_QUEUE_CAP {
+        // The thread is what drains the queue, so bytes queued after it has
+        // gone have nowhere left to go. Saying so beats swallowing them —
+        // the same answer `set_selection` gives, which the queue's own
+        // emptiness would otherwise hide here.
+        if self.thread.as_ref().is_some_and(JoinHandle::is_finished) {
+            return Err(Error::Io);
+        }
+        // Queued into the same place the terminal's own answers go, and
+        // refused against what is already there — which is what the child has
+        // not read, the case the cap exists for. cf. `02-ffi.md`
+        if !self.writes.try_push(bytes) {
             return Err(Error::WriteQueueFull);
         }
-        self.backlog.fetch_add(bytes.len(), Ordering::Relaxed);
-        self.hand_over(Input::Write(bytes.to_vec()))
+        // The I/O thread waits on room in the terminal only while something is
+        // queued for it, so a queue that just stopped being empty has to say
+        // so.
+        self.waker.nudge();
+        Ok(())
     }
 
     /// Select a range of the viewport, or clear the selection with `None`.
@@ -807,7 +775,11 @@ impl PtySession {
     /// An endpoint outside the viewport is not reported: by the time the
     /// thread finds that out, this call has long returned.
     pub fn set_selection(&self, range: Option<SelectionRange>) -> Result<()> {
-        self.hand_over(Input::Selection(range))
+        // The thread is gone once the child is, and what this carried has
+        // nowhere left to go. Saying so beats swallowing it.
+        self.selection.send(range).map_err(|_| Error::Io)?;
+        self.waker.nudge();
+        Ok(())
     }
 
     /// Take the events queued for the app, emptying the queue, along with how
@@ -821,15 +793,6 @@ impl PtySession {
     /// Returns `None` when nothing has been published since the last take.
     pub fn take_snapshot(&self) -> Option<Snapshot> {
         self.mailbox.take()
-    }
-
-    /// Put `input` where the I/O thread will find it, and make it look.
-    fn hand_over(&self, input: Input) -> Result<()> {
-        // The thread is gone once the child is, and what this carried has
-        // nowhere left to go. Saying so beats swallowing it.
-        self.input.send(input).map_err(|_| Error::Io)?;
-        self.waker.nudge();
-        Ok(())
     }
 }
 
@@ -856,8 +819,9 @@ mod tests {
     use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
     use std::time::Instant;
 
-    use super::{Consumer, Mutex, SYNC_TIMEOUT, Session, settle};
+    use super::{Consumer, Duration, Mutex, PtySession, SYNC_TIMEOUT, Session, settle};
     use crate::queue::Event;
+    use crate::writer::CAP;
     use crate::{Error, Result};
 
     fn session() -> Session {
@@ -1100,5 +1064,61 @@ mod tests {
             events.as_slice(),
             [Event::ClipboardWrite { text, .. }] if text == "hi"
         ));
+    }
+
+    /// How long the thread is given to wind up before it counts as one that
+    /// never does.
+    const PATIENCE: Duration = Duration::from_secs(10);
+
+    /// The thread is the only thing that drains the queue, so bytes queued
+    /// after it has gone would sit there for good. What a consumer hears
+    /// instead is the refusal — the same one `set_selection` gives, and the
+    /// pairing that broke when this path stopped going through the channel.
+    #[test]
+    fn a_write_with_no_thread_left_to_carry_it_says_so() {
+        let session = PtySession::new(b"/bin/sh", &[b"-c".to_vec(), b"exit 0".to_vec()], 4, 1, 0)
+            .expect("a session whose child ends at once");
+
+        // Spun on rather than slept through: what is waited for is the thread
+        // winding up, and it has no telling of its own.
+        let start = Instant::now();
+        loop {
+            match session.write(b"typed") {
+                Err(Error::Io) => break,
+                Ok(()) => assert!(
+                    start.elapsed() < PATIENCE,
+                    "the thread is long gone and a write still reported it was queued",
+                ),
+                Err(other) => panic!("a live queue refused a write with {other:?}"),
+            }
+        }
+    }
+
+    /// The cap keeps a child that has stopped reading from growing the queue
+    /// without bound. What the unit tests cannot reach is this path: both ends
+    /// of a PTY session queueing into the one queue while the I/O thread
+    /// drains it. So what is watched here is the ceiling holding while all
+    /// three are at it.
+    #[test]
+    fn the_queue_bound_holds_against_a_child_that_never_reads() {
+        let session = PtySession::new(b"/bin/sh", &[b"-c".to_vec(), b"sleep 30".to_vec()], 4, 1, 0)
+            .expect("a session with a child that never reads");
+
+        let chunk = vec![b'x'; 64 * 1024];
+        assert!(session.write(&chunk).is_ok(), "the first write was refused");
+
+        // Four times the cap, so a queue growing unchecked would be far past
+        // it by the end.
+        for _ in 1..(4 * CAP / chunk.len()) {
+            // A refusal is one of the two right answers — it means the queue
+            // was full, which is the cap doing its work. Growing past it is
+            // the wrong one.
+            let _ = session.write(&chunk);
+            let waiting = session.backlog();
+            assert!(
+                waiting <= CAP,
+                "the queue holds {waiting} bytes, past {CAP}"
+            );
+        }
     }
 }

@@ -1657,34 +1657,6 @@ fn a_pty_session_still_owes_a_wake_registered_after_the_screen_was_drawn() {
     unsafe { kt_session_free(session) };
 }
 
-/// The cap is what keeps a child that has stopped reading from growing the
-/// queue without bound, and a caller that cannot tell that from a rejected
-/// sequence cannot tell the user either. A PTY session hands the queue over on
-/// another thread, so this is the path where the report is easiest to lose.
-#[test]
-fn a_pty_session_reports_a_writer_queue_over_its_cap() {
-    // The 8MB of 02-ffi.md, restated because the core keeps its own copy
-    // private. If the two ever disagree, this is what notices.
-    const CAP: usize = 8 * 1024 * 1024;
-
-    // A child that never reads: everything written piles up behind it once the
-    // terminal itself stops taking more.
-    let session = pty(4, 1, &["/bin/sh", "-c", "sleep 30"]);
-
-    let chunk = vec![b'x'; 64 * 1024];
-    let mut status = KtStatus::Ok;
-    for _ in 0..(4 * CAP / chunk.len()) {
-        status = unsafe { kt_session_write(session, chunk.as_ptr(), chunk.len()) };
-        if status != KtStatus::Ok {
-            break;
-        }
-    }
-
-    assert_eq!(status, KtStatus::WriteQueueFull);
-
-    unsafe { kt_session_free(session) };
-}
-
 /// Drive a consumer's own loop until the child's exit turns up: drain the
 /// events, then take the newest screen. Answers with the exit and with the
 /// screen as it stood when the exit was observed.

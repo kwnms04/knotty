@@ -13,7 +13,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::mpsc::Receiver;
 use std::time::Duration;
 
@@ -24,6 +24,7 @@ use rustix::pty::{OpenptFlags, grantpt, openpt, ptsname, unlockpt};
 use rustix::termios::{Winsize, tcsetwinsize};
 
 use crate::session::{SelectionRange, Session};
+use crate::writer::WriteQueue;
 use crate::{Error, Result};
 
 impl From<Errno> for Error {
@@ -48,15 +49,6 @@ const TERM: &str = "xterm-256color";
 
 /// How much comes off the terminal in one read.
 const READ_CHUNK: usize = 64 * 1024;
-
-/// What the app has for a session, waiting for the one thread allowed to
-/// touch it.
-pub enum Input {
-    /// Bytes bound for the child.
-    Write(Vec<u8>),
-    /// A range of the viewport to select, or `None` to clear the selection.
-    Selection(Option<SelectionRange>),
-}
 
 /// What a wait found ready.
 pub struct Ready {
@@ -344,61 +336,49 @@ impl Pty {
 /// Drive `session` against `terminal` until the child ends or `stopping` is
 /// set.
 ///
-/// Reading and writing are the same thread, which is what makes the engine's
-/// answers and the app's input serialize with no lock between them. cf.
-/// `03-core.md` C1
+/// One thread reads the terminal and feeds the engine, so the engine is driven
+/// from here and nowhere else. What the app has for the child does not come
+/// through here at all: it goes straight into the queue below, which is where
+/// the two are serialized. cf. `03-core.md` C1
 ///
-/// `backlog` counts every byte still waiting for the child, whoever queued it,
-/// and is what the app's own writes are refused against — so it is added to
-/// here as the engine answers and taken from as the terminal accepts.
+/// `writes` is the queue the app and the terminal both put bytes in. This loop
+/// is the only thing that takes them out of it, and it hands them over inside
+/// the queue's own lock — so what the app queues mid-hand-over lands behind
+/// what is being handed over rather than in front of it.
 ///
 /// `child_exit` is where the child's code is left for the app's side to read.
 /// It is written before the exit is committed, so that a consumer coming for
 /// that telling finds the code already there. What the negative it starts out
 /// as means is the reader's, in `session`.
-pub fn run(
+pub(crate) fn run(
     session: &mut Session,
     terminal: &mut Pty,
-    input: &Receiver<Input>,
-    backlog: &AtomicUsize,
+    selection: &Receiver<Option<SelectionRange>>,
+    writes: &WriteQueue,
     child_exit: &AtomicI32,
     stopping: &AtomicBool,
 ) -> Result<()> {
     let mut arrived = vec![0u8; READ_CHUNK];
-    // Bounded by whoever queues into it: the app's share is what `backlog`
-    // counts and the cap refuses past, and the session's own writer queue caps
-    // the engine's answers before they ever get here.
-    let mut bound_for_child = Vec::new();
 
     loop {
-        while let Ok(one) = input.try_recv() {
-            match one {
-                Input::Write(bytes) => bound_for_child.extend_from_slice(&bytes),
-                // Nothing is left waiting on the answer: the call that asked
-                // for this returned as soon as the request was queued.
-                Input::Selection(range) => {
-                    let _ = session.set_selection(range);
-                }
-            }
+        // Nothing is left waiting on the answer: the call that asked for this
+        // returned as soon as the request was queued.
+        while let Ok(range) = selection.try_recv() {
+            let _ = session.set_selection(range);
         }
-        let answers = session.take_writes();
-        backlog.fetch_add(answers.len(), Ordering::Relaxed);
-        bound_for_child.extend_from_slice(answers);
 
         // A held-back block is waited no longer than it has left, so that the
         // wait itself is what gives up on one the child never closes. The
         // clock is asked here because this is the only thread that waits: a
         // detached session goes back to its caller between rounds and never
         // sits still long enough for one to run out. cf. `03-core.md` C5
-        let ready = terminal.wait(!bound_for_child.is_empty(), session.wait_out_sync_block())?;
+        let ready = terminal.wait(writes.waiting() != 0, session.wait_out_sync_block())?;
         if stopping.load(Ordering::Relaxed) {
             return Ok(());
         }
 
         if ready.writable {
-            let written = terminal.write(&bound_for_child)?;
-            backlog.fetch_sub(written, Ordering::Relaxed);
-            bound_for_child.drain(..written);
+            writes.drain_with(|bytes| terminal.write(bytes))?;
         }
         if ready.readable {
             match terminal.read(&mut arrived)? {
@@ -444,8 +424,8 @@ mod tests {
     /// How long a release is given before it counts as one that never ends.
     const PATIENCE: Duration = Duration::from_secs(10);
 
-    /// The only place in this crate that starts a real child, because the
-    /// deadlock it guards lives below the parser: it is between a child
+    /// One of the two places in this crate that start a real child, because
+    /// the deadlock it guards lives below the parser: it is between a child
     /// closing its terminal and whoever was meant to be draining that
     /// terminal, and the loop above reaches it only by luck. Driving a
     /// session from outside cannot hold the drain still long enough to see
