@@ -851,9 +851,11 @@ KtStatus kt_session_write(KtSession *session, const uint8_t *bytes, size_t len);
  * inside a block is a half-drawn screen, and the newest is the only one a
  * consumer would have got anyway.
  *
- * What was published while no callback was registered stays owed, and the
- * next publication carries it — so a consumer that attaches late is told
- * there is something to take rather than having to know to look.
+ * What fell due while no callback was registered stays owed, and registering
+ * one pays it before this call returns — so a consumer that attaches late is
+ * told there is something to take rather than having to know to look. A wake
+ * a synchronized output block is holding back has not fallen due yet, and
+ * goes out with the close of the block as it would have anyway.
  *
  * # Safety
  *

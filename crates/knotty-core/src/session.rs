@@ -101,11 +101,17 @@ pub struct Session {
     // is — and with the app, which is what drains it whether or not a PTY is
     // behind the session.
     events: Arc<Mutex<EventQueue>>,
-    // How the consumer is told to come and look, and whether it is owed a
-    // telling. Not the engine's business: when a frame gets drawn is between
-    // the session and whoever draws. Shared, because a PTY session's consumer
-    // registers from its own thread while this one pays from the I/O thread.
+    // How the consumer is told to come and look. Not the engine's business:
+    // when a frame gets drawn is between the session and whoever draws.
+    // Shared, because a PTY session's consumer registers from its own thread
+    // while this one pays from the I/O thread.
     wake: Arc<Debt>,
+    // News this round produced that the consumer has not been told of, while a
+    // synchronized output block is holding it back. It waits here rather than
+    // on the debt: what the debt holds is payable the moment a consumer turns
+    // up, and this is not — the block is what says so, and only this side can
+    // ask. cf. `03-core.md` C5
+    held_back: bool,
     // When the owed wake was first held back by an open synchronized output
     // block, or `None` when nothing is being held back. This is the clock the
     // timeout runs on, and it is read by whoever waits — which is the I/O
@@ -138,6 +144,7 @@ impl Session {
             drained: Vec::new(),
             events,
             wake: Arc::new(Debt::default()),
+            held_back: false,
             held_since: None,
             given_up_on_block: false,
         })
@@ -312,9 +319,7 @@ impl Session {
     ///
     /// [`wait_out_sync_block`]: Session::wait_out_sync_block
     fn emit_wake(&mut self, owed: bool) -> Result<()> {
-        if owed {
-            self.wake.owe();
-        }
+        self.held_back |= owed;
         // Asked whether or not anything is owed: a block given up on may well
         // close on a round that has nothing to show, and the rule has to come
         // back with it either way.
@@ -323,7 +328,7 @@ impl Session {
             self.given_up_on_block = false;
         }
 
-        if open && !self.given_up_on_block && self.wake.owes() {
+        if self.held_back && open && !self.given_up_on_block {
             // The clock starts at the first wake held back rather than at the
             // opening of the block: before there is something to show, a
             // timeout has nothing to release.
@@ -358,12 +363,21 @@ impl Session {
         }
     }
 
-    /// Settle the owed wake, if one is owed and anyone is there to take it.
+    /// Let what was held back become the consumer's due, and settle it if
+    /// anyone is there to take it.
+    ///
+    /// Whoever calls it, a wake on its way out is no longer a wake being held
+    /// back — including the child's exit, which pays one from outside the
+    /// rule. cf. `note_child_exit`
+    ///
+    /// What nobody was there to take stays on the debt rather than here, so
+    /// the next consumer to register is told about it and this side is done
+    /// with it.
     fn pay_wake(&mut self) {
-        // Whoever settles it, a wake on its way out is no longer a wake being
-        // held back — including the child's exit, which pays one from outside
-        // the rule. cf. `note_child_exit`
         self.held_since = None;
+        if std::mem::take(&mut self.held_back) {
+            self.wake.owe();
+        }
         self.wake.settle();
     }
 }
@@ -819,6 +833,33 @@ mod tests {
             told.load(Ordering::Relaxed) > settled,
             "the round closed a block and opened one, and the mode says open",
         );
+    }
+
+    /// A consumer arriving mid-block is still a consumer arriving mid-block:
+    /// the debt it is paid on registering is what fell due, and a wake the
+    /// block is sitting on has not. Paying it there would hand over the
+    /// half-drawn screen the suppression exists to keep back. cf.
+    /// `03-core.md` C5
+    #[test]
+    fn a_wake_a_block_is_holding_back_is_not_paid_to_a_consumer_registering() {
+        let (mut session, _) = holding();
+
+        let told = Arc::new(AtomicU32::new(0));
+        session.set_wake(Some(Box::new({
+            let told = Arc::clone(&told);
+            move || {
+                told.fetch_add(1, Ordering::Relaxed);
+            }
+        })));
+
+        assert_eq!(
+            told.load(Ordering::Relaxed),
+            0,
+            "registering let a held-back wake out",
+        );
+
+        session.feed(b"\x1b[?2026l").expect("the feed to finish");
+        assert_eq!(told.load(Ordering::Relaxed), 1, "the block let nothing out");
     }
 
     /// The ordinary block, which is every block: it closes long before its

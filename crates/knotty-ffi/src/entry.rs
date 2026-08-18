@@ -2,22 +2,21 @@
 //!
 //! Every entry point opens the same way, because the header promises the same
 //! things of every one: a handle is not null, a run of bytes may be null only
-//! when it is empty, an out parameter is not null and is left holding an empty
-//! answer before anything that could fail. Written once here rather than at
-//! each entry point — there are eleven, and M3's input path adds six more. cf.
-//! `02-ffi.md`
+//! when it is empty, an out parameter is not null — and the ones with an empty
+//! answer to give are left holding it before anything that could fail. Written
+//! once here rather than at each entry point — there are eleven, and M3's
+//! input path adds six more. cf. `02-ffi.md`
 
 use crate::KtStatus;
 
-/// How an entry point came out.
+/// Report an entry point's answer, whichever of the two it is.
 ///
 /// `Err` is a refusal at the boundary: the call never reached the core, and
 /// nothing of what it asked for happened. `Ok` is what the core answered,
 /// which is not necessarily success — a full writer queue comes back that way.
-pub type Answer = Result<KtStatus, KtStatus>;
-
-/// Report an entry point's answer, whichever of the two it is.
-pub fn answer(call: impl FnOnce() -> Answer) -> KtStatus {
+/// The two are told apart so that the checks above can be written with `?`,
+/// and the caller is told the same either way.
+pub fn answer(call: impl FnOnce() -> Result<KtStatus, KtStatus>) -> KtStatus {
     call().unwrap_or_else(|refusal| refusal)
 }
 
@@ -68,12 +67,13 @@ pub unsafe fn at_mut<'a, T>(ptr: *mut T) -> Result<&'a mut T, KtStatus> {
 /// a refusal finds an empty answer rather than whatever was in its own
 /// variable. A call that goes through overwrites it.
 ///
+/// `T` is `Copy` so that the write cannot drop what a caller happened to leave
+/// in its own variable.
+///
 /// # Safety
 ///
-/// As [`at_mut`]. `T` must also be a type that needs no dropping: assigning
-/// over what is there would otherwise drop a value the caller never put
-/// there.
-pub unsafe fn out<'a, T>(ptr: *mut T, empty: T) -> Result<&'a mut T, KtStatus> {
+/// As [`at_mut`].
+pub unsafe fn out<'a, T: Copy>(ptr: *mut T, empty: T) -> Result<&'a mut T, KtStatus> {
     // SAFETY: the caller's, as declared.
     let place = unsafe { at_mut(ptr) }?;
     *place = empty;

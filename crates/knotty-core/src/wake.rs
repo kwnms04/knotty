@@ -20,6 +20,11 @@ pub type Wake = Box<dyn Fn() + Send>;
 /// consumer that registers late is told about what it was not there for
 /// instead of having to know to go looking. The mailbox is holding a snapshot
 /// either way. cf. `03-core.md` C5
+///
+/// What is held back by a synchronized output block never gets here: whether
+/// the screen is mid-draw is the session's to answer, and a wake it is sitting
+/// on has not fallen due yet. So everything below is payable the moment there
+/// is anyone to pay it.
 #[derive(Default)]
 pub struct Debt {
     owed: Mutex<Owed>,
@@ -48,11 +53,6 @@ impl Debt {
     /// Record that there is something to come for.
     pub fn owe(&self) {
         self.lock().standing = true;
-    }
-
-    /// Whether one is owed, paid or not.
-    pub fn owes(&self) -> bool {
-        self.lock().standing
     }
 
     /// Pay what is owed, if anything is and anyone is there to take it.
@@ -140,7 +140,6 @@ mod tests {
         })));
 
         assert_eq!(paid.load(Ordering::Relaxed), 1);
-        assert!(!debt.owes(), "the debt was paid and still stands");
     }
 
     /// Clearing the callback is a consumer saying it is about to go, and what
@@ -154,6 +153,14 @@ mod tests {
         debt.settle();
 
         assert_eq!(paid.load(Ordering::Relaxed), 0, "a cleared wake was called");
-        assert!(debt.owes());
+
+        // Still standing, and the next consumer to register is told.
+        debt.register(Some(Box::new({
+            let paid = Arc::clone(&paid);
+            move || {
+                paid.fetch_add(1, Ordering::Relaxed);
+            }
+        })));
+        assert_eq!(paid.load(Ordering::Relaxed), 1);
     }
 }

@@ -150,7 +150,7 @@ knotty가 이미 빌드에 요구합니다. 그럼에도 기각합니다.
   `[patch.crates-io]`의 `-sys` 줄이 남아 있는 것이 정상 상태이며, 지워야 할
   잔재가 아닙니다. 뒤집으려면 상류에 훅을 올리고, 병합·crates.io 릴리스·`=0.2.1`
   핀 이동(마일스톤 사이에서만 하는 일)까지 끝난 뒤 이 문단부터 고칩니다.
-- **비-UTF-8 클립보드 쓰기는 코어에서 거절합니다.** `session.rs`가
+- **비-UTF-8 클립보드 쓰기는 코어에서 거절합니다.** `listener.rs`가
   `text/plain` 표현만 받으므로 UTF-8이 아닌 것은 그 MIME 타입으로서 malformed
   입니다. `ClipboardRefusal::InvalidData`로 돌려보내며, 이는
   `CLIPBOARD_TEXT_CAP` 초과를 `Denied`로 막는 기존 동작과 같은 층위입니다.
