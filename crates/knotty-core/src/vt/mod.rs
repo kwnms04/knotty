@@ -29,6 +29,7 @@ use std::ptr;
 
 use libghostty_vt_sys as ffi;
 
+use crate::listener::{ClipboardRefusal, Listener, Representation};
 use crate::queue::ClipboardTarget;
 use crate::session::SelectionRange;
 use crate::{Error, Result};
@@ -47,7 +48,7 @@ const SYNC_OUTPUT: ffi::Mode = 2026;
 /// emulator.
 //
 // The one piece of knotty's answering policy that lives in here rather than in
-// `session`: the engine's own struct is the only way to spell it.
+// `listener`: the engine's own struct is the only way to spell it.
 const DEVICE_ATTRIBUTES: ffi::DeviceAttributes = ffi::DeviceAttributes {
     primary: ffi::DeviceAttributesPrimary {
         conformance_level: ffi::DA_CONFORMANCE_VT220,
@@ -65,81 +66,6 @@ const DEVICE_ATTRIBUTES: ffi::DeviceAttributes = ffi::DeviceAttributes {
     },
     tertiary: ffi::DeviceAttributesTertiary { unit_id: 0 },
 };
-
-/// Why a clipboard write was refused.
-///
-/// Only the reasons knotty gives. The engine defines more, and none of them is
-/// something this core can conclude.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ClipboardRefusal {
-    /// Refused by policy — the payload is beyond what knotty will carry.
-    Denied,
-    /// The payload is not what the representation it came under promises.
-    InvalidData,
-    /// Nothing in the write is a representation knotty can act on.
-    Unsupported,
-}
-
-/// The representations one clipboard write carries.
-///
-/// Borrowed for the length of the callback and no longer, which is why it is
-/// handed over rather than returned.
-pub struct ClipboardWrite<'a>(&'a [ffi::ClipboardContent]);
-
-impl ClipboardWrite<'_> {
-    /// The data of the representation offered as `mime`, if the write has one.
-    ///
-    /// The bytes are the payload as it arrived. Nothing promises they are
-    /// text: `OSC 52` carries base64 of whatever the child chose to send, and
-    /// the C API documents the field as binary-safe — so what they mean under
-    /// their MIME type is the caller's to decide.
-    pub fn representation(&self, mime: &[u8]) -> Option<&[u8]> {
-        self.0
-            .iter()
-            // SAFETY: both strings are borrowed from the engine for the
-            // duration of the callback, which is the whole of this borrow.
-            .map(|content| unsafe {
-                (
-                    bytes_of(content.mime.ptr, content.mime.len),
-                    bytes_of(content.data.ptr, content.data.len),
-                )
-            })
-            .find_map(|(offered, data)| (offered == mime).then_some(data))
-    }
-}
-
-/// What the terminal's answer to a query is given to.
-pub type PtyWrite = Box<dyn FnMut(&[u8])>;
-
-/// What a bell is given to.
-pub type Bell = Box<dyn FnMut()>;
-
-/// What decides what becomes of a clipboard write.
-pub type ClipboardWriter = Box<
-    dyn FnMut(ClipboardTarget, ClipboardWrite<'_>) -> std::result::Result<(), ClipboardRefusal>,
->;
-
-/// What the engine hands back while it parses.
-///
-/// One value rather than a registration apiece: the C API keeps a single
-/// userdata pointer, so everything the engine calls arrives through this.
-///
-/// The three queries knotty answers from a constant are not here. A callback
-/// that would return the same bytes every time is a value, and the engine is
-/// given it as one.
-pub struct Listener {
-    /// What an ENQ is answered with.
-    pub answerback: &'static str,
-    /// What an XTVERSION query is answered with.
-    pub version: &'static str,
-    /// Bytes the terminal wants sent to the child, which is every answer it
-    /// makes.
-    pub pty_write: PtyWrite,
-    /// The child rang the bell.
-    pub bell: Bell,
-    /// The child asked for something to be put on a clipboard.
-    pub clipboard_write: ClipboardWriter,
-}
 
 /// A terminal, its render state, and the iterators a capture walks it with.
 ///
@@ -529,7 +455,22 @@ unsafe extern "C" fn on_clipboard_write(
         _ => ClipboardTarget::Standard,
     };
 
-    match (listener.clipboard_write)(target, ClipboardWrite(contents)) {
+    // Handed on as knotty's own values, so that the table deciding what
+    // becomes of them never sees an engine type — nor needs a terminal to be
+    // called. cf. `03-core.md` C3
+    let offered: Vec<Representation<'_>> = contents
+        .iter()
+        // SAFETY: both strings are borrowed from the engine for the length of
+        // this call, which outlives the borrow below.
+        .map(|content| unsafe {
+            Representation {
+                mime: bytes_of(content.mime.ptr, content.mime.len),
+                data: bytes_of(content.data.ptr, content.data.len),
+            }
+        })
+        .collect();
+
+    match (listener.clipboard_write)(target, &offered) {
         Ok(()) => ffi::ClipboardWriteResult::SUCCESS,
         Err(ClipboardRefusal::Denied) => ffi::ClipboardWriteResult::DENIED,
         Err(ClipboardRefusal::InvalidData) => ffi::ClipboardWriteResult::INVALID_DATA,

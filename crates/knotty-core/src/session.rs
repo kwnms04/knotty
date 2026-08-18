@@ -8,10 +8,11 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use crate::io::{self, Pty, Waker};
+use crate::listener::Listener;
 use crate::mailbox::Mailbox;
 use crate::queue::{Event, EventQueue};
 use crate::snapshot::{ScreenState, Snapshot};
-use crate::vt::{ClipboardRefusal, Listener, Terminal};
+use crate::vt::Terminal;
 use crate::wake::{Debt, Wake};
 use crate::writer::WriteQueue;
 use crate::{Error, Result};
@@ -70,62 +71,6 @@ const STILL_RUNNING: i32 = -1;
 /// better answer than this one.
 const SYNC_TIMEOUT: Duration = Duration::from_secs(1);
 
-/// The largest clipboard payload knotty will carry.
-///
-/// A write past it is refused whole rather than cut short: nothing tells the
-/// user their copy arrived as its first megabyte, so a truncated clipboard is
-/// worse than one that did not change. With the queue's cap this is also what
-/// bounds what undrained events can hold.
-const CLIPBOARD_TEXT_CAP: usize = 1024 * 1024;
-
-/// The one representation knotty takes off a clipboard write.
-///
-/// The engine normalizes OSC 52 and iTerm2's copy sequence into the same
-/// shape, and both carry this. v1 has no rich clipboard to put anything else
-/// on, so a write offering no plain text has nothing for us.
-const CLIPBOARD_MIME: &[u8] = b"text/plain";
-
-/// What an ENQ is answered with: knotty's name.
-///
-/// An answerback reaches the child as if it were typed, so it stays a fixed
-/// string of ours — nothing that reaches the screen can steer what is sent.
-const ANSWERBACK: &str = "knotty";
-
-/// Name and version, the payload of the XTVERSION answer.
-///
-/// Programs pick a code path by this, so it has to be knotty's rather than the
-/// `libghostty` the engine falls back to.
-const VERSION_REPORT: &str = concat!("knotty ", env!("CARGO_PKG_VERSION"));
-
-/// How the engine answers a title query: `OSC l <title> ST`.
-const TITLE_REPORT_PREFIX: &[u8] = b"\x1b]l";
-
-/// The same answer carrying no title.
-const EMPTY_TITLE_REPORT: &[u8] = b"\x1b]l\x1b\\";
-
-/// Empty out an answer that would carry writable state back to the child.
-///
-/// A title query (`CSI 21 t`) is answered with the title, and a PTY write is
-/// keyboard input as far as the shell can tell — so output nobody trusts can
-/// set the title to a command, query it back, and have it typed. The engine
-/// emits this one answer with no callback to fill in, which is why it is
-/// caught here on the wire rather than refused earlier. The answer still goes
-/// out: a program waiting on one must not hang. cf.
-/// `docs/adr/0007-input-security.md`.
-///
-/// The icon label query is the other half of the pair the ADR names. Its
-/// report is not written here because nothing emits one: an answer the filter
-/// never sees costs a prefix to match and proves nothing when it does.
-//
-// `03-core.md` gives this to the `listener` module, which does not exist yet;
-// until it does, it sits beside the queue it feeds.
-fn sanitized_answer(bytes: &[u8]) -> &[u8] {
-    if bytes.starts_with(TITLE_REPORT_PREFIX) {
-        return EMPTY_TITLE_REPORT;
-    }
-    bytes
-}
-
 /// A terminal session.
 ///
 /// It owns no thread and no child process of its own: [`feed`] runs the VT
@@ -183,79 +128,7 @@ impl Session {
         // clipboard write leaves a mark on the screen, so a consumer that
         // misses one has no second way to learn it happened.
         let events = Arc::new(Mutex::new(EventQueue::default()));
-
-        // `03-core.md` gives this table to the `listener` module, which does
-        // not exist yet; until it does, it sits at the one place a session
-        // wires the engine up.
-        //
-        // What is not here matters as much as what is. The pixel size is the
-        // renderer's to answer and the color scheme the app's, so those
-        // queries get no handler and the engine stays silent on them — knotty
-        // does not invent a value it cannot know. One handler covers all three
-        // size reports, so the size in cells goes silent with the two in
-        // pixels rather than being answered alongside made-up pixels. And a
-        // clipboard read is never forwarded at all, so there is nothing to
-        // answer and nothing goes out: answering would hand the child whatever
-        // the user last copied. cf. `docs/adr/0007-input-security.md`
-        let listener = Listener {
-            answerback: ANSWERBACK,
-            version: VERSION_REPORT,
-            pty_write: Box::new({
-                let writes = Arc::clone(&writes);
-                move |bytes| writes.push(sanitized_answer(bytes))
-            }),
-            bell: Box::new({
-                let events = Arc::clone(&events);
-                move || events.lock().expect("event queue lock").push(Event::Bell)
-            }),
-            clipboard_write: Box::new({
-                let events = Arc::clone(&events);
-                move |target, write| {
-                    // The refusals below are how the callback says no. OSC 52
-                    // carries no acknowledgement, so nothing reaches the child
-                    // either way — what they buy is that the app is never
-                    // handed a payload it should not act on.
-                    //
-                    // A write carrying no representations at all is how the
-                    // engine asks for the clipboard to be cleared. It lands
-                    // here as no matching representation, and refusing it is
-                    // the answer we want: acting on it faithfully would wipe
-                    // what the user last copied on the say-so of the child.
-                    let Some(data) = write.representation(CLIPBOARD_MIME) else {
-                        return Err(ClipboardRefusal::Unsupported);
-                    };
-                    // A representation of no length is an explicit empty one,
-                    // which the engine's contract says does not clear the
-                    // clipboard. An app that wrote it faithfully would wipe
-                    // what the user last copied, so it stops here rather than
-                    // going out as a copy of nothing.
-                    if data.is_empty() {
-                        return Ok(());
-                    }
-                    if data.len() > CLIPBOARD_TEXT_CAP {
-                        return Err(ClipboardRefusal::Denied);
-                    }
-                    // The payload is base64 of whatever the child chose to
-                    // send, so it is bytes and nothing promises they are text.
-                    // What is not UTF-8 is malformed as `text/plain`, and the
-                    // event carries `KtText`, which promises UTF-8 to the app.
-                    // So it is refused here rather than decoded lossily. cf.
-                    // ADR 0012
-                    let Ok(text) = str::from_utf8(data) else {
-                        return Err(ClipboardRefusal::InvalidData);
-                    };
-
-                    events
-                        .lock()
-                        .expect("event queue lock")
-                        .push(Event::ClipboardWrite {
-                            target,
-                            text: text.to_owned(),
-                        });
-                    Ok(())
-                }
-            }),
-        };
+        let listener = Listener::new(Arc::clone(&writes), Arc::clone(&events));
 
         Ok(Self {
             terminal: Terminal::new(cols, rows, max_scrollback, listener)?,
@@ -971,23 +844,11 @@ mod tests {
         );
     }
 
-    /// The fuzzer cannot stand in for these: neither input crashes once the
-    /// binding layer stops building invalid values out of them, so what is
-    /// under test is a refusal, not a survival. cf. ADR 0012
-    #[test]
-    fn a_clipboard_write_that_is_not_utf8_is_refused() {
-        let mut session = session();
-
-        // `//4=` is base64 for FF FE, which is not UTF-8.
-        session
-            .feed(b"\x1b]52;c;//4=\x07")
-            .expect("the feed to finish");
-
-        let (events, dropped) = session.take_events();
-        assert!(events.is_empty(), "non-UTF-8 payload reached the app");
-        assert_eq!(dropped, 0);
-    }
-
+    /// What the rules themselves say is `listener`'s to test. What is left
+    /// here is the one thing a literal cannot stand in for: the engine sends a
+    /// write with no representations as a null array, which is not a slice at
+    /// any length, and the facade turning that into an empty one is what makes
+    /// the refusal reachable at all. cf. ADR 0012
     #[test]
     fn a_clipboard_write_with_no_representations_leaves_the_clipboard_alone() {
         let mut session = session();
@@ -999,6 +860,8 @@ mod tests {
         assert_eq!(dropped, 0);
     }
 
+    /// The other half of the wiring: a write that is refused nowhere comes out
+    /// on the event queue the listener was built around.
     #[test]
     fn a_clipboard_write_that_is_utf8_still_arrives() {
         let mut session = session();
