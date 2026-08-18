@@ -35,15 +35,17 @@ Swift 없이 knotty-core와 하네스만 만듭니다.
 
 - Swift Package 래핑, ABI 핸드셰이크 배선
 - AppDelegate → WindowController → SessionHost + TerminalView 뼈대
+- 그리드는 80×24 고정이고 창은 리사이즈하지 않습니다. 리플로우를 M3의 리사이즈까지 미룹니다
 - wake 결합, 디스플레이 링크 dirty 게이팅
 - 렌더러 최소: 2패스 파이프라인, ASCII fast path만, 아틀라스 1페이지
+- 렌더러 골든 1종 — 하네스 녹화를 detached 세션에 먹여 인스턴스 버퍼를 비교합니다. CI에 `swift build`·`swift test`가 붙습니다
 - **종료 기준**: 셸 프롬프트가 보이고 `ls` 출력이 맞습니다. 유휴 시 링크 정지 확인
 
 ## M3 — Input and text
 
 **선행 조건: GSUB 프로브.** [R3](04-renderer.md#r3--shaping-unit)의 셰이핑 경로가 확정되어야 합니다.
 
-- 입력 경로 전체 배선 (쓰기 / 붙여넣기 / 특수키 / 휠 / 마우스 / 포커스)
+- 입력 경로 전체 배선 (쓰기 / 붙여넣기 / 특수키 / 휠 / 마우스 / 포커스 / **리사이즈**)
 - NSTextInputClient + preedit 오버레이, Option-as-Meta
 - 셰이핑 slow path(결합·ZWJ·이모지·**리거처**), 폴백, 정수 정렬, 선택 + 복사
 - **종료 기준**: IME 시나리오 전항 통과, vim/tmux/fzf 일상 사용 가능

@@ -6,13 +6,31 @@
 크래시 격리는 패닉 포획([C8](03-core.md#c8--panic-isolation))과 퍼징이 대체합니다.
 데일리 드라이버에는 격리보다 기동 속도(⌘N 즉시)가 중요합니다.
 
-## 2 — One session, one window
+## 2 — Build and targets
+
+cf. [0014](adr/0014-swiftpm-no-xcodeproj.md)
+
+- `.xcodeproj`는 두지 않습니다. `App/Package.swift` 하나가 진실이고, `.app` 번들과 `default.metallib`, ad-hoc 서명은 조립 스크립트가 만듭니다.
+- 타깃은 넷이며, 경계가 곧 규율입니다.
+
+```
+CKnotty        systemLibrary. include/knotty.h를 보는 유일한 타깃
+KnottySession  FFI 파사드. CKnotty를 import하는 유일한 타깃
+KnottyRender   스냅샷+메트릭 → 인스턴스 버퍼·아틀라스 갱신 목록.
+               AppKit도 MTLDevice도 참조하지 않음 (R9)
+knotty         AppKit, Metal 인코딩·드로우, 소유 트리
+```
+
+- `TerminalView`가 FFI를 직접 부를 수 없다는 [3절](#3--ownership-tree)의 계약과, 렌더러가 순수 함수라는 [R9](04-renderer.md#r9--pure-function)의 계약이 여기서 컴파일 오류가 됩니다.
+- 렌더러 골든은 GPU 없이 `swift test`로 돕니다. detached 세션([0008](adr/0008-detached-session-public.md))이 공개 ABI이므로 Rust 하네스와 같은 녹화 파일을 그대로 먹입니다.
+
+## 3 — One session, one window
 
 - 탭은 제공하지 않습니다. cf. [0010](adr/0010-no-tabs-v1.md)
 - 시스템 설정("탭으로 열기 선호")이 창을 자동으로 탭 그룹에 묶지 않도록 탭 병합을 명시적으로 비활성화합니다.
 - 나중에 도입한다면 그 설정을 바꾸는 것만으로 가능합니다. 자체 탭 구현이 아닙니다.
 
-## 3 — Ownership tree
+## 4 — Ownership tree
 
 ```
 AppDelegate (설정 스토어, 세션 레지스트리)
@@ -26,7 +44,7 @@ AppDelegate (설정 스토어, 세션 레지스트리)
 "세션당 호출 직렬화" 계약을 규율이 아니라 **구조**로 보장합니다.
 FFI를 아는 객체가 하나면 동시 호출 경로 자체가 없습니다.
 
-## 4 — Main thread only
+## 5 — Main thread only
 
 cf. [0011](adr/0011-main-thread.md)
 
@@ -41,7 +59,7 @@ cf. [0011](adr/0011-main-thread.md)
 - 디스플레이 링크는 런루프에 통합되는 쪽이 1순위, 자체 스레드 콜백 방식이 폴백입니다.
 - 메인을 떠날 수 없는 것: NSTextInputClient 전부, 이벤트 처리, 창 조작, SessionHost의 FFI 호출.
 
-## 5 — Render loop
+## 6 — Render loop
 
 wake → `needsFrame` + 링크 재개 → vsync 틱에 스냅샷 수령 → dirty 줄만 셰이핑 → 아틀라스 갱신 →
 인코딩 → 그리기 → 새 wake가 없으면 링크 일시정지.
@@ -49,7 +67,7 @@ wake → `needsFrame` + 링크 재개 → vsync 틱에 스냅샷 수령 → dirt
 "wake 있던 프레임만 수령"과 "유휴 CPU 0"이 구조적으로 성립합니다.
 폭주는 vsync가 자연 스로틀합니다.
 
-## 6 — IME
+## 7 — IME
 
 - marked text는 코어로 보내지 않습니다. 커서 위 Swift 오버레이로 그리고, 확정 시에만 SessionHost를 거쳐 쓰기를 호출합니다. TerminalView는 여기서도 FFI를 직접 부르지 않습니다.
     - 미확정 텍스트는 터미널에 입력된 것이 아닙니다. 그리드에 넣으면 취소 되돌리기가 지옥이 되고 PTY 부분 전송은 재앙입니다.
@@ -57,7 +75,7 @@ wake → `needsFrame` + 링크 재개 → vsync 틱에 스냅샷 수령 → dirt
 - keyDown은 IME에 먼저 기회를 줍니다. 미소비 키만 SessionHost를 거쳐 특수키 경로로 갑니다.
     - Option-as-Meta 판정(좌/우 개별 설정)은 그 직전 Swift에서 합니다.
 
-## 7 — Event policy
+## 8 — Event policy
 
 | 이벤트 | 정책 |
 |---|---|
@@ -69,13 +87,13 @@ wake → `needsFrame` + 링크 재개 → vsync 틱에 스냅샷 수령 → dirt
 종료 경고("실행 중 프로세스")는 스냅샷의 자식 상태로 판정합니다.
 **경고는 끌 수 있지만 정화는 끌 수 없습니다.** cf. [0007](adr/0007-input-security.md)
 
-## 8 — State restoration
+## 9 — State restoration
 
 - 창 프레임을 복원하고, 세션은 저장된 작업 디렉터리에서 새 셸을 스폰합니다.
     - 스냅샷의 작업 디렉터리를 주기적으로 저장합니다. 이를 전달하지 않는 tmux 세션은 홈에서 시작합니다. 문서화된 한계입니다.
 - 스크롤백은 복원하지 않습니다. tmux 사용자는 `tmux attach`가 복원 수단입니다.
 
-## 9 — Config pipeline
+## 10 — Config pipeline
 
 - ConfigStore: 로드 → JSON → Codable → 창들에 발행.
 - 파일 감시(디바운스 ~200ms) → 리로드 → diff → 항목별 적용.
