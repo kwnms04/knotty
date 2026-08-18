@@ -21,14 +21,16 @@ pub mod queue;
 pub mod session;
 pub mod snapshot;
 mod vt;
+mod wake;
 mod writer;
 
 pub use queue::{ClipboardTarget, Event};
-pub use session::{ChildState, PtySession, SelectionRange, Session, Wake};
+pub use session::{ChildState, PtySession, SelectionRange, Session};
 pub use snapshot::{
     Attribute, Cell, Cursor, CursorShape, Dirty, Rgb, Row, RowFlag, ScreenState, Snapshot,
     Underline,
 };
+pub use wake::Wake;
 
 /// Why a core operation failed.
 ///

@@ -1460,8 +1460,8 @@ fn clearing_the_wake_stops_the_calls_without_losing_what_they_would_have_said() 
     feed(session, b"y");
     assert_eq!(*count, 1, "a cleared callback was still called");
 
-    // Nothing new in this feed, so the one wake the fresh counter sees can
-    // only be the one "y" was owed.
+    // Registering is what pays it, and nothing in the feed after can add to
+    // it — so the one wake the fresh counter sees is the one "y" was owed.
     let count = wake_counter(session);
     feed(session, b"");
 

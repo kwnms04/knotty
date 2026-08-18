@@ -12,14 +12,9 @@ use crate::mailbox::Mailbox;
 use crate::queue::{Event, EventQueue};
 use crate::snapshot::{ScreenState, Snapshot};
 use crate::vt::{ClipboardRefusal, Listener, Terminal};
+use crate::wake::{Debt, Wake};
 use crate::writer::WriteQueue;
 use crate::{Error, Result};
-
-/// What a session calls when it has something new to be taken.
-///
-/// `Send` because a PTY session makes the call from its own I/O thread, which
-/// is not the thread that registered it.
-pub type Wake = Box<dyn Fn() + Send>;
 
 /// A selection's two endpoints, in viewport coordinates.
 ///
@@ -162,10 +157,10 @@ pub struct Session {
     // behind the session.
     events: Arc<Mutex<EventQueue>>,
     // How the consumer is told to come and look, and whether it is owed a
-    // telling. Neither is the engine's business: when a frame gets drawn is
-    // between the session and whoever draws.
-    wake: Option<Wake>,
-    wake_owed: bool,
+    // telling. Not the engine's business: when a frame gets drawn is between
+    // the session and whoever draws. Shared, because a PTY session's consumer
+    // registers from its own thread while this one pays from the I/O thread.
+    wake: Arc<Debt>,
     // When the owed wake was first held back by an open synchronized output
     // block, or `None` when nothing is being held back. This is the clock the
     // timeout runs on, and it is read by whoever waits — which is the I/O
@@ -269,8 +264,7 @@ impl Session {
             writes,
             drained: Vec::new(),
             events,
-            wake: None,
-            wake_owed: false,
+            wake: Arc::new(Debt::default()),
             held_since: None,
             given_up_on_block: false,
         })
@@ -282,9 +276,10 @@ impl Session {
     /// The call is made on the thread that drove the session, from inside the
     /// call that published — so it may do nothing but wake its own thread.
     /// Re-entering the session from it would re-enter state the running call
-    /// still holds.
+    /// still holds. A wake that fell due while nobody was registered is paid
+    /// here, before this returns.
     pub fn set_wake(&mut self, wake: Option<Wake>) {
-        self.wake = wake;
+        self.wake.register(wake);
     }
 
     /// Queue `bytes` for the child, without waiting for them to get there.
@@ -444,7 +439,9 @@ impl Session {
     ///
     /// [`wait_out_sync_block`]: Session::wait_out_sync_block
     fn emit_wake(&mut self, owed: bool) -> Result<()> {
-        self.wake_owed |= owed;
+        if owed {
+            self.wake.owe();
+        }
         // Asked whether or not anything is owed: a block given up on may well
         // close on a round that has nothing to show, and the rule has to come
         // back with it either way.
@@ -453,7 +450,7 @@ impl Session {
             self.given_up_on_block = false;
         }
 
-        if self.wake_owed && open && !self.given_up_on_block {
+        if open && !self.given_up_on_block && self.wake.owes() {
             // The clock starts at the first wake held back rather than at the
             // opening of the block: before there is something to show, a
             // timeout has nothing to release.
@@ -489,51 +486,16 @@ impl Session {
     }
 
     /// Settle the owed wake, if one is owed and anyone is there to take it.
-    ///
-    /// Owed with nobody to tell stays owed, so a consumer that registers late
-    /// is told about what it was not there for rather than having to know to
-    /// look.
     fn pay_wake(&mut self) {
         // Whoever settles it, a wake on its way out is no longer a wake being
         // held back — including the child's exit, which pays one from outside
         // the rule. cf. `note_child_exit`
         self.held_since = None;
-        if !self.wake_owed {
-            return;
-        }
-        let Some(wake) = &self.wake else {
-            return;
-        };
-
-        self.wake_owed = false;
-        wake();
+        self.wake.settle();
     }
 }
 
-/// The consumer of a PTY session, and whether it is owed a telling.
-///
-/// The debt lives here rather than on the session inside, because that
-/// session's callback is a trampoline into this and so is never absent — it
-/// would settle a debt on behalf of a consumer that is not there. Keeping it
-/// out here is what lets a consumer registering late be told about what it was
-/// not there for. cf. `03-core.md` C5
-#[derive(Default)]
-struct Consumer {
-    wake: Option<Wake>,
-    owed: bool,
-}
-
-impl Consumer {
-    /// Tell the consumer to come and look, or remember that it is owed one.
-    fn tell(&mut self) {
-        match &self.wake {
-            Some(wake) => wake(),
-            None => self.owed = true,
-        }
-    }
-}
-
-/// Run a session's I/O loop and settle up after it.
+/// Run a session's I/O loop and wind it up after.
 ///
 /// A loop that gave up mid-round and one that panicked are the same news to the
 /// app: nothing is driving the engine any more, so the session is broken rather
@@ -547,7 +509,7 @@ impl Consumer {
 /// same path a released session takes, reached without a line of its own.
 /// Piling a timeout and a kill onto code that is already running wrong leaves
 /// nowhere to go when that fails too. cf. `03-core.md` C8
-fn settle(broken: &AtomicBool, consumer: &Mutex<Consumer>, run: impl FnOnce() -> Result<()>) {
+fn wind_up(broken: &AtomicBool, wake: &Debt, run: impl FnOnce() -> Result<()>) {
     // Unwind safety is asserted rather than proved: what the loop was holding
     // is dropped as this returns, and what it shared is left where it stands
     // for the app to take. Nothing here touches the engine again.
@@ -556,7 +518,11 @@ fn settle(broken: &AtomicBool, consumer: &Mutex<Consumer>, run: impl FnOnce() ->
     }
 
     broken.store(true, Ordering::Relaxed);
-    consumer.lock().expect("consumer lock").tell();
+    // Stored before the telling, so a consumer that comes for it finds the
+    // mark already set. Owed rather than called outright, because a break with
+    // nobody registered is the news that matters most on the way back.
+    wake.owe();
+    wake.settle();
 }
 
 /// A session with a child process behind a pseudoterminal.
@@ -573,9 +539,9 @@ fn settle(broken: &AtomicBool, consumer: &Mutex<Consumer>, run: impl FnOnce() ->
 pub struct PtySession {
     mailbox: Arc<Mailbox<Snapshot>>,
     events: Arc<Mutex<EventQueue>>,
-    // Kept here rather than on the session, so that registering one does not
-    // have to reach across to a thread that may be mid-parse.
-    consumer: Arc<Mutex<Consumer>>,
+    // The session's own, shared rather than reached for: registering a
+    // consumer must not have to cross to a thread that may be mid-parse.
+    wake: Arc<Debt>,
     // Requests the I/O thread applies to the engine on the app's behalf. Only
     // the selection travels this way: what is bound for the child goes in the
     // queue below, which both threads reach.
@@ -613,7 +579,6 @@ impl PtySession {
         let stopping = Arc::new(AtomicBool::new(false));
         let child_exit = Arc::new(AtomicI32::new(STILL_RUNNING));
         let broken = Arc::new(AtomicBool::new(false));
-        let consumer = Arc::new(Mutex::new(Consumer::default()));
         let (started, start) = mpsc::channel();
 
         let thread = thread::Builder::new()
@@ -622,7 +587,6 @@ impl PtySession {
                 let stopping = Arc::clone(&stopping);
                 let child_exit = Arc::clone(&child_exit);
                 let broken = Arc::clone(&broken);
-                let consumer = Arc::clone(&consumer);
                 move || {
                     // Built here rather than handed in: the engine's handles
                     // are single-threaded, so this thread has to be the one
@@ -634,23 +598,21 @@ impl PtySession {
                             return;
                         }
                     };
-                    // Always set, so the session inside never holds a debt of
-                    // its own — `Consumer` is what holds one instead.
-                    session.set_wake(Some(Box::new({
-                        let consumer = Arc::clone(&consumer);
-                        move || consumer.lock().expect("consumer lock").tell()
-                    })));
-
+                    // The debt the app registers against is the session's own:
+                    // one wake, whichever side of the thread it is settled
+                    // from. cf. `03-core.md` C5
+                    let wake = Arc::clone(&session.wake);
                     let writes = Arc::clone(&session.writes);
                     let crossing = (
                         Arc::clone(&session.mailbox),
                         Arc::clone(&session.events),
                         Arc::clone(&writes),
+                        Arc::clone(&wake),
                     );
                     if started.send(Ok(crossing)).is_err() {
                         return;
                     }
-                    settle(&broken, &consumer, || {
+                    wind_up(&broken, &wake, || {
                         io::run(
                             &mut session,
                             &mut terminal,
@@ -666,11 +628,11 @@ impl PtySession {
 
         // The thread reports how its own construction went, so a session that
         // could not build its engine fails here rather than looking alive.
-        let (mailbox, events, writes) = start.recv().map_err(|_| Error::Io)??;
+        let (mailbox, events, writes, wake) = start.recv().map_err(|_| Error::Io)??;
         Ok(Self {
             mailbox,
             events,
-            consumer,
+            wake,
             selection,
             writes,
             child_exit,
@@ -726,13 +688,7 @@ impl PtySession {
     /// but wake the thread that registered it. A wake that fell due while
     /// nobody was registered is paid here, before this returns.
     pub fn set_wake(&self, wake: Option<Wake>) {
-        let mut consumer = self.consumer.lock().expect("consumer lock");
-        consumer.wake = wake;
-        // Taken rather than read: a wake cleared while a debt stands leaves
-        // the debt, which `tell` puts back.
-        if std::mem::take(&mut consumer.owed) {
-            consumer.tell();
-        }
+        self.wake.register(wake);
     }
 
     /// Queue `bytes` for the child.
@@ -814,7 +770,7 @@ mod tests {
     use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
     use std::time::Instant;
 
-    use super::{Consumer, Duration, Mutex, PtySession, SYNC_TIMEOUT, Session, settle};
+    use super::{Debt, Duration, PtySession, SYNC_TIMEOUT, Session, wind_up};
     use crate::queue::Event;
     use crate::writer::CAP;
     use crate::{Error, Result};
@@ -825,19 +781,17 @@ mod tests {
 
     /// A consumer that counts what it was told, which is all a real one may do
     /// from inside the call.
-    fn listening() -> (Mutex<Consumer>, Arc<AtomicU32>) {
+    fn listening() -> (Debt, Arc<AtomicU32>) {
         let told = Arc::new(AtomicU32::new(0));
-        let consumer = Consumer {
-            wake: Some(Box::new({
-                let told = Arc::clone(&told);
-                move || {
-                    told.fetch_add(1, Ordering::Relaxed);
-                }
-            })),
-            owed: false,
-        };
+        let wake = Debt::default();
+        wake.register(Some(Box::new({
+            let told = Arc::clone(&told);
+            move || {
+                told.fetch_add(1, Ordering::Relaxed);
+            }
+        })));
 
-        (Mutex::new(consumer), told)
+        (wake, told)
     }
 
     /// The I/O thread is the only thing driving a PTY session's engine, so a
@@ -846,12 +800,12 @@ mod tests {
     #[test]
     fn a_loop_that_panics_leaves_the_session_broken_and_tells_the_consumer_once() {
         let broken = AtomicBool::new(false);
-        let (consumer, told) = listening();
+        let (wake, told) = listening();
 
         // Reaching the next line at all is half the point: a panic escaping
         // the thread would take no one with it, but the session it left
         // behind would look alive for good.
-        settle(&broken, &consumer, || panic!("on purpose"));
+        wind_up(&broken, &wake, || panic!("on purpose"));
 
         assert!(broken.load(Ordering::Relaxed), "the break went unrecorded");
         assert_eq!(told.load(Ordering::Relaxed), 1);
@@ -862,9 +816,9 @@ mod tests {
     #[test]
     fn a_loop_that_gave_up_mid_round_leaves_the_session_broken() {
         let broken = AtomicBool::new(false);
-        let (consumer, told) = listening();
+        let (wake, told) = listening();
 
-        settle(&broken, &consumer, || Err(Error::Io));
+        wind_up(&broken, &wake, || Err(Error::Io));
 
         assert!(broken.load(Ordering::Relaxed));
         assert_eq!(told.load(Ordering::Relaxed), 1);
@@ -876,9 +830,9 @@ mod tests {
     #[test]
     fn a_loop_that_returned_of_its_own_accord_leaves_the_session_alone() {
         let broken = AtomicBool::new(false);
-        let (consumer, told) = listening();
+        let (wake, told) = listening();
 
-        settle(&broken, &consumer, || Result::Ok(()));
+        wind_up(&broken, &wake, || Result::Ok(()));
 
         assert!(!broken.load(Ordering::Relaxed));
         assert_eq!(told.load(Ordering::Relaxed), 0);
