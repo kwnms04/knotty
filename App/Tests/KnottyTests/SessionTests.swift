@@ -4,28 +4,6 @@ import Testing
 
 import KnottySession
 
-/// The size the recordings were made at, and the scrollback the Rust harness
-/// replays them with. Replaying at another size would show a screen no
-/// application ever drew.
-private let cols: UInt16 = 80
-private let rows: UInt16 = 24
-private let scrollback = 1000
-
-/// A recording, read from where it lives rather than copied in beside these
-/// tests. The point of a detached session being public is that both layers
-/// look at the same stream. cf. adr/0008.
-private func recording(_ name: String) throws -> [UInt8] {
-    // This file sits four levels under the repository root:
-    // App/Tests/KnottyTests/SessionTests.swift.
-    let root = URL(fileURLWithPath: #filePath)
-        .deletingLastPathComponent()
-        .deletingLastPathComponent()
-        .deletingLastPathComponent()
-        .deletingLastPathComponent()
-    let file = root.appending(path: "crates/knotty-harness/recordings/\(name).vt")
-    return try [UInt8](Data(contentsOf: file))
-}
-
 /// One round of everything a consumer does with a session.
 private func replaySynthetic() throws -> Session {
     let session = try Session(cols: cols, rows: rows, scrollback: scrollback)
@@ -118,11 +96,12 @@ private func text(of snapshot: Snapshot, row: Int) -> String {
 /// Sessions come and go without leaving anything behind.
 ///
 /// Nothing a consumer can see says a handle leaked, so what is watched is the
-/// allocator. A leaked session or a leaked frame is tens of kilobytes, and a
-/// hundred of either overshoots this bound by an order of magnitude — which
-/// is what keeps a bound this loose from being a bound that never fails. It
-/// has to be loose: the tests run alongside each other in one process, so
-/// what the others are holding lands in the same measurement.
+/// allocator. It has to be a loose bound: the tests run alongside each other
+/// in one process, so what the others are holding lands in the same
+/// measurement — a few megabytes of it. What keeps a bound this loose from
+/// being a bound that never fails is the count. A leaked session or a leaked
+/// frame is tens of kilobytes, so a thousand of either is tens of megabytes,
+/// which the neighbours cannot be mistaken for.
 @Test func sessionsComeAndGoWithoutGrowingTheHeap() throws {
     let bytes = try recording("synthetic")
     func round() throws {
@@ -135,10 +114,10 @@ private func text(of snapshot: Snapshot, row: Int) -> String {
     // The first round pays for whatever the first session sets up once.
     try round()
     let before = Int(mstats().bytes_used)
-    for _ in 0..<100 {
+    for _ in 0..<1000 {
         try round()
     }
     let grown = Int(mstats().bytes_used) - before
 
-    #expect(grown < 1 << 20, "the heap grew by \(grown) bytes over 100 sessions")
+    #expect(grown < 8 << 20, "the heap grew by \(grown) bytes over 1000 sessions")
 }

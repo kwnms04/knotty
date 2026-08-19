@@ -37,6 +37,13 @@ let package = Package(
             // assembly script owns this file.
             exclude: ["Shaders.metal"]
         ),
-        .testTarget(name: "KnottyTests", dependencies: ["KnottySession"]),
+        .testTarget(
+            name: "KnottyTests",
+            dependencies: ["KnottySession", "KnottyRender"],
+            // The renderer goldens are read by path, the way the recordings
+            // they are made from are. SwiftPM would otherwise ask to be told
+            // what they are.
+            exclude: ["goldens"]
+        ),
     ]
 )

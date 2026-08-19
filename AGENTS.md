@@ -70,6 +70,22 @@ exit restores the primary screen and leaves the golden blank.
 captured, because no application rings the bell, copies to the clipboard,
 queries its title and opens a synchronized output block in one run.
 
+## Renderer goldens
+
+`App/Tests/KnottyTests/goldens` holds what the renderer draws those same
+recordings as: a rectangle and a colour for every cell, a rectangle for the
+cursor, and for every glyph which one it is, where it sits and what tints it.
+`swift test --package-path App -c release` checks them; only
+`KNOTTY_UPDATE_RENDER_GOLDENS=1 swift test --package-path App -c release`
+writes them. Its own variable and not the harness's, so that rewriting a
+screen cannot quietly rewrite a drawing too.
+
+Cell metrics are injected as constants and atlas coordinates are left out of
+the comparison, which is what lets the files say the same thing on a runner
+and on a development machine: neither a font's raster nor its advance is
+promised across macOS versions. What is left is every judgement the renderer
+makes.
+
 ## Fuzzer
 
 `fuzz/` holds one libFuzzer target, `feed`, which rounds a detached session

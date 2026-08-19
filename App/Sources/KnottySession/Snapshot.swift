@@ -14,6 +14,58 @@ public typealias Row = KtRow
 /// Where the cursor is and how it looks.
 public typealias Cursor = KtCursor
 
+/// A colour, already resolved out of the palette.
+public typealias Rgb = KtRgb
+
+/// What the cursor looks like.
+public enum CursorShape {
+    /// A filled block over the cell.
+    case block
+    /// A vertical bar before the cell.
+    case bar
+    /// A line under the cell.
+    case underline
+    /// An outlined block, drawn when the terminal is not focused.
+    case blockHollow
+    /// A shape this version of the engine knows and knotty does not.
+    case unknown
+}
+
+extension Cursor {
+    /// Which shape to draw, named rather than numbered.
+    public var drawnShape: CursorShape {
+        switch shape {
+        case UInt8(KT_CURSOR_SHAPE_BLOCK.rawValue): .block
+        case UInt8(KT_CURSOR_SHAPE_BAR.rawValue): .bar
+        case UInt8(KT_CURSOR_SHAPE_UNDERLINE.rawValue): .underline
+        case UInt8(KT_CURSOR_SHAPE_BLOCK_HOLLOW.rawValue): .blockHollow
+        default: .unknown
+        }
+    }
+}
+
+// The attributes a drawer reads. Each is one bit of the cell's set, named
+// here because this is the only target that may see what the header numbers
+// them — and named one at a time because a drawer asks about one at a time.
+extension Cell {
+    /// SGR 7: the cell asked for its colours the other way round. The
+    /// palette is resolved by the time a cell crosses, but this is not.
+    public var isInverse: Bool {
+        attributes & UInt16(KT_ATTRIBUTE_INVERSE.rawValue) != 0
+    }
+
+    /// SGR 8: the cell's text is concealed. The cell still has its colours.
+    public var isInvisible: Bool {
+        attributes & UInt16(KT_ATTRIBUTE_INVISIBLE.rawValue) != 0
+    }
+
+    /// The cell's `codepoint` is an index into the snapshot's grapheme table
+    /// rather than a codepoint.
+    public var isOverflow: Bool {
+        attributes & UInt16(KT_ATTRIBUTE_OVERFLOW.rawValue) != 0
+    }
+}
+
 /// Whether a session has a child and what has become of it.
 ///
 /// The exit code rides on the one case it means anything for, which is what
