@@ -21,7 +21,7 @@ KnottyRender   스냅샷+메트릭 → 인스턴스 버퍼·아틀라스 갱신 
 knotty         AppKit, Metal 인코딩·드로우, 소유 트리
 ```
 
-- `TerminalView`가 FFI를 직접 부를 수 없다는 [3절](#3--ownership-tree)의 계약과, 렌더러가 순수 함수라는 [R9](04-renderer.md#r9--pure-function)의 계약이 여기서 컴파일 오류가 됩니다.
+- `TerminalView`가 FFI를 직접 부를 수 없다는 [3절](#3--ownership-tree)의 계약과, 렌더러가 순수 함수라는 [R9](04-renderer.md#r9--pure-function)의 계약이 여기서 빌드 실패가 됩니다. 집행하는 것은 타깃 그래프가 아니라 조립 스크립트입니다. cf. [0015](adr/0015-boundary-check-in-the-script.md)
 - 렌더러 골든은 GPU 없이 `swift test`로 돕니다. detached 세션([0008](adr/0008-detached-session-public.md))이 공개 ABI이므로 Rust 하네스와 같은 녹화 파일을 그대로 먹입니다.
 
 ## 3 — One session, one window

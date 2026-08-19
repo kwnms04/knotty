@@ -2,7 +2,7 @@
 status: accepted
 ---
 
-# Swift 쪽은 SwiftPM 하나로 짓고, 경계는 타깃이 강제한다
+# Swift 쪽은 SwiftPM 하나로 짓고, 경계는 타깃으로 나눈다
 
 `App/Package.swift`가 Swift 쪽의 유일한 빌드 정의입니다. `.xcodeproj`는 두지
 않고, `.app` 번들과 `default.metallib`과 ad-hoc 서명은 조립 스크립트가 만듭니다.
@@ -21,10 +21,14 @@ status: accepted
 
 타깃 경계를 넷으로 쪼갠 이유는 [05-swift-app 4절](../05-swift-app.md#4--ownership-tree)이
 쓴 것과 같습니다 — "규율이 아니라 **구조**". Swift에서 그 구조를 만드는 수단이
-타깃 의존 그래프입니다. `KnottyRender`가 `CKnotty`를 의존에 넣지 않으면
-`import CKnotty`가 컴파일 오류이고, 그래서 렌더러 안에서 `kt_session_write`를
-부르는 코드가 존재할 수 없습니다. `TerminalView`가 FFI를 직접 부르지 않는다는
-계약도 같은 방식으로 검사됩니다.
+타깃 의존 그래프입니다. 렌더러 안에서 `kt_session_write`를 부르는 코드도,
+`TerminalView`가 FFI를 직접 부르는 코드도, 그 타깃이 의존에 적지 않은 모듈을
+들여와야 존재할 수 있습니다.
+
+**단, 그 import를 막는 것은 그래프가 아닙니다.** M2에서 확인했습니다 — AppKit은
+SDK 모듈이라 어디서든 들어오고, systemLibrary의 모듈 맵은 전이하므로
+`import CKnotty`도 어디서든 컴파일됩니다. 경계 넷은 그대로 두고 집행만 조립
+스크립트로 옮겼습니다. cf. [0015](0015-boundary-check-in-the-script.md)
 
 Xcode가 거저 주던 것 — 번들 레이아웃, 셰이더 컴파일, 서명 — 은 스크립트 몇
 줄로 되삽니다. 셰이더는 확인하고 결정했습니다: SwiftPM은 `.metal`을
