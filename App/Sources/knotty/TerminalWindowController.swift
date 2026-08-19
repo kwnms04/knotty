@@ -37,15 +37,20 @@ final class TerminalWindowController: NSWindowController {
         // ask, so a window that opens on a display of another scale is one
         // whose cells were snapped to the wrong pixels. Following the window
         // instead means re-measuring and resizing, which is the resize path M2
-        // leaves out — so this stands until something draws. cf. #36.
-        let scale = NSScreen.main?.backingScaleFactor ?? 2
-        let metrics = CellMetrics.system(pointSize: pointSize, scale: Double(scale))
-        let content = NSSize(
-            width: Double(Int32(columns) * metrics.width) / Double(scale),
-            height: Double(Int32(rows) * metrics.height) / Double(scale)
+        // leaves out.
+        let scale = Double(NSScreen.main?.backingScaleFactor ?? 2)
+        let metrics = CellMetrics.system(pointSize: pointSize, scale: scale)
+        // The grid in device pixels is what the renderer places into and what
+        // the drawable is sized to; the window is that in points.
+        let pixels = NSSize(
+            width: Double(Int32(columns) * metrics.width),
+            height: Double(Int32(rows) * metrics.height)
         )
+        let content = NSSize(width: pixels.width / scale, height: pixels.height / scale)
 
-        let host = try SessionHost(columns: columns, rows: rows, scrollback: scrollback)
+        let host = try SessionHost(
+            columns: columns, rows: rows, scrollback: scrollback, metrics: metrics
+        )
 
         // Resizable is left out of the style rather than taken away later: a
         // window that proves the pipeline runs does not offer what the
@@ -57,7 +62,9 @@ final class TerminalWindowController: NSWindowController {
             defer: false
         )
         window.title = "knotty"
-        window.contentView = try TerminalView(host: host)
+        window.contentView = try TerminalView(
+            host: host, metrics: metrics, pixels: pixels, scale: scale
+        )
         window.center()
 
         let controller = TerminalWindowController(window: window)

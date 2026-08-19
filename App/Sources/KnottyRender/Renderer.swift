@@ -125,6 +125,12 @@ public final class Renderer {
     /// way it runs.
     private let cursorStroke: Int32
 
+    /// A page side, in device pixels. What an atlas coordinate is measured
+    /// against, and so what an uploader needs to make a texture the size of
+    /// the page the renderer packs into. Of the type and not of an instance:
+    /// a page is the same size whichever renderer is filling one.
+    public static var atlasSide: Int32 { Atlas.side }
+
     public init(metrics: CellMetrics) {
         self.metrics = metrics
         atlas = Atlas(metrics: metrics)

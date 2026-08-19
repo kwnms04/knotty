@@ -36,7 +36,9 @@ knotty         AppKit, Metal 인코딩·드로우, 소유 트리
 AppDelegate (설정 스토어, 세션 레지스트리)
 └─ TerminalWindowController (창마다)
    ├─ SessionHost   ← 세션 핸들을 만지는 유일한 객체
-   │                  (이벤트 드레인, 스냅샷 수령·보관)
+   │                  (이벤트 드레인, 스냅샷 수령, 렌더러 소유)
+   │                  스냅샷은 스코프 안에서만 유효하므로, 그것을
+   │                  프레임으로 바꾸는 렌더러도 여기에 있습니다
    └─ TerminalView  ← NSView: Metal 레이어, NSTextInputClient, 제스처 해석
                       FFI 직접 호출 금지 — SessionHost에 의도 전달만
 ```
