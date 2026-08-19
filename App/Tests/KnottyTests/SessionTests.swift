@@ -121,3 +121,81 @@ private func text(of snapshot: Snapshot, row: Int) -> String {
 
     #expect(grown < 8 << 20, "the heap grew by \(grown) bytes over 1000 sessions")
 }
+
+/// A real child, and a way to be told when it has done something.
+///
+/// `/bin/echo` rather than a shell: what is under test is the session, and a
+/// child that prints one line and stops is the smallest one that makes it
+/// publish. The shell itself is looked at by eye, as M2 said it would be.
+private func spawnEcho() throws -> (session: Session, woken: DispatchSemaphore) {
+    let woken = DispatchSemaphore(value: 0)
+    let session = try Session(
+        command: ["/bin/echo", "knotty"], cols: cols, rows: rows, scrollback: scrollback
+    )
+    // Registering settles what already fell due, so a child quick enough to
+    // have finished by this line still wakes us.
+    try session.onWake { woken.signal() }
+    return (session, woken)
+}
+
+/// Take frames as the session wakes us, until one answers `read` with
+/// something or the wait runs out.
+///
+/// A child is a live thing: what it has printed by the first wake is not
+/// promised, only that what it prints arrives on some wake. Waiting on the
+/// wake rather than on the clock is what the app does too, and the deadline is
+/// long because what it is there for is a machine that stopped, not one that
+/// is busy.
+private func settle<Value>(
+    _ session: Session,
+    wokenBy woken: DispatchSemaphore,
+    reading read: (Snapshot) -> Value?
+) throws -> Value? {
+    let deadline = Date().addingTimeInterval(10)
+    while Date() < deadline {
+        guard woken.wait(timeout: .now() + 1) == .success else { continue }
+        if let taken = try session.withSnapshot(read), let value = taken {
+            return value
+        }
+    }
+    return nil
+}
+
+/// The whole of the beat the app runs on, one storey down from the window:
+/// a real child prints, the session wakes, and the screen the wake was about
+/// says what the child printed.
+@Test func aChildsOutputWakesTheSessionAndLandsOnTheScreen() throws {
+    let (session, woken) = try spawnEcho()
+
+    let top = try settle(session, wokenBy: woken) { snapshot -> String? in
+        let line = text(of: snapshot, row: 0).trimmingCharacters(in: .whitespaces)
+        return line.isEmpty ? nil : line
+    }
+
+    #expect(top == "knotty", "the top row came back as \(top ?? "no frame at all")")
+}
+
+/// The child's end reaches the app as part of a frame, which is the reading
+/// that cannot be dropped.
+@Test func theFrameSaysTheChildIsGone() throws {
+    let (session, woken) = try spawnEcho()
+
+    let state = try settle(session, wokenBy: woken) { snapshot -> ChildState? in
+        snapshot.childState == .running ? nil : snapshot.childState
+    }
+
+    #expect(
+        state == ChildState.exited(code: 0),
+        "the child came back as \(state.map(String.init(describing:)) ?? "still running")"
+    )
+}
+
+/// The shell comes from the user record. An app the window server started
+/// has no environment worth reading, and `chsh` writes to the record.
+@Test func theLoginShellIsAnExecutableTheUserRecordNames() {
+    #expect(LoginShell.path.hasPrefix("/"))
+    #expect(FileManager.default.isExecutableFile(atPath: LoginShell.path))
+    // The conventional `-` before `argv[0]` is not sayable across this
+    // boundary, so the argument does that work instead.
+    #expect(LoginShell.command == [LoginShell.path, "-l"])
+}
