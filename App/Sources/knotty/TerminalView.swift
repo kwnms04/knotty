@@ -101,6 +101,10 @@ final class TerminalView: NSView {
         // Not the sRGB pair: a cell's colour is already an sRGB byte, and the
         // format that encodes on write would need it linear first.
         layer.pixelFormat = .bgra8Unorm
+        // Which says what those bytes mean. An untagged layer hands them to
+        // the display untouched, and on a wide-gamut panel that is every
+        // colour a shade louder than the one the terminal asked for.
+        layer.colorspace = CGColorSpace(name: CGColorSpace.sRGB)
         layer.contentsScale = scale
 
         // All the core's thread does is raise the flag, and it crosses to main
@@ -183,6 +187,13 @@ final class TerminalView: NSView {
             )
         }
 
+        // ponytail: a frame there was no drawable or no command buffer for is
+        // dropped, and the screen keeps the one before it until the next wake.
+        // Holding it back for the next tick is what to do instead if that is
+        // ever seen — but a tick that retries is also one that cannot pause,
+        // and a layer that is not on screen answers nil for as long as it is
+        // not on screen. Which of those costs more is not a guess to make
+        // before the milestone that has an input path to provoke it.
         guard let layer = layer as? CAMetalLayer,
             let drawable = layer.nextDrawable(),
             let commands = queue.makeCommandBuffer()
@@ -246,8 +257,11 @@ final class TerminalView: NSView {
             attachment.isBlendingEnabled = true
             attachment.sourceRGBBlendFactor = .sourceAlpha
             attachment.destinationRGBBlendFactor = .oneMinusSourceAlpha
-            attachment.sourceAlphaBlendFactor = .sourceAlpha
-            attachment.destinationAlphaBlendFactor = .oneMinusSourceAlpha
+            // The colour blends and the alpha does not: the background pass
+            // left the drawable opaque, and coverage is about what shows
+            // through the letter and not about what shows through the screen.
+            attachment.sourceAlphaBlendFactor = .zero
+            attachment.destinationAlphaBlendFactor = .one
         }
         return try device.makeRenderPipelineState(descriptor: description)
     }
