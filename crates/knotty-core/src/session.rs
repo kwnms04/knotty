@@ -938,9 +938,15 @@ mod tests {
         loop {
             match session.write(b"typed") {
                 Err(Error::Io) => break,
-                Ok(()) => assert!(
+                // A full queue is the cap doing its work rather than a
+                // refusal: nothing drains it once the child is gone, so on a
+                // busy runner it can fill before the thread winds up. Neither
+                // answer is the one waited for, and `is_finished` is checked
+                // before the queueing, so `Error::Io` still comes out of a
+                // queue with no room left. cf. `02-ffi.md`
+                Ok(()) | Err(Error::WriteQueueFull) => assert!(
                     start.elapsed() < PATIENCE,
-                    "the thread is long gone and a write still reported it was queued",
+                    "the thread is long gone and a write still did not say so",
                 ),
                 Err(other) => panic!("a live queue refused a write with {other:?}"),
             }
