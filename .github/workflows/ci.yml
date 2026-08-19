@@ -103,3 +103,21 @@ jobs:
         with:
           path: ~/.cache/zig
           key: zig-pkg-${{ matrix.runner }}-${{ hashFiles('Cargo.lock') }}-partial-${{ github.run_id }}-${{ github.run_attempt }}
+
+      # The Swift side is the app and the app is macOS, so only one of the two
+      # runners has anything to do here. The Linux job stays what it was —
+      # enforcing the portable-core constraint is the core's job.
+      #
+      # The script is what runs rather than a bare `swift build`, because the
+      # parts it owns are the parts nothing else checks: the boundary rules the
+      # target graph cannot express, and the shader compile SwiftPM skips.
+      # cf. adr/0014, adr/0015.
+      - name: Build the app
+        if: matrix.runner == 'macos-15'
+        run: ./scripts/build-app.sh
+
+      # Same configuration as the script's, so this reuses that build rather
+      # than starting a second one.
+      - name: Test the Swift side
+        if: matrix.runner == 'macos-15'
+        run: swift test --package-path App -c release
