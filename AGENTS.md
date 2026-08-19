@@ -34,6 +34,28 @@ neither has to be: `ci.yml` installs the pinned tarball onto `PATH`, and its
 Wrong Zig fails deep — a `@compileError` inside ghostty's `build.zig` wrapped
 in a build-script panic. Check `$ZIG` before blaming the crate.
 
+## The app
+
+`scripts/build-app.sh` is the whole of it: core, Swift side, shaders,
+`build/knotty.app`, ad-hoc signature. `swift build` on its own leaves a binary
+AppKit will not run properly — the window and the metallib both want a bundle —
+so the run path is the `.app` during development too. cf.
+[0014](docs/adr/0014-swiftpm-no-xcodeproj.md).
+
+The script also checks the two boundary rules SwiftPM cannot express, since
+AppKit is an SDK module and a system library's module map is transitive:
+`KnottyRender` must not reach AppKit or a GPU device, and only `KnottySession`
+may `import CKnotty`. cf.
+[0015](docs/adr/0015-boundary-check-in-the-script.md).
+
+On macOS 26 the Metal compiler is a separate download. `xcrun metal` names the
+fix itself — `xcodebuild -downloadComponent MetalToolchain`. The `macos-15`
+runner ships it.
+
+`swift test --package-path App -c release` runs the Swift tests. They link the
+same release staticlib the app does, so the script's `cargo build --release`
+has to have happened first.
+
 ## Golden harness
 
 `crates/knotty-harness` replays recorded terminal streams through the public C

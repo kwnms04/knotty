@@ -1,0 +1,6 @@
+// The header is a cbindgen artefact committed at the repository root. Naming
+// it where it lives rather than copying it in keeps one truth. cf. adr/0014.
+module CKnotty {
+    header "../../../include/knotty.h"
+    export *
+}
