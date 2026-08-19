@@ -1,0 +1,103 @@
+import CKnotty
+
+/// What the boundary answered when it refused.
+public struct SessionError: Error, CustomStringConvertible {
+    /// The call that refused.
+    public let call: StaticString
+    /// The `KtStatus` it refused with, as the header numbers them.
+    public let status: Int32
+
+    public var description: String { "\(call) returned status \(status)" }
+}
+
+/// A session, and the one object that touches its handle.
+///
+/// The boundary is written for calls that are serialized per session, and one
+/// object holding the handle is how that becomes structure rather than
+/// discipline — there is no second path to make a concurrent call from.
+/// cf. 05-swift-app 4.
+///
+/// This one has no PTY behind it: it takes its bytes from ``feed(_:)`` on the
+/// calling thread, which is what lets a test drive it without a shell, a
+/// window or a GPU. cf. adr/0008.
+public final class Session {
+    private let handle: OpaquePointer
+
+    /// Create a session with no PTY behind it.
+    public init(cols: UInt16, rows: UInt16, scrollback: Int) throws {
+        var handle: OpaquePointer?
+        let status = kt_session_new_detached(cols, rows, scrollback, &handle)
+        guard status == KT_STATUS_OK.rawValue, let handle else {
+            throw SessionError(call: "kt_session_new_detached", status: status)
+        }
+        self.handle = handle
+    }
+
+    /// Releasing the session is the one place it happens, and it is the
+    /// session that stops the thread and collects the child of one that has
+    /// them.
+    deinit {
+        kt_session_free(handle)
+    }
+
+    /// Feed bytes to the session.
+    ///
+    /// The whole buffer is processed on this thread before the call returns,
+    /// and at most one snapshot comes out of it.
+    public func feed(_ bytes: [UInt8]) throws {
+        try bytes.withUnsafeBufferPointer { bytes in
+            try check("kt_session_feed", kt_session_feed(handle, bytes.baseAddress, bytes.count))
+        }
+    }
+
+    /// Take the latest frame and lend a view of it to `body`, or answer nil
+    /// when nothing has been published since the last take.
+    ///
+    /// The view is borrowed, not copied. The core has already made the copy,
+    /// and making a second one is what would put the grid back into the cost
+    /// of taking a frame — the very thing that lets the main thread do this
+    /// work. cf. adr/0005.
+    ///
+    /// The scope is the lifetime: the pointers in the view are good until
+    /// `body` returns, and the release on the way out is the only release
+    /// there is.
+    public func withSnapshot<Value>(_ body: (Snapshot) throws -> Value) throws -> Value? {
+        var snapshot: OpaquePointer?
+        let status = kt_session_take_snapshot(handle, &snapshot)
+        if status == KT_STATUS_NO_VALUE.rawValue {
+            return nil
+        }
+        try check("kt_session_take_snapshot", status)
+        guard let snapshot else {
+            throw SessionError(call: "kt_session_take_snapshot", status: status)
+        }
+        defer { kt_snapshot_free(snapshot) }
+
+        var view = KtSnapshotView()
+        try check("kt_snapshot_view", kt_snapshot_view(snapshot, &view))
+        return try body(Snapshot(view))
+    }
+
+    /// Empty the event queue, answering how many events came out of it and
+    /// how many had been dropped for want of room since the last time.
+    ///
+    /// One call takes the whole queue, so this is the drain-until-empty the
+    /// boundary asks for on every wake. What to do with an event is a policy
+    /// M4 writes; what M2 owes is an emptied queue, and events are dropped
+    /// here rather than kept.
+    @discardableResult
+    public func drainEvents() throws -> (taken: Int, dropped: UInt64) {
+        var events = KtEvents()
+        try check("kt_session_take_events", kt_session_take_events(handle, &events))
+        return (events.len, events.dropped)
+    }
+
+    /// The header's status type is ambiguous in Swift — the C enum and the
+    /// typedef beside it arrive under one name — so what a call answers is
+    /// held as the integer it is and compared against the constants.
+    private func check(_ call: StaticString, _ status: Int32) throws {
+        guard status == KT_STATUS_OK.rawValue else {
+            throw SessionError(call: call, status: status)
+        }
+    }
+}
