@@ -74,7 +74,7 @@ final class TerminalView: NSView {
             blending: true
         )
 
-        let side = Int(host.atlasSide)
+        let side = Int(Renderer.atlasSide)
         let description = MTLTextureDescriptor.texture2DDescriptor(
             pixelFormat: .r8Unorm, width: side, height: side, mipmapped: false
         )
@@ -92,7 +92,7 @@ final class TerminalView: NSView {
 
         super.init(frame: .zero)
 
-        // Before `wantsLayer`, which is what asks for the layer below.
+        // What asks `makeBackingLayer()` for the layer configured just below.
         wantsLayer = true
         guard let layer = layer as? CAMetalLayer else {
             throw MetalMissing("a Metal layer")
@@ -101,9 +101,6 @@ final class TerminalView: NSView {
         // Not the sRGB pair: a cell's colour is already an sRGB byte, and the
         // format that encodes on write would need it linear first.
         layer.pixelFormat = .bgra8Unorm
-        // Set rather than derived from the bounds, so the drawable is the
-        // grid to the pixel and no rounding sits between a cell and a texel.
-        layer.drawableSize = pixels
         layer.contentsScale = scale
 
         // All the core's thread does is raise the flag, and it crosses to main
@@ -123,6 +120,17 @@ final class TerminalView: NSView {
     }
 
     override func makeBackingLayer() -> CALayer { CAMetalLayer() }
+
+    /// The drawable is the grid to the pixel, rather than the bounds times the
+    /// scale — so no rounding sits between a cell and a texel.
+    ///
+    /// Here and not in the initializer because a Metal layer derives that
+    /// product again on every bounds change, and the view is sized after it is
+    /// built. This is the last word on it.
+    override func layout() {
+        super.layout()
+        (layer as? CAMetalLayer)?.drawableSize = pixels
+    }
 
     /// The link belongs to the display the view is on, so it is asked for once
     /// the view knows which that is. It follows the view to another display on
@@ -204,10 +212,11 @@ final class TerminalView: NSView {
         // A pass with nothing in it is a screen with no letters on it, which
         // is what a cleared terminal is.
         guard !instances.isEmpty else { return }
-        // ponytail: a buffer per pass per frame. The command buffer holds it
-        // until the GPU is done, which is what makes this correct without a
-        // fence; a ring of buffers is what to reach for if the allocation
-        // ever shows up in a frame's cost.
+        // ponytail: two copies of every instance per pass per frame — the
+        // array above, then this buffer. What the second one buys is
+        // correctness without a fence, since the command buffer holds it until
+        // the GPU is done with it. A ring of buffers written in place is what
+        // to reach for if either copy ever shows up in a frame's cost.
         guard
             let buffer = queue.device.makeBuffer(
                 bytes: instances,

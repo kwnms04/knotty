@@ -28,10 +28,6 @@ final class SessionHost {
         renderer = Renderer(metrics: metrics)
     }
 
-    /// A page side, in device pixels — the size of the texture the frames
-    /// below place their glyphs on.
-    var atlasSide: Int32 { renderer.atlasSide }
-
     /// Register what the session calls when it has something to be taken.
     ///
     /// It runs on the core's thread and may do nothing but wake a thread of
