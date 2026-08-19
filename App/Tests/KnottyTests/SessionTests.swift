@@ -55,6 +55,13 @@ private func text(of snapshot: Snapshot, row: Int) -> String {
         // By the end of the recording the screen has scrolled: what stands on
         // the top row is the eighth line of padding.
         #expect(text(of: snapshot, row: 0).hasPrefix("pad 07 ---"))
+        // A cell crosses whole, not just its text: the golden has this one
+        // white on black with nothing else set.
+        let first = snapshot.cells[0]
+        #expect((first.foreground.r, first.foreground.g, first.foreground.b) == (255, 255, 255))
+        #expect((first.background.r, first.background.g, first.background.b) == (0, 0, 0))
+        #expect(first.attributes == 0)
+        #expect(snapshot.rowStates.count == Int(rows))
         #expect(snapshot.cursor.x == 0)
         #expect(snapshot.cursor.y == 23)
         #expect(snapshot.cursor.visible)

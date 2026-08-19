@@ -10,12 +10,13 @@ public struct SessionError: Error, CustomStringConvertible {
     public var description: String { "\(call) returned status \(status)" }
 }
 
-/// A session, and the one object that touches its handle.
+/// A session, and the only way to reach the handle behind one.
 ///
-/// The boundary is written for calls that are serialized per session, and one
-/// object holding the handle is how that becomes structure rather than
-/// discipline — there is no second path to make a concurrent call from.
-/// cf. 05-swift-app 4.
+/// The boundary is written for calls that are serialized per session. This is
+/// half of what makes that structure rather than discipline: the handle is
+/// private and every call on it is a method here. The other half is the app
+/// holding one of these in one place — the `SessionHost` of the ownership
+/// tree, which arrives with the window that needs it. cf. 05-swift-app 4.
 ///
 /// This one has no PTY behind it: it takes its bytes from ``feed(_:)`` on the
 /// calling thread, which is what lets a test drive it without a shell, a
@@ -44,6 +45,11 @@ public final class Session {
     ///
     /// The whole buffer is processed on this thread before the call returns,
     /// and at most one snapshot comes out of it.
+    ///
+    /// A writer queue too full to hold what the terminal answered comes back
+    /// as a refusal, the way it does for the Rust harness. The frame is
+    /// published either way: what the child missed hearing does not make the
+    /// screen wrong, and the next take still has it.
     public func feed(_ bytes: [UInt8]) throws {
         try bytes.withUnsafeBufferPointer { bytes in
             try check("kt_session_feed", kt_session_feed(handle, bytes.baseAddress, bytes.count))
@@ -68,8 +74,10 @@ public final class Session {
             return nil
         }
         try check("kt_session_take_snapshot", status)
+        // A status of OK is the boundary promising an owned handle. Nothing
+        // good comes of reading a frame that is not there.
         guard let snapshot else {
-            throw SessionError(call: "kt_session_take_snapshot", status: status)
+            preconditionFailure("kt_session_take_snapshot succeeded with no snapshot")
         }
         defer { kt_snapshot_free(snapshot) }
 

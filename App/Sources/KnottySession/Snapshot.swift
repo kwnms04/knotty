@@ -47,7 +47,16 @@ public enum SessionState {
 /// ``Session/withSnapshot(_:)`` call that opened the view and not a moment
 /// longer, so anything that has to outlive the frame — the title, the working
 /// directory — is copied out by the consumer. That copy is what the
-/// boundary's lending contract asks for.
+/// boundary's lending contract asks for. The scope is what a consumer is
+/// given to respect, not yet something the compiler holds it to: the type
+/// that would say so to the compiler needs a language feature still behind an
+/// experimental flag.
+///
+/// What a frame also carries and this view does not yet lift out — the
+/// two-level dirty, the grapheme table, whether a selection exists — is what
+/// M2 has no reader for. The renderer redraws whole frames, draws ASCII, and
+/// has no selection to draw; each of those arrives with the reader that needs
+/// it.
 public struct Snapshot {
     /// Viewport width in cells.
     public let cols: UInt16
