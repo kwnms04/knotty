@@ -1,0 +1,58 @@
+name: Flake repro
+
+# Temporary. Runs the Linux side of #40 in a loop so the flake can be seen
+# rather than guessed at. Deleted before the fix merges.
+on:
+  workflow_dispatch:
+    inputs:
+      rounds:
+        description: How many times to run the core lib suite
+        default: '30'
+
+env:
+  CARGO_TERM_COLOR: always
+  ZIG_VERSION: 0.15.2
+
+jobs:
+  soak:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Zig
+        run: |
+          set -euo pipefail
+          zig_dir="zig-x86_64-linux-${ZIG_VERSION}"
+          curl -fsSL "https://ziglang.org/download/${ZIG_VERSION}/${zig_dir}.tar.xz" \
+            | tar -xJ
+          echo "${PWD}/${zig_dir}" >> "${GITHUB_PATH}"
+
+      - name: Restore Zig packages
+        uses: actions/cache/restore@v4
+        with:
+          key: zig-pkg-ubuntu-latest-${{ hashFiles('Cargo.lock') }}
+          restore-keys: zig-pkg-ubuntu-latest-
+          path: ~/.cache/zig
+
+      - run: cargo test -p knotty-core --lib --no-run
+
+      # The suite runs as CI runs it — every test in parallel across the
+      # runner's cores — because the contention under suspicion is the test
+      # against its own I/O thread. `nproc` is printed since that count is
+      # half of what the theory rests on.
+      - name: Soak
+        run: |
+          set -uo pipefail
+          nproc
+          failed=0
+          for i in $(seq 1 ${{ inputs.rounds }}); do
+            start=$(date +%s%N)
+            if ! cargo test -p knotty-core --lib -- --test-threads="$(nproc)" > round.log 2>&1; then
+              failed=$((failed + 1))
+              echo "round $i FAILED"
+              grep -E "FAILED|panicked at" round.log || true
+            fi
+            echo "round $i: $(( ($(date +%s%N) - start) / 1000000 ))ms"
+          done
+          echo "failed $failed of ${{ inputs.rounds }} rounds"
+          test "$failed" -eq 0
