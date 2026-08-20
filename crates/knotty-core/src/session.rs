@@ -655,6 +655,7 @@ impl Drop for PtySession {
 mod tests {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+    use std::thread;
     use std::time::Instant;
 
     use super::{Debt, Duration, PtySession, SYNC_TIMEOUT, Session, wind_up};
@@ -920,7 +921,9 @@ mod tests {
     }
 
     /// How long the thread is given to wind up before it counts as one that
-    /// never does.
+    /// never does. A child that exits at once and a thread that notices take
+    /// a millisecond between them, so what the rest of this is slack for is a
+    /// runner where the thread waits its turn behind every other test.
     const PATIENCE: Duration = Duration::from_secs(10);
 
     /// The thread is the only thing that drains the queue, so bytes queued
@@ -932,8 +935,8 @@ mod tests {
         let session = PtySession::new(b"/bin/sh", &[b"-c".to_vec(), b"exit 0".to_vec()], 4, 1, 0)
             .expect("a session whose child ends at once");
 
-        // Spun on rather than slept through: what is waited for is the thread
-        // winding up, and it has no telling of its own.
+        // Polled: what is waited for is the thread winding up, and it has no
+        // telling of its own.
         let start = Instant::now();
         loop {
             match session.write(b"typed") {
@@ -944,10 +947,18 @@ mod tests {
                 // answer is the one waited for, and `is_finished` is checked
                 // before the queueing, so `Error::Io` still comes out of a
                 // queue with no room left. cf. `02-ffi.md`
-                Ok(()) | Err(Error::WriteQueueFull) => assert!(
-                    start.elapsed() < PATIENCE,
-                    "the thread is long gone and a write still did not say so",
-                ),
+                Ok(()) | Err(Error::WriteQueueFull) => {
+                    assert!(
+                        start.elapsed() < PATIENCE,
+                        "the thread is long gone and a write still did not say so",
+                    );
+                    // Slept through rather than spun on. The thread getting to
+                    // run is what ends this wait, so a wait that holds a core
+                    // is one competing with its own answer — and on a runner
+                    // with few cores and the rest of the suite alongside, that
+                    // is a race the thread lost. cf. `kwnms04/knotty#40`
+                    thread::sleep(Duration::from_millis(1));
+                }
                 Err(other) => panic!("a live queue refused a write with {other:?}"),
             }
         }
