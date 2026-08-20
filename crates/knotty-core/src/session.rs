@@ -935,8 +935,8 @@ mod tests {
         let session = PtySession::new(b"/bin/sh", &[b"-c".to_vec(), b"exit 0".to_vec()], 4, 1, 0)
             .expect("a session whose child ends at once");
 
-        // Polled rather than joined: what is waited for is the thread winding
-        // up, and it has no telling of its own.
+        // Polled: what is waited for is the thread winding up, and it has no
+        // telling of its own.
         let start = Instant::now();
         loop {
             match session.write(b"typed") {
@@ -956,7 +956,7 @@ mod tests {
                     // run is what ends this wait, so a wait that holds a core
                     // is one competing with its own answer — and on a runner
                     // with few cores and the rest of the suite alongside, that
-                    // is a race the thread lost. cf. #40
+                    // is a race the thread lost. cf. `kwnms04/knotty#40`
                     thread::sleep(Duration::from_millis(1));
                 }
                 Err(other) => panic!("a live queue refused a write with {other:?}"),
