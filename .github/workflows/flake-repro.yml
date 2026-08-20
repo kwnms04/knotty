@@ -3,11 +3,8 @@ name: Flake repro
 # Temporary. Runs the Linux side of #40 in a loop so the flake can be seen
 # rather than guessed at. Deleted before the fix merges.
 on:
-  workflow_dispatch:
-    inputs:
-      rounds:
-        description: How many times to run the core lib suite
-        default: '30'
+  push:
+    branches: [fix/wait-that-starves-the-thread]
 
 env:
   CARGO_TERM_COLOR: always
@@ -45,7 +42,7 @@ jobs:
           set -uo pipefail
           nproc
           failed=0
-          for i in $(seq 1 ${{ inputs.rounds }}); do
+          for i in $(seq 1 30); do
             start=$(date +%s%N)
             if ! cargo test -p knotty-core --lib -- --test-threads="$(nproc)" > round.log 2>&1; then
               failed=$((failed + 1))
@@ -54,5 +51,5 @@ jobs:
             fi
             echo "round $i: $(( ($(date +%s%N) - start) / 1000000 ))ms"
           done
-          echo "failed $failed of ${{ inputs.rounds }} rounds"
+          echo "failed $failed of 30 rounds"
           test "$failed" -eq 0
