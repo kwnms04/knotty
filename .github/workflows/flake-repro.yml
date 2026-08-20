@@ -42,7 +42,7 @@ jobs:
           set -uo pipefail
           nproc
           failed=0
-          for i in $(seq 1 30); do
+          for i in $(seq 1 200); do
             start=$(date +%s%N)
             if ! cargo test -p knotty-core --lib -- --test-threads="$(nproc)" > round.log 2>&1; then
               failed=$((failed + 1))
@@ -51,5 +51,5 @@ jobs:
             fi
             echo "round $i: $(( ($(date +%s%N) - start) / 1000000 ))ms"
           done
-          echo "failed $failed of 30 rounds"
+          echo "failed $failed of 200 rounds"
           test "$failed" -eq 0
