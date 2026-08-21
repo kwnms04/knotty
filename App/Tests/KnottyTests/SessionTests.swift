@@ -158,6 +158,14 @@ private func settle<Value>(
             return value
         }
     }
+    // The clock ran out. A bare `nil` says only that nothing answered, and a
+    // child that was slow and one whose output was lost look the same from
+    // there — so what the screen held at the deadline goes in the record.
+    let held = try session.withSnapshot { snapshot in
+        "child \(String(describing: snapshot.childState)), "
+            + "top row \(text(of: snapshot, row: 0).trimmingCharacters(in: .whitespaces).debugDescription)"
+    }
+    Issue.record("settle ran out of patience: \(held ?? "no frame was ever published")")
     return nil
 }
 

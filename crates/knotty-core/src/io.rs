@@ -52,10 +52,13 @@ const READ_CHUNK: usize = 64 * 1024;
 
 /// What a wait found ready.
 pub struct Ready {
-    /// The child wrote something, or let go of the terminal.
+    /// The child wrote something.
     pub readable: bool,
     /// The terminal has room for more.
     pub writable: bool,
+    /// The child and everything it started have let go of the lifeline, so
+    /// nothing more will ever be written to the terminal.
+    pub ended: bool,
 }
 
 /// What one read off the terminal produced.
@@ -73,9 +76,32 @@ pub struct Pty {
     /// Our end. Non-blocking, so that a child which has stopped reading can
     /// never hold the loop inside a write while its own output goes untaken.
     terminal: OwnedFd,
+    /// The child's end, held open for as long as the session lasts.
+    ///
+    /// Not the child's copy — that one is its three standard streams. This is
+    /// ours, and holding it is what keeps the child's last output readable.
+    /// macOS tears the terminal down when the session leader exits: it waits
+    /// about half a second for our end to drain what is queued and then
+    /// throws the rest away, so a child that prints once and stops loses its
+    /// only line to a thread that was slow to be scheduled. A far end that is
+    /// still open is a terminal that is not torn down, and the queue stays
+    /// where it is until we come for it. cf. `kwnms04/knotty#43`
+    ///
+    /// It costs the end-of-file that used to be how the child's exit
+    /// arrived — hence the lifeline below.
+    _far: OwnedFd,
     /// Read end of the nudge pipe, waited on beside the terminal so that
     /// input from another thread cuts the wait short.
     nudge: Arc<OwnedFd>,
+    /// Read end of a pipe whose only other end is the child's.
+    ///
+    /// Nothing is ever written down it. What it is for is closing: the write
+    /// end is opened in the child between fork and exec and inherited by
+    /// everything the child starts, so the read end reports a hang-up exactly
+    /// when the last of them is gone — which is the same moment the terminal
+    /// used to report one, and the moment after which no more output can
+    /// arrive.
+    lifeline: OwnedFd,
     /// Held so the child stays ours to wait on, and to collect on the way out.
     ///
     /// **Declared last on purpose.** Fields are dropped in declaration order,
@@ -195,6 +221,15 @@ impl Pty {
             OFlags::RDWR | OFlags::NOCTTY,
             Mode::empty(),
         )?;
+        // The child's end of the lifeline is opened between fork and exec, so
+        // the parent's copy stays close-on-exec and no other thread's spawn
+        // can inherit it and hold it open past our own child's end.
+        let (lifeline, held_by_child) = rustix::pipe::pipe()?;
+        ioctl_fioclex(&lifeline)?;
+        ioctl_fioclex(&held_by_child)?;
+        ioctl_fionbio(&lifeline, true)?;
+        let held_raw = held_by_child.as_raw_fd();
+
         let far_raw = far.as_raw_fd();
         // The child gets the far end as its three standard streams and wants
         // it as its controlling terminal, neither of which needs this fourth
@@ -237,19 +272,26 @@ impl Pty {
                 // went away.
                 rustix::process::setsid()?;
                 rustix::process::ioctl_tiocsctty(BorrowedFd::borrow_raw(far_raw))?;
+                // Duplicated rather than inherited: the parent's copy is
+                // close-on-exec and a duplicate is not, so this is the one
+                // handle on the lifeline that survives into the program.
+                // Never closed here — outliving this call is the whole job,
+                // and the exec that follows leaves it exactly where it is.
+                std::mem::forget(rustix::io::dup(BorrowedFd::borrow_raw(held_raw))?);
                 Ok(())
             });
         }
         let child = command.spawn()?;
-        // The far end must stop being ours, or the terminal never reaches its
-        // end when the child lets go — and an end nobody sees is an exit
-        // nobody hears about.
-        drop(far);
+        // The child has its own copy now, and ours must go or the read end
+        // never reports the hang-up that says the child is gone.
+        drop(held_by_child);
 
         Ok((
             Self {
                 terminal,
+                _far: far,
                 nudge: Arc::clone(&nudge),
+                lifeline,
                 child: Kept { process: child },
             },
             Waker {
@@ -276,6 +318,9 @@ impl Pty {
         let mut waiting = [
             PollFd::new(&self.terminal, wanted),
             PollFd::new(&self.nudge, PollFlags::IN),
+            // No events asked for: a hang-up is reported whether or not it
+            // was, and a hang-up is the only thing this pipe ever says.
+            PollFd::new(&self.lifeline, PollFlags::empty()),
         ];
         let deadline = no_longer_than.map(|left| Timespec {
             tv_sec: left.as_secs() as _,
@@ -298,11 +343,11 @@ impl Pty {
 
         let ready = waiting[0].revents();
         Ok(Ready {
-            // A hang-up is the child's exit arriving as readiness. It counts
-            // as readable because the read that follows is what turns it into
-            // an end.
             readable: ready.intersects(PollFlags::IN | PollFlags::HUP),
             writable: ready.contains(PollFlags::OUT),
+            ended: waiting[2]
+                .revents()
+                .intersects(PollFlags::HUP | PollFlags::ERR),
         })
     }
 
@@ -380,6 +425,8 @@ pub(crate) fn run(
         if ready.writable {
             writes.drain_with(|bytes| terminal.write(bytes))?;
         }
+
+        let mut ended = ready.ended;
         if ready.readable {
             match terminal.read(&mut arrived)? {
                 Chunk::Bytes(read) => match session.feed(&arrived[..read]) {
@@ -390,25 +437,35 @@ pub(crate) fn run(
                     Err(error) => return Err(error),
                 },
                 Chunk::Empty => {}
-                // The end of the terminal is the end of the child, and it is
-                // seen here rather than watched for elsewhere — so the exit is
-                // committed after the last byte was fed and published, with no
-                // second mechanism to order the two. cf. `03-core.md` C6
-                // A reap that fails leaves no code to write down, and the
-                // round it fails in ends the session as broken — which is the
-                // state an app acts on ahead of anything the child did.
-                Chunk::Ended => {
-                    // The one collection that keeps our end open while it
-                    // waits, and it may only because an end here means every
-                    // handle on the far side is closed — a child holding
-                    // output back cannot have got us this far. A reading that
-                    // called an end any sooner would put this wait back where
-                    // [`Kept`] says it must not be.
-                    let code = terminal.child.kill_and_reap()?;
-                    child_exit.store(code, Ordering::Relaxed);
-                    return session.note_child_exit(code);
+                Chunk::Ended => ended = true,
+            }
+        }
+
+        // The end of the child is seen here rather than watched for
+        // elsewhere — so the exit is committed after the last byte was fed
+        // and published, with no second mechanism to order the two. cf.
+        // `03-core.md` C6
+        //
+        // What says so is the lifeline rather than the terminal: the far end
+        // is ours and stays open, which is what keeps a short-lived child's
+        // output from being swept away before this thread gets to it. So the
+        // terminal is drained dry here instead. Nothing can arrive behind
+        // this — every writer is gone, which is what the hang-up meant — and
+        // nothing has been discarded, which is what holding the far end
+        // bought. cf. `kwnms04/knotty#43`
+        if ended {
+            while let Chunk::Bytes(read) = terminal.read(&mut arrived)? {
+                match session.feed(&arrived[..read]) {
+                    Ok(()) | Err(Error::WriteQueueFull) => {}
+                    Err(error) => return Err(error),
                 }
             }
+            // A reap that fails leaves no code to write down, and the round it
+            // fails in ends the session as broken — which is the state an app
+            // acts on ahead of anything the child did.
+            let code = terminal.child.kill_and_reap()?;
+            child_exit.store(code, Ordering::Relaxed);
+            return session.note_child_exit(code);
         }
     }
 }
@@ -417,9 +474,9 @@ pub(crate) fn run(
 mod tests {
     use std::sync::mpsc;
     use std::thread;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
-    use super::Pty;
+    use super::{Chunk, Pty};
 
     /// How long a release is given before it counts as one that never ends.
     const PATIENCE: Duration = Duration::from_secs(10);
@@ -466,5 +523,45 @@ mod tests {
         waiting
             .recv_timeout(PATIENCE)
             .expect("the child was put down and collected");
+    }
+
+    /// Long enough to be on the far side of the window macOS leaves before it
+    /// throws a dead child's output away — and the very stall a loaded runner
+    /// puts on a thread that has only just been started.
+    const LATER_THAN_THE_TEARDOWN: Duration = Duration::from_secs(2);
+
+    /// A child that prints once and stops keeps what it printed until it is
+    /// read.
+    ///
+    /// The other place in this crate that starts a real child, because what
+    /// it guards is below the parser too: macOS tears a terminal down once
+    /// the last far-end handle is closed, waiting about six-tenths of a
+    /// second for our end to drain what is queued and then throwing the rest
+    /// away. A thread slow to be scheduled used to come back to an empty
+    /// terminal and no way of telling that from a child which printed
+    /// nothing. cf. `kwnms04/knotty#43`
+    #[test]
+    fn a_child_that_prints_once_and_stops_keeps_its_output() {
+        let (terminal, _waker) = Pty::spawn(b"/bin/echo", &[b"knotty".to_vec()], 80, 24)
+            .expect("a terminal with a child on it");
+
+        thread::sleep(LATER_THAN_THE_TEARDOWN);
+
+        let mut arrived = [0u8; 64];
+        let mut seen = Vec::new();
+        let deadline = Instant::now() + PATIENCE;
+        while !seen.contains(&b'\n') && Instant::now() < deadline {
+            match terminal.read(&mut arrived).expect("a read") {
+                Chunk::Bytes(read) => seen.extend_from_slice(&arrived[..read]),
+                Chunk::Empty => thread::sleep(Duration::from_millis(10)),
+                Chunk::Ended => break,
+            }
+        }
+
+        assert_eq!(
+            String::from_utf8_lossy(&seen).trim_end(),
+            "knotty",
+            "the child's only line went missing"
+        );
     }
 }
