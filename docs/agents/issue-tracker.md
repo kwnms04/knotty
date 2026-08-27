@@ -10,7 +10,7 @@ Specs live as GitHub issues on `kwnms04/knotty`; implementation tickets live as 
 - A ticket is **done when its acceptance criteria are ticked** in the file, in the commit that implements it. A ticket is workable when every ticket its `Blocked by:` names is done.
 - Triage state is a **label** (see `triage-labels.md`), not a line in the body. Labels are for issues; a ticket file needs none, since tickets are agent-grabbable by construction.
 - Conversation is issue comments.
-- Every issue carries a **milestone** — the M0…M5 axis. Create a milestone when its work starts, not upfront: `docs/08-milestones.md` is the roadmap and the milestone is only the grouping, so mirroring all six here would just be a second roadmap to keep in sync.
+- **GitHub milestones are unused.** The M0…M5 axis is `docs/08-milestones.md`, and which milestone a ticket belongs to is the `.scratch/<feature-slug>/` directory it sits in. Once tickets left the tracker a milestone grouped one spec issue, which is what a spec issue already is.
 
 Do not restate a label or a milestone's exit criteria inside the issue body — the tracker owns the first and the chapter owns the second, and a copy in the text goes stale.
 
@@ -22,13 +22,7 @@ Do not restate a label or a milestone's exit criteria inside the issue body — 
 
 ```
 gh issue create -R kwnms04/knotty --title "<title>" --body-file <path> \
-  --label ready-for-agent --milestone "<milestone title>"
-```
-
-Create the milestone first if this is the first issue in it:
-
-```
-gh api repos/kwnms04/knotty/milestones -f title="<title>" -f description="<one line + spec link>"
+  --label ready-for-agent
 ```
 
 **Tickets** become files. One per ticket under `.scratch/<feature-slug>/issues/<NN>-<slug>.md`, numbered from `01` in dependency order, each carrying its `Blocked by:` line. Never a single combined file. Commit them naming the spec's issue number.
@@ -90,5 +84,7 @@ M0 ran on local markdown — parent spec and tickets under `.scratch/m0-headless
 M1 (#11–#29) and M2 (#32–#36) ran their tickets as sub-issues, and M0's files were deleted when it migrated. **Tickets are files again.** Across those 25 ticket issues not one acceptance-criteria checkbox was ever ticked and every one carried the same `ready-for-agent` label, so the only issue feature they used was the closed bit — paid for with two GraphQL mutations each and a network round trip per read.
 
 The M0–M2 tickets were brought back as files under `.scratch/`, their acceptance criteria ticked to record that they are done, and the migrated issues (#1–#23, #27, #29, #32–#36) deleted — a copy that answers nothing is a second place to look. Nineteen commit footers cite numbers that no longer resolve; the `Was: #NN` line in each file is what maps them back. Their milestone specs came with them, except M2's: **the spec stays an issue while its milestone is in flight**, because an open issue says so and a file cannot. #31 becomes `.scratch/m2-first-pixel/spec.md` when M2 closes.
+
+The milestones went with them. M0's grouped nothing at all after the deletion, and M1's and M2's grouped a bug report or two and one open spec — a grouping that small is read off the spec issue and the `.scratch/` directory name instead.
 
 Bug reports (#28, #38, #40, #43) stay issues. A report arrives from outside, gets triaged, and closes — that is issue-shaped work, and none of them came from `/to-tickets`.
