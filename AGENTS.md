@@ -70,6 +70,30 @@ exit restores the primary screen and leaves the golden blank.
 captured, because no application rings the bell, copies to the clipboard,
 queries its title and opens a synchronized output block in one run.
 
+A `.vts` file beside them is a **script**: a line-oriented format in which
+what the child sent and what the app did alternate, so that an encoding
+depending on a mode can be reproduced at all — the sequence that sets the mode
+arrives as output and the key read against it arrives from the app.
+
+```text
+out "\x1b[?1h"
+key ArrowUp
+key A ctrl
+key A alt consumed=alt "å"
+key Enter composing
+```
+
+What each word means is `parse`'s to say, in
+`crates/knotty-harness/src/lib.rs` — including which key names a script may
+use, since those are a list there rather than every key the header holds. An
+unknown word fails the script saying so.
+
+Scripts describe the same way recordings do and share the goldens directory,
+so nothing about checking or rewriting them differs. They run on a small grid
+rather than the recordings' 80×24: what a script is about is the bytes that
+left for the child, and a screen nobody typed onto is only there to be
+complete.
+
 ## Renderer goldens
 
 `App/Tests/KnottyTests/goldens` holds what the renderer draws those same

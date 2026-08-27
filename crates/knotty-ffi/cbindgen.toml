@@ -17,7 +17,7 @@ include = ["knotty-core"]
 
 [export]
 # Bit sets: their fields are plain integers, so no signature refers to them.
-include = ["Attribute", "RowFlag"]
+include = ["Attribute", "Modifier", "RowFlag"]
 
 [export.rename]
 Attribute = "KtAttribute"
@@ -26,6 +26,9 @@ ClipboardTarget = "KtClipboardTarget"
 Cursor = "KtCursor"
 CursorShape = "KtCursorShape"
 Dirty = "KtDirty"
+Key = "KtKey"
+KeyAction = "KtKeyAction"
+Modifier = "KtModifier"
 Rgb = "KtRgb"
 Row = "KtRow"
 RowFlag = "KtRowFlag"

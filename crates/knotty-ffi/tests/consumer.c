@@ -45,6 +45,14 @@ _Static_assert(offsetof(KtSnapshotView, child_state) == 80, "KtSnapshotView fiel
 _Static_assert(offsetof(KtSnapshotView, session_state) == 81, "KtSnapshotView fields moved");
 _Static_assert(offsetof(KtSnapshotView, child_exit_code) == 84, "KtSnapshotView fields moved");
 
+_Static_assert(sizeof(KtKeyEvent) == 32, "KtKeyEvent grew or shrank");
+_Static_assert(offsetof(KtKeyEvent, action) == 0, "KtKeyEvent fields moved");
+_Static_assert(offsetof(KtKeyEvent, key) == 4, "KtKeyEvent fields moved");
+_Static_assert(offsetof(KtKeyEvent, mods) == 8, "KtKeyEvent fields moved");
+_Static_assert(offsetof(KtKeyEvent, consumed_mods) == 10, "KtKeyEvent fields moved");
+_Static_assert(offsetof(KtKeyEvent, composing) == 12, "KtKeyEvent fields moved");
+_Static_assert(offsetof(KtKeyEvent, text) == 16, "KtKeyEvent fields moved");
+
 _Static_assert(sizeof(KtEvent) == 32, "KtEvent grew or shrank");
 _Static_assert(offsetof(KtEvent, kind) == 0, "KtEvent fields moved");
 _Static_assert(offsetof(KtEvent, clipboard_target) == 1, "KtEvent fields moved");
@@ -147,6 +155,22 @@ KtStatus kt_consumer_open_a_shell(KtSession **out) {
 /* Typing: queued for the child, never waited on. */
 KtStatus kt_consumer_type(KtSession *session, const char *keys, size_t len) {
     return kt_session_write(session, (const uint8_t *)keys, len);
+}
+
+/* A key: the physical key and what the layout made of it, with which bytes it
+ * comes to left to the core. Nothing here says what mode the terminal is in,
+ * which is the whole point — ctrl+c is the same call inside an editor and at a
+ * prompt. */
+KtStatus kt_consumer_press_ctrl_c(KtSession *session) {
+    KtKeyEvent event = {
+        .action = KT_KEY_ACTION_PRESS,
+        .key = KT_KEY_C,
+        .mods = KT_MODIFIER_CTRL,
+        .consumed_mods = 0,
+        .composing = false,
+        .text = {NULL, 0},
+    };
+    return kt_session_key(session, &event);
 }
 
 /* A wake runs on the core's thread and may do nothing but flag the consumer's

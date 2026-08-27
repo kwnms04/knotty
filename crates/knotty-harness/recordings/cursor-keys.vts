@@ -1,0 +1,11 @@
+# The same arrow key on either side of the mode that decides what it is.
+#
+# DECSET 1 is cursor key application mode, which an editor turns on and a
+# prompt does not. Nothing but this file can hold the pair: the mode arrives
+# as output and the key arrives from the app, and the branch is only real
+# when the two are in order.
+key ArrowUp
+out "\x1b[?1h"
+key ArrowUp
+out "\x1b[?1l"
+key ArrowUp

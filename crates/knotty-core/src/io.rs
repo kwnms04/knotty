@@ -23,7 +23,7 @@ use rustix::io::{Errno, ioctl_fioclex, ioctl_fionbio};
 use rustix::pty::{OpenptFlags, grantpt, openpt, ptsname, unlockpt};
 use rustix::termios::{Winsize, tcsetwinsize};
 
-use crate::session::{SelectionRange, Session};
+use crate::session::{Request, Session};
 use crate::writer::WriteQueue;
 use crate::{Error, Result};
 
@@ -398,7 +398,7 @@ impl Pty {
 pub(crate) fn run(
     session: &mut Session,
     terminal: &mut Pty,
-    selection: &Receiver<Option<SelectionRange>>,
+    requests: &Receiver<Request>,
     writes: &WriteQueue,
     child_exit: &AtomicI32,
     stopping: &AtomicBool,
@@ -408,8 +408,11 @@ pub(crate) fn run(
     loop {
         // Nothing is left waiting on the answer: the call that asked for this
         // returned as soon as the request was queued.
-        while let Ok(range) = selection.try_recv() {
-            let _ = session.set_selection(range);
+        while let Ok(request) = requests.try_recv() {
+            let _ = match request {
+                Request::Select(range) => session.set_selection(range),
+                Request::Key(event) => session.key(&event),
+            };
         }
 
         // A held-back block is waited no longer than it has left, so that the

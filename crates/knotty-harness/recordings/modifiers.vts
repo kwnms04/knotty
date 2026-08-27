@@ -1,0 +1,22 @@
+# One key under each modifier in turn.
+#
+# The text is what macOS hands over, which is why ⌃A carries none: the
+# platform gives a control character there, and the encoder derives that from
+# the key rather than being told it twice. ⌥A arrives as the character Option
+# already made, with the modifier marked as spent on it.
+#
+# ⌘A and the release encode nothing, which is the point of both lines: a
+# command key is the app's to act on and a release has nothing to say. Both
+# sit between keys that do encode something, so their silence is held in
+# place by what is on either side of it.
+
+# A prompt to type at, so the screen the golden holds is one a terminal
+# would really be showing when the keys below arrive.
+out "$ "
+
+key A "a"
+key A ctrl
+key A super "a"
+key A shift "A"
+key A release "a"
+key A alt consumed=alt "å"

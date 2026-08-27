@@ -11,12 +11,13 @@ use std::time::{Duration, Instant};
 use rustix::process::{Pid, test_kill_process};
 
 use knotty_ffi::{
-    Attribute, Cell, ClipboardTarget, Cursor, CursorShape, Dirty, KtBytes, KtChildState,
-    KtEventKind, KtEvents, KtSession, KtSessionState, KtSnapshot, KtSnapshotView, KtStatus, KtText,
-    Rgb, Row, RowFlag, SelectionRange, Underline, kt_abi_version, kt_session_feed, kt_session_free,
-    kt_session_new_detached, kt_session_new_pty, kt_session_set_selection, kt_session_set_wake,
-    kt_session_take_events, kt_session_take_snapshot, kt_session_take_writes, kt_session_write,
-    kt_snapshot_free, kt_snapshot_view,
+    Attribute, Cell, ClipboardTarget, Cursor, CursorShape, Dirty, Key, KeyAction, KtBytes,
+    KtChildState, KtEventKind, KtEvents, KtKeyEvent, KtSession, KtSessionState, KtSnapshot,
+    KtSnapshotView, KtStatus, KtText, Rgb, Row, RowFlag, SelectionRange, Underline, kt_abi_version,
+    kt_session_feed, kt_session_free, kt_session_key, kt_session_new_detached, kt_session_new_pty,
+    kt_session_set_selection, kt_session_set_wake, kt_session_take_events,
+    kt_session_take_snapshot, kt_session_take_writes, kt_session_write, kt_snapshot_free,
+    kt_snapshot_view,
 };
 
 /// Ghostty's own defaults. A change here is an upstream palette change, not a
@@ -1589,6 +1590,75 @@ fn a_child_starts_knowing_the_size_of_the_window_it_is_in() {
 
     // What `stty size` prints is rows then columns.
     wait_for(session, "9 37");
+
+    unsafe { kt_session_free(session) };
+}
+
+/// A key press with nothing held and nothing typed, which is every key the
+/// encoder answers for out of the key alone.
+fn pressed(key: Key) -> KtKeyEvent {
+    KtKeyEvent {
+        action: KeyAction::Press,
+        key,
+        mods: 0,
+        consumed_mods: 0,
+        composing: false,
+        text: KtText {
+            bytes: ptr::null(),
+            len: 0,
+        },
+    }
+}
+
+fn press(session: *mut KtSession, event: &KtKeyEvent) {
+    let status = unsafe { kt_session_key(session, event) };
+    assert_eq!(status, KtStatus::Ok);
+}
+
+/// Which bytes a key comes to is the harness's to pin, recording by
+/// recording. What is here is the pair the answer is told apart by: a key
+/// that encodes to nothing and a key that named nothing are both silent, and
+/// only one of them is a caller with a mapping to fill in.
+#[test]
+fn a_key_that_names_nothing_is_refused_and_one_that_encodes_to_nothing_is_not() {
+    let session = detached(4, 1);
+
+    // A modifier on its own is a key that really does encode to nothing.
+    press(session, &pressed(Key::ShiftLeft));
+    assert_eq!(writes(session), b"", "a bare modifier reached the child");
+
+    assert_eq!(
+        unsafe { kt_session_key(session, &pressed(Key::Unidentified)) },
+        KtStatus::UnidentifiedKey,
+    );
+    assert_eq!(writes(session), b"", "a key that named nothing was encoded");
+
+    unsafe { kt_session_free(session) };
+}
+
+/// The other half of the input path: a session with a PTY behind it encodes
+/// on a thread of its own, so a key reaching the child at all is the whole of
+/// what this asks.
+#[test]
+fn a_key_typed_into_a_pty_session_reaches_its_child() {
+    let session = pty(
+        24,
+        4,
+        &["/bin/sh", "-c", "read line; printf 'heard:%s' \"$line\""],
+    );
+
+    press(
+        session,
+        &KtKeyEvent {
+            text: KtText::from("t"),
+            ..pressed(Key::T)
+        },
+    );
+    // What Enter comes to is a carriage return, and the terminal's line
+    // discipline is what turns that into the end of a line.
+    press(session, &pressed(Key::Enter));
+
+    wait_for(session, "heard:t");
 
     unsafe { kt_session_free(session) };
 }

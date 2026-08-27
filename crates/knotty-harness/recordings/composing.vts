@@ -1,0 +1,14 @@
+# The same keys while an input method is composing.
+#
+# Nothing goes to the child until the composition ends. What the user can see
+# meanwhile is the app's own overlay, not the terminal's screen — a half-made
+# syllable in the grid could not be taken back.
+
+# A prompt to type at, so the screen the golden holds is one a terminal
+# would really be showing when the keys below arrive.
+out "$ "
+
+key A "a"
+key A composing "a"
+key Enter
+key Enter composing

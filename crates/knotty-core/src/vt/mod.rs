@@ -22,6 +22,7 @@
 #![allow(unsafe_code)]
 
 mod capture;
+mod key;
 
 use std::ffi::c_void;
 use std::mem::MaybeUninit;
@@ -29,6 +30,7 @@ use std::ptr;
 
 use libghostty_vt_sys as ffi;
 
+use crate::key::KeyEvent;
 use crate::listener::{ClipboardRefusal, Listener, Representation};
 use crate::queue::ClipboardTarget;
 use crate::session::SelectionRange;
@@ -77,6 +79,9 @@ pub struct Terminal {
     render: ffi::RenderState,
     rows: ffi::RenderStateRowIterator,
     cells: ffi::RenderStateRowCells,
+    /// The key encoder and its event, which are read against the terminal
+    /// above every time a key arrives.
+    keys: key::Keys,
     /// Owned outright rather than held in a `Box`, so that the pointer the
     /// engine keeps stays valid while the terminal around it is borrowed.
     listener: *mut Listener,
@@ -86,6 +91,9 @@ impl Terminal {
     /// Build a terminal of `cols` by `rows` with `max_scrollback` lines behind
     /// it, and wire `listener` to it.
     pub fn new(cols: u16, rows: u16, max_scrollback: usize, listener: Listener) -> Result<Self> {
+        // Made before the terminal, so that a failure here releases itself
+        // and leaves nothing else to release.
+        let keys = key::Keys::new()?;
         let options = ffi::TerminalOptions {
             cols,
             rows,
@@ -104,6 +112,7 @@ impl Terminal {
             render: ptr::null_mut(),
             rows: ptr::null_mut(),
             cells: ptr::null_mut(),
+            keys,
             listener: Box::into_raw(Box::new(listener)),
         };
         // SAFETY: as above, for each of the three handles a capture needs.
@@ -166,6 +175,15 @@ impl Terminal {
     pub fn feed(&mut self, bytes: &[u8]) {
         // SAFETY: the engine reads `len` bytes and keeps none of them.
         unsafe { ffi::ghostty_terminal_vt_write(self.raw, bytes.as_ptr(), bytes.len()) }
+    }
+
+    /// Encode a key event as the modes this terminal holds make of it.
+    ///
+    /// The answer is empty for every key that comes to nothing — a bare
+    /// modifier, a release, anything at all while an input method is
+    /// composing — which is not a failure.
+    pub fn encode_key(&mut self, event: &KeyEvent) -> Result<Vec<u8>> {
+        self.keys.encode(self.raw, event)
     }
 
     /// Whether a synchronized output block is open as of now.

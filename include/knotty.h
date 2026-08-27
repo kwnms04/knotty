@@ -74,12 +74,226 @@ enum KtStatus
    * or talking to one already started.
    */
   KT_STATUS_IO = 10,
+  /**
+   * A key event named no key. Nothing was queued for the child, and the
+   * caller has a mapping to fill in rather than a key that has no bytes:
+   * keys that encode to nothing are answered with `KT_STATUS_OK`.
+   */
+  KT_STATUS_UNIDENTIFIED_KEY = 11,
 };
 #ifndef __cplusplus
 #if __STDC_VERSION__ >= 202311L
 typedef enum KtStatus KtStatus;
 #else
 typedef int32_t KtStatus;
+#endif // __STDC_VERSION__ >= 202311L
+#endif // __cplusplus
+
+/**
+ * Which way a key moved.
+ */
+enum KtKeyAction
+#if defined(__cplusplus) || __STDC_VERSION__ >= 202311L
+  : uint8_t
+#endif // defined(__cplusplus) || __STDC_VERSION__ >= 202311L
+ {
+  /**
+   * The key came back up.
+   */
+  KT_KEY_ACTION_RELEASE = 0,
+  /**
+   * The key went down.
+   */
+  KT_KEY_ACTION_PRESS = 1,
+  /**
+   * The key is held down and the platform is repeating it.
+   */
+  KT_KEY_ACTION_REPEAT = 2,
+};
+#ifndef __cplusplus
+#if __STDC_VERSION__ >= 202311L
+typedef enum KtKeyAction KtKeyAction;
+#else
+typedef uint8_t KtKeyAction;
+#endif // __STDC_VERSION__ >= 202311L
+#endif // __cplusplus
+
+/**
+ * A physical key, named as the W3C `KeyboardEvent.code` standard names it.
+ *
+ * Layout-independent by construction: the value says where on the keyboard
+ * the key is, not what pressing it typed. The sections below are the
+ * standard's own, and the media section (§ 3.6) is left out — macOS hands an
+ * application no `keyDown` for those keys, so nothing could ever name one.
+ * cf. <https://www.w3.org/TR/uievents-code>
+ */
+enum KtKey
+#if defined(__cplusplus) || __STDC_VERSION__ >= 202311L
+  : uint32_t
+#endif // defined(__cplusplus) || __STDC_VERSION__ >= 202311L
+ {
+  /**
+   * No key this list names. A platform key that maps to nothing here
+   * arrives as this, which is a missing mapping rather than a key without
+   * a name.
+   */
+  KT_KEY_UNIDENTIFIED = 0,
+  KT_KEY_BACKQUOTE,
+  KT_KEY_BACKSLASH,
+  KT_KEY_BRACKET_LEFT,
+  KT_KEY_BRACKET_RIGHT,
+  KT_KEY_COMMA,
+  KT_KEY_DIGIT0,
+  KT_KEY_DIGIT1,
+  KT_KEY_DIGIT2,
+  KT_KEY_DIGIT3,
+  KT_KEY_DIGIT4,
+  KT_KEY_DIGIT5,
+  KT_KEY_DIGIT6,
+  KT_KEY_DIGIT7,
+  KT_KEY_DIGIT8,
+  KT_KEY_DIGIT9,
+  KT_KEY_EQUAL,
+  KT_KEY_INTL_BACKSLASH,
+  KT_KEY_INTL_RO,
+  KT_KEY_INTL_YEN,
+  KT_KEY_A,
+  KT_KEY_B,
+  KT_KEY_C,
+  KT_KEY_D,
+  KT_KEY_E,
+  KT_KEY_F,
+  KT_KEY_G,
+  KT_KEY_H,
+  KT_KEY_I,
+  KT_KEY_J,
+  KT_KEY_K,
+  KT_KEY_L,
+  KT_KEY_M,
+  KT_KEY_N,
+  KT_KEY_O,
+  KT_KEY_P,
+  KT_KEY_Q,
+  KT_KEY_R,
+  KT_KEY_S,
+  KT_KEY_T,
+  KT_KEY_U,
+  KT_KEY_V,
+  KT_KEY_W,
+  KT_KEY_X,
+  KT_KEY_Y,
+  KT_KEY_Z,
+  KT_KEY_MINUS,
+  KT_KEY_PERIOD,
+  KT_KEY_QUOTE,
+  KT_KEY_SEMICOLON,
+  KT_KEY_SLASH,
+  KT_KEY_ALT_LEFT,
+  KT_KEY_ALT_RIGHT,
+  KT_KEY_BACKSPACE,
+  KT_KEY_CAPS_LOCK,
+  KT_KEY_CONTEXT_MENU,
+  KT_KEY_CONTROL_LEFT,
+  KT_KEY_CONTROL_RIGHT,
+  KT_KEY_ENTER,
+  KT_KEY_META_LEFT,
+  KT_KEY_META_RIGHT,
+  KT_KEY_SHIFT_LEFT,
+  KT_KEY_SHIFT_RIGHT,
+  KT_KEY_SPACE,
+  KT_KEY_TAB,
+  KT_KEY_CONVERT,
+  KT_KEY_KANA_MODE,
+  KT_KEY_NON_CONVERT,
+  KT_KEY_DELETE,
+  KT_KEY_END,
+  KT_KEY_HELP,
+  KT_KEY_HOME,
+  KT_KEY_INSERT,
+  KT_KEY_PAGE_DOWN,
+  KT_KEY_PAGE_UP,
+  KT_KEY_ARROW_DOWN,
+  KT_KEY_ARROW_LEFT,
+  KT_KEY_ARROW_RIGHT,
+  KT_KEY_ARROW_UP,
+  KT_KEY_NUM_LOCK,
+  KT_KEY_NUMPAD0,
+  KT_KEY_NUMPAD1,
+  KT_KEY_NUMPAD2,
+  KT_KEY_NUMPAD3,
+  KT_KEY_NUMPAD4,
+  KT_KEY_NUMPAD5,
+  KT_KEY_NUMPAD6,
+  KT_KEY_NUMPAD7,
+  KT_KEY_NUMPAD8,
+  KT_KEY_NUMPAD9,
+  KT_KEY_NUMPAD_ADD,
+  KT_KEY_NUMPAD_BACKSPACE,
+  KT_KEY_NUMPAD_CLEAR,
+  KT_KEY_NUMPAD_CLEAR_ENTRY,
+  KT_KEY_NUMPAD_COMMA,
+  KT_KEY_NUMPAD_DECIMAL,
+  KT_KEY_NUMPAD_DIVIDE,
+  KT_KEY_NUMPAD_ENTER,
+  KT_KEY_NUMPAD_EQUAL,
+  KT_KEY_NUMPAD_MEMORY_ADD,
+  KT_KEY_NUMPAD_MEMORY_CLEAR,
+  KT_KEY_NUMPAD_MEMORY_RECALL,
+  KT_KEY_NUMPAD_MEMORY_STORE,
+  KT_KEY_NUMPAD_MEMORY_SUBTRACT,
+  KT_KEY_NUMPAD_MULTIPLY,
+  KT_KEY_NUMPAD_PAREN_LEFT,
+  KT_KEY_NUMPAD_PAREN_RIGHT,
+  KT_KEY_NUMPAD_SUBTRACT,
+  KT_KEY_NUMPAD_SEPARATOR,
+  KT_KEY_NUMPAD_UP,
+  KT_KEY_NUMPAD_DOWN,
+  KT_KEY_NUMPAD_RIGHT,
+  KT_KEY_NUMPAD_LEFT,
+  KT_KEY_NUMPAD_BEGIN,
+  KT_KEY_NUMPAD_HOME,
+  KT_KEY_NUMPAD_END,
+  KT_KEY_NUMPAD_INSERT,
+  KT_KEY_NUMPAD_DELETE,
+  KT_KEY_NUMPAD_PAGE_UP,
+  KT_KEY_NUMPAD_PAGE_DOWN,
+  KT_KEY_ESCAPE,
+  KT_KEY_F1,
+  KT_KEY_F2,
+  KT_KEY_F3,
+  KT_KEY_F4,
+  KT_KEY_F5,
+  KT_KEY_F6,
+  KT_KEY_F7,
+  KT_KEY_F8,
+  KT_KEY_F9,
+  KT_KEY_F10,
+  KT_KEY_F11,
+  KT_KEY_F12,
+  KT_KEY_F13,
+  KT_KEY_F14,
+  KT_KEY_F15,
+  KT_KEY_F16,
+  KT_KEY_F17,
+  KT_KEY_F18,
+  KT_KEY_F19,
+  KT_KEY_F20,
+  KT_KEY_F21,
+  KT_KEY_F22,
+  KT_KEY_F23,
+  KT_KEY_F24,
+  KT_KEY_F25,
+  KT_KEY_FN,
+  KT_KEY_FN_LOCK,
+  KT_KEY_PRINT_SCREEN,
+  KT_KEY_SCROLL_LOCK,
+  KT_KEY_PAUSE,
+};
+#ifndef __cplusplus
+#if __STDC_VERSION__ >= 202311L
+typedef enum KtKey KtKey;
+#else
+typedef uint32_t KtKey;
 #endif // __STDC_VERSION__ >= 202311L
 #endif // __cplusplus
 
@@ -390,6 +604,68 @@ typedef uint16_t KtAttribute;
 #endif // __cplusplus
 
 /**
+ * Modifier state, OR-ed together into a key event's `mods` and
+ * `consumed_mods` fields.
+ *
+ * A side bit says which of a pair is held and means nothing unless its
+ * modifier's own bit is set. Not every platform can tell the two apart, and
+ * nothing here needs one to.
+ */
+enum KtModifier
+#if defined(__cplusplus) || __STDC_VERSION__ >= 202311L
+  : uint16_t
+#endif // defined(__cplusplus) || __STDC_VERSION__ >= 202311L
+ {
+  /**
+   * Shift.
+   */
+  KT_MODIFIER_SHIFT = (1 << 0),
+  /**
+   * Control.
+   */
+  KT_MODIFIER_CTRL = (1 << 1),
+  /**
+   * Alt, which is Option on macOS.
+   */
+  KT_MODIFIER_ALT = (1 << 2),
+  /**
+   * Super, which is Command on macOS.
+   */
+  KT_MODIFIER_SUPER = (1 << 3),
+  /**
+   * Caps lock is on.
+   */
+  KT_MODIFIER_CAPS_LOCK = (1 << 4),
+  /**
+   * Num lock is on.
+   */
+  KT_MODIFIER_NUM_LOCK = (1 << 5),
+  /**
+   * The shift held is the right-hand one.
+   */
+  KT_MODIFIER_SHIFT_RIGHT = (1 << 6),
+  /**
+   * The control held is the right-hand one.
+   */
+  KT_MODIFIER_CTRL_RIGHT = (1 << 7),
+  /**
+   * The alt held is the right-hand one.
+   */
+  KT_MODIFIER_ALT_RIGHT = (1 << 8),
+  /**
+   * The super held is the right-hand one.
+   */
+  KT_MODIFIER_SUPER_RIGHT = (1 << 9),
+};
+#ifndef __cplusplus
+#if __STDC_VERSION__ >= 202311L
+typedef enum KtModifier KtModifier;
+#else
+typedef uint16_t KtModifier;
+#endif // __STDC_VERSION__ >= 202311L
+#endif // __cplusplus
+
+/**
  * Row state, OR-ed together into a row's `flags` field.
  */
 enum KtRowFlag
@@ -452,6 +728,56 @@ typedef struct {
    */
   size_t len;
 } KtText;
+
+/**
+ * A key event on its way in, before anything has decided what bytes it is.
+ *
+ * The physical key rather than the character: the same key is `A` on a US
+ * layout and `Ф` on a Russian one, so `⌃A` is the same place on the keyboard
+ * either way. What the layout made of it travels as `text` beside it.
+ *
+ * Which bytes it comes to is the core's to answer, because the modes it
+ * depends on are the terminal's and reading them out here would read them as
+ * of some earlier frame. cf. `docs/adr/0017-semantic-input-events.md`
+ */
+typedef struct {
+  /**
+   * Which way the key moved. Only a press or a repeat encodes anything.
+   */
+  KtKeyAction action;
+  /**
+   * Which key it was. `KT_KEY_UNIDENTIFIED` is refused rather than
+   * encoded.
+   */
+  KtKey key;
+  /**
+   * What was held down, as `KtModifier` bits.
+   */
+  uint16_t mods;
+  /**
+   * Which of those the layout already spent on `text`, as `KtModifier`
+   * bits. Option making `å` out of `⌥A` on macOS is one: the modifier was
+   * held, but it is not one the terminal should encode a second time.
+   */
+  uint16_t consumed_mods;
+  /**
+   * Whether an input method is mid-composition. Keys are held back while
+   * it is, which is what keeps half a syllable out of the child.
+   */
+  bool composing;
+  /**
+   * What the layout made of the key, as UTF-8, empty where it made
+   * nothing. Borrowed for the length of the call.
+   *
+   * Neither control characters nor a platform's own function key codes
+   * belong here — C0 and DEL, and on macOS the private use area
+   * `U+F700`–`U+F8FF` that AppKit puts in `NSEvent.characters` for the
+   * arrows and the F keys. The core derives all of those from the key and
+   * the modifiers, and one arriving as text is one that would be encoded
+   * twice. Leave it empty for them.
+   */
+  KtText text;
+} KtKeyEvent;
 
 /**
  * What a session calls when it has something new to be taken.
@@ -834,6 +1160,36 @@ KtStatus kt_session_feed(KtSession *session, const uint8_t *bytes, size_t len);
  * bytes. `bytes` may be null only when `len` is 0.
  */
 KtStatus kt_session_write(KtSession *session, const uint8_t *bytes, size_t len);
+
+/**
+ * Encode a key event and queue what it comes to for the session's child.
+ *
+ * The encoding is the core's, taken with the terminal's own modes in hand:
+ * the same arrow key is `ESC [ A` at a prompt and `ESC O A` in an editor
+ * that asked for cursor key application mode, and a caller never has to know
+ * which. cf. `docs/adr/0017-semantic-input-events.md`
+ *
+ * A key that comes to nothing queues nothing and answers `KT_STATUS_OK` — a
+ * bare modifier, a release, and every key at all while an input method is
+ * composing. A key that names nothing answers
+ * `KT_STATUS_UNIDENTIFIED_KEY` instead, so that a mapping missing from the
+ * caller is heard about where it happens rather than found later in a key
+ * that quietly does nothing.
+ *
+ * A detached session encodes on the calling thread, so it answers
+ * `KT_STATUS_WRITE_QUEUE_FULL` when the bytes did not fit, as
+ * [`kt_session_write`] does. A session with a PTY behind it encodes on its
+ * own thread and is past answering by the time it finds out, the way
+ * [`kt_session_set_selection`] is — and a queue that full on one of those is
+ * the loop's own to shed, since the loop is the only thing that drains it.
+ *
+ * # Safety
+ *
+ * `session` must be a live handle, and `event` must point at a readable
+ * `KtKeyEvent` whose text points at its own `len` readable bytes — null only
+ * where that length is 0.
+ */
+KtStatus kt_session_key(KtSession *session, const KtKeyEvent *event);
 
 /**
  * Register what a session calls when it has something new to be taken, or

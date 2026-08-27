@@ -16,6 +16,7 @@
 #![deny(unsafe_code)]
 
 pub mod io;
+pub mod key;
 mod listener;
 pub mod mailbox;
 pub mod queue;
@@ -25,6 +26,7 @@ mod vt;
 mod wake;
 mod writer;
 
+pub use key::{Key, KeyAction, KeyEvent, Modifier};
 pub use queue::{ClipboardTarget, Event};
 pub use session::{ChildState, PtySession, SelectionRange, Session};
 pub use snapshot::{

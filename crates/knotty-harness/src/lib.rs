@@ -14,11 +14,11 @@ use std::fmt::Write as _;
 use std::ptr;
 
 use knotty_ffi::{
-    Attribute, Cell, ClipboardTarget, CursorShape, Dirty, KtBytes, KtChildState, KtEvent,
-    KtEventKind, KtEvents, KtSessionState, KtSnapshotView, KtStatus, KtText, RowFlag, Underline,
-    kt_session_feed, kt_session_free, kt_session_new_detached, kt_session_set_wake,
-    kt_session_take_events, kt_session_take_snapshot, kt_session_take_writes, kt_snapshot_free,
-    kt_snapshot_view,
+    Attribute, Cell, ClipboardTarget, CursorShape, Dirty, Key, KeyAction, KtBytes, KtChildState,
+    KtEvent, KtEventKind, KtEvents, KtKeyEvent, KtSessionState, KtSnapshotView, KtStatus, KtText,
+    Modifier, RowFlag, Underline, kt_session_feed, kt_session_free, kt_session_key,
+    kt_session_new_detached, kt_session_set_wake, kt_session_take_events, kt_session_take_snapshot,
+    kt_session_take_writes, kt_snapshot_free, kt_snapshot_view,
 };
 
 /// The format the goldens are written in. Bump it when the encoding changes,
@@ -40,12 +40,212 @@ extern "C" fn count_wake(userdata: *mut c_void) {
     wakes.set(wakes.get() + 1);
 }
 
+/// One step of a recording: bytes the child sent, or an event the app made.
+///
+/// A recording of nothing but the first kind is what a `.vt` file holds, and
+/// replaying one is unchanged by this. The second is what lets a golden hold
+/// an encoding that turns on a mode: the sequence that sets the mode and the
+/// key that is read against it have to be in one file, in order, or the
+/// branch cannot be reproduced at all.
+enum Step {
+    /// Bytes from the child, fed to the engine.
+    Out(Vec<u8>),
+    /// A key event from the app.
+    Key(KeyStep),
+}
+
+/// A key event and the text it carries, which the event borrows.
+struct KeyStep {
+    action: KeyAction,
+    key: Key,
+    mods: u16,
+    consumed_mods: u16,
+    composing: bool,
+    text: Vec<u8>,
+}
+
+impl KeyStep {
+    /// The event as the boundary takes it, borrowing this step's text.
+    fn event(&self) -> KtKeyEvent {
+        KtKeyEvent {
+            action: self.action,
+            key: self.key,
+            mods: self.mods,
+            consumed_mods: self.consumed_mods,
+            composing: self.composing,
+            text: KtText {
+                bytes: self.text.as_ptr(),
+                len: self.text.len(),
+            },
+        }
+    }
+}
+
+/// Read a script into the steps it names.
+///
+/// One step per line, blank lines and `#` comments ignored:
+///
+/// ```text
+/// out "\x1b[?1h"
+/// key ArrowUp
+/// key A ctrl
+/// key A alt consumed=alt "å"
+/// key Enter composing
+/// ```
+///
+/// `out` takes a quoted run of bytes, written the way the golden writes one.
+/// `key` takes a key's name, then any of `ctrl`, `shift`, `alt`, `super`,
+/// `release`, `repeat`, `composing` and `consumed=<mods>`, and last of all a
+/// quoted run for what the layout made of the key. A key is a press with
+/// nothing held unless a word says otherwise.
+fn parse(script: &str) -> Result<Vec<Step>, String> {
+    script
+        .lines()
+        .enumerate()
+        .filter(|(_, line)| {
+            let line = line.trim_start();
+            !line.is_empty() && !line.starts_with('#')
+        })
+        .map(|(number, line)| step(line).map_err(|error| format!("line {}: {error}", number + 1)))
+        .collect()
+}
+
+fn step(line: &str) -> Result<Step, String> {
+    // A quoted run is the last thing on a line, so everything before the
+    // first quote is words and everything from it is bytes.
+    let (words, quoted) = match line.find('"') {
+        Some(at) => (&line[..at], Some(unquote(line[at..].trim_end())?)),
+        None => (line, None),
+    };
+    let mut words = words.split_whitespace();
+
+    match words.next() {
+        Some("out") => {
+            if let Some(word) = words.next() {
+                return Err(format!("out takes bytes and nothing else, not {word}"));
+            }
+            Ok(Step::Out(quoted.ok_or("out says nothing to feed")?))
+        }
+        Some("key") => key_step(words, quoted.unwrap_or_default()).map(Step::Key),
+        Some(other) => Err(format!("{other} is not a directive this format knows")),
+        None => Err("a line with only a quoted run says nothing to do with it".to_owned()),
+    }
+}
+
+fn key_step<'a>(
+    mut words: impl Iterator<Item = &'a str>,
+    text: Vec<u8>,
+) -> Result<KeyStep, String> {
+    let name = words.next().ok_or("key names no key")?;
+    let mut step = KeyStep {
+        action: KeyAction::Press,
+        key: named_key(name).ok_or_else(|| format!("{name} is not a key this format knows"))?,
+        mods: 0,
+        consumed_mods: 0,
+        composing: false,
+        text,
+    };
+
+    for word in words {
+        match word {
+            "release" => step.action = KeyAction::Release,
+            "repeat" => step.action = KeyAction::Repeat,
+            "composing" => step.composing = true,
+            _ => match word.strip_prefix("consumed=") {
+                Some(consumed) => step.consumed_mods = modifiers(consumed)?,
+                None => step.mods |= modifiers(word)?,
+            },
+        }
+    }
+    Ok(step)
+}
+
+fn modifiers(list: &str) -> Result<u16, String> {
+    list.split(',').try_fold(0, |held, name| {
+        let bit = match name {
+            "shift" => Modifier::Shift,
+            "ctrl" => Modifier::Ctrl,
+            "alt" => Modifier::Alt,
+            "super" => Modifier::Super,
+            other => return Err(format!("{other} is not a word this format knows")),
+        };
+        Ok(held | bit as u16)
+    })
+}
+
+/// The keys the scripts name.
+///
+/// Not every key the header holds: a name this does not know fails the script
+/// saying so, which is a line to add here rather than some other key pressed
+/// by accident.
+fn named_key(name: &str) -> Option<Key> {
+    Some(match name {
+        "A" => Key::A,
+        "ArrowUp" => Key::ArrowUp,
+        "Enter" => Key::Enter,
+        _ => return None,
+    })
+}
+
+/// Read back what [`quoted_bytes`] writes, and a character written out as
+/// itself besides — a script saying `"å"` reads better than the two bytes it
+/// stands for, and nothing here has to round-trip.
+fn unquote(quoted: &str) -> Result<Vec<u8>, String> {
+    let body = quoted
+        .strip_prefix('"')
+        .and_then(|body| body.strip_suffix('"'))
+        .ok_or_else(|| format!("{quoted} is not a quoted run of bytes"))?;
+
+    let mut bytes = Vec::new();
+    let mut rest = body.chars();
+    while let Some(character) = rest.next() {
+        if character != '\\' {
+            let mut encoded = [0; 4];
+            bytes.extend_from_slice(character.encode_utf8(&mut encoded).as_bytes());
+            continue;
+        }
+        match rest.next() {
+            Some('\\') => bytes.push(b'\\'),
+            Some('"') => bytes.push(b'"'),
+            Some('x') => {
+                let digits: String = rest.by_ref().take(2).collect();
+                let byte = u8::from_str_radix(&digits, 16)
+                    .map_err(|_| format!("\\x{digits} is not a byte"))?;
+                bytes.push(byte);
+            }
+            Some(other) => return Err(format!("\\{other} is not an escape this format knows")),
+            None => return Err("a backslash at the end escapes nothing".to_owned()),
+        }
+    }
+    Ok(bytes)
+}
+
 /// Feed a recording to a fresh session and describe what it left behind.
 ///
 /// # Errors
 ///
 /// Returns the failing call's status when the boundary reports one.
 pub fn replay(recording: &[u8], cols: u16, rows: u16, scrollback: usize) -> Result<String, String> {
+    run(&[Step::Out(recording.to_vec())], cols, rows, scrollback)
+}
+
+/// The same for a script, which says what the child sent and what the app did
+/// in the order they happened.
+///
+/// # Errors
+///
+/// Returns what the script says that this format does not know, or the
+/// failing call's status when the boundary reports one.
+pub fn replay_script(
+    script: &str,
+    cols: u16,
+    rows: u16,
+    scrollback: usize,
+) -> Result<String, String> {
+    run(&parse(script)?, cols, rows, scrollback)
+}
+
+fn run(steps: &[Step], cols: u16, rows: u16, scrollback: usize) -> Result<String, String> {
     let mut session = ptr::null_mut();
     check("kt_session_new_detached", unsafe {
         kt_session_new_detached(cols, rows, scrollback, &mut session)
@@ -64,10 +264,19 @@ pub fn replay(recording: &[u8], cols: u16, rows: u16, scrollback: usize) -> Resu
             )
         })?;
 
-        for chunk in recording.chunks(CHUNK) {
-            check("kt_session_feed", unsafe {
-                kt_session_feed(session, chunk.as_ptr(), chunk.len())
-            })?;
+        for step in steps {
+            match step {
+                Step::Out(bytes) => {
+                    for chunk in bytes.chunks(CHUNK) {
+                        check("kt_session_feed", unsafe {
+                            kt_session_feed(session, chunk.as_ptr(), chunk.len())
+                        })?;
+                    }
+                }
+                Step::Key(key) => check("kt_session_key", unsafe {
+                    kt_session_key(session, &key.event())
+                })?,
+            }
         }
 
         // Both runs are borrowed from the session and stay valid until the

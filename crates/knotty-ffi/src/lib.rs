@@ -8,7 +8,7 @@ use std::ptr;
 
 mod entry;
 
-use knotty_core::{ChildState, Error, Event, PtySession, Session, Snapshot, Wake};
+use knotty_core::{ChildState, Error, Event, KeyEvent, PtySession, Session, Snapshot, Wake};
 
 /// The snapshot's POD types. A C consumer gets these from the header; this
 /// re-export is how a Rust consumer names the same layouts.
@@ -16,6 +16,9 @@ pub use knotty_core::{
     Attribute, Cell, ClipboardTarget, Cursor, CursorShape, Dirty, Rgb, Row, RowFlag,
     SelectionRange, Underline,
 };
+
+/// The input path's POD types, re-exported for the same reason.
+pub use knotty_core::{Key, KeyAction, Modifier};
 
 /// Borrowed UTF-8, valid for as long as whatever lent it stays put.
 ///
@@ -141,6 +144,44 @@ impl From<&Event> for KtEvent {
     }
 }
 
+/// A key event on its way in, before anything has decided what bytes it is.
+///
+/// The physical key rather than the character: the same key is `A` on a US
+/// layout and `Ф` on a Russian one, so `⌃A` is the same place on the keyboard
+/// either way. What the layout made of it travels as `text` beside it.
+///
+/// Which bytes it comes to is the core's to answer, because the modes it
+/// depends on are the terminal's and reading them out here would read them as
+/// of some earlier frame. cf. `docs/adr/0017-semantic-input-events.md`
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct KtKeyEvent {
+    /// Which way the key moved. Only a press or a repeat encodes anything.
+    pub action: KeyAction,
+    /// Which key it was. `KT_KEY_UNIDENTIFIED` is refused rather than
+    /// encoded.
+    pub key: Key,
+    /// What was held down, as `KtModifier` bits.
+    pub mods: u16,
+    /// Which of those the layout already spent on `text`, as `KtModifier`
+    /// bits. Option making `å` out of `⌥A` on macOS is one: the modifier was
+    /// held, but it is not one the terminal should encode a second time.
+    pub consumed_mods: u16,
+    /// Whether an input method is mid-composition. Keys are held back while
+    /// it is, which is what keeps half a syllable out of the child.
+    pub composing: bool,
+    /// What the layout made of the key, as UTF-8, empty where it made
+    /// nothing. Borrowed for the length of the call.
+    ///
+    /// Neither control characters nor a platform's own function key codes
+    /// belong here — C0 and DEL, and on macOS the private use area
+    /// `U+F700`–`U+F8FF` that AppKit puts in `NSEvent.characters` for the
+    /// arrows and the F keys. The core derives all of those from the key and
+    /// the modifiers, and one arriving as text is one that would be encoded
+    /// twice. Leave it empty for them.
+    pub text: KtText,
+}
+
 /// Whether a session has a child and what has become of it.
 ///
 /// Read apart from [`KtSessionState`]: the two are different facts, and a
@@ -243,6 +284,10 @@ pub enum KtStatus {
     /// An operating system call failed — opening a terminal, starting a child,
     /// or talking to one already started.
     Io = 10,
+    /// A key event named no key. Nothing was queued for the child, and the
+    /// caller has a mapping to fill in rather than a key that has no bytes:
+    /// keys that encode to nothing are answered with `KT_STATUS_OK`.
+    UnidentifiedKey = 11,
 }
 
 impl From<Error> for KtStatus {
@@ -306,6 +351,14 @@ impl Driver {
         match self {
             Self::Detached(session) => status(session.write(bytes)),
             Self::Pty(session) => status(session.write(bytes)),
+        }
+    }
+
+    /// Encode a key and queue what it comes to for the child.
+    fn key(&mut self, event: KeyEvent) -> KtStatus {
+        match self {
+            Self::Detached(session) => status(session.key(&event)),
+            Self::Pty(session) => status(session.key(event)),
         }
     }
 
@@ -642,6 +695,64 @@ pub unsafe extern "C" fn kt_session_write(
         let bytes = unsafe { entry::borrowed(bytes, len) }?;
 
         Ok(session.drive(|driver| driver.write(bytes)))
+    })
+}
+
+/// Encode a key event and queue what it comes to for the session's child.
+///
+/// The encoding is the core's, taken with the terminal's own modes in hand:
+/// the same arrow key is `ESC [ A` at a prompt and `ESC O A` in an editor
+/// that asked for cursor key application mode, and a caller never has to know
+/// which. cf. `docs/adr/0017-semantic-input-events.md`
+///
+/// A key that comes to nothing queues nothing and answers `KT_STATUS_OK` — a
+/// bare modifier, a release, and every key at all while an input method is
+/// composing. A key that names nothing answers
+/// `KT_STATUS_UNIDENTIFIED_KEY` instead, so that a mapping missing from the
+/// caller is heard about where it happens rather than found later in a key
+/// that quietly does nothing.
+///
+/// A detached session encodes on the calling thread, so it answers
+/// `KT_STATUS_WRITE_QUEUE_FULL` when the bytes did not fit, as
+/// [`kt_session_write`] does. A session with a PTY behind it encodes on its
+/// own thread and is past answering by the time it finds out, the way
+/// [`kt_session_set_selection`] is — and a queue that full on one of those is
+/// the loop's own to shed, since the loop is the only thing that drains it.
+///
+/// # Safety
+///
+/// `session` must be a live handle, and `event` must point at a readable
+/// `KtKeyEvent` whose text points at its own `len` readable bytes — null only
+/// where that length is 0.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kt_session_key(
+    session: *mut KtSession,
+    event: *const KtKeyEvent,
+) -> KtStatus {
+    entry::answer(|| {
+        let session = unsafe { entry::at_mut(session) }?;
+        let event = unsafe { entry::at(event) }?;
+        // Checked here rather than deeper down because it is the one thing
+        // about a key that needs no terminal to answer — and a session with a
+        // PTY behind it encodes on its own thread, where there is no longer
+        // anybody to answer to.
+        if event.key == Key::Unidentified {
+            return Err(KtStatus::UnidentifiedKey);
+        }
+        let text = unsafe { entry::borrowed(event.text.bytes, event.text.len) }?;
+
+        // Copied rather than borrowed: a session with a PTY behind it applies
+        // this on its own thread, which outlives the call the text was lent
+        // for.
+        let event = KeyEvent {
+            action: event.action,
+            key: event.key,
+            mods: event.mods,
+            consumed_mods: event.consumed_mods,
+            text: text.to_vec(),
+            composing: event.composing,
+        };
+        Ok(session.drive(|driver| driver.key(event)))
     })
 }
 
@@ -1103,6 +1214,25 @@ mod tests {
         );
         assert_eq!(
             unsafe { kt_session_set_selection(session, ptr::null()) },
+            KtStatus::Defunct,
+        );
+        assert_eq!(
+            unsafe {
+                kt_session_key(
+                    session,
+                    &KtKeyEvent {
+                        action: KeyAction::Press,
+                        key: Key::A,
+                        mods: 0,
+                        consumed_mods: 0,
+                        composing: false,
+                        text: KtText {
+                            bytes: ptr::null(),
+                            len: 0,
+                        },
+                    },
+                )
+            },
             KtStatus::Defunct,
         );
 

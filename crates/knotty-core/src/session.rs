@@ -8,6 +8,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use crate::io::{self, Pty, Waker};
+use crate::key::KeyEvent;
 use crate::listener::Listener;
 use crate::mailbox::Mailbox;
 use crate::queue::{Event, EventQueue};
@@ -174,6 +175,27 @@ impl Session {
             return Ok(());
         }
         Err(Error::WriteQueueFull)
+    }
+
+    /// Encode a key event and queue what it comes to for the child.
+    ///
+    /// The bytes are the engine's answer, read against the modes this
+    /// terminal is in — so the same arrow key is one thing in an editor and
+    /// another at a prompt, and nothing above here has to know which. cf.
+    /// `docs/adr/0017-semantic-input-events.md`
+    ///
+    /// A key that comes to nothing queues nothing, which is not a failure:
+    /// a bare modifier, a release and anything at all mid-composition are all
+    /// keys the terminal is meant to stay quiet about.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::WriteQueueFull`] when the bytes did not fit, as [`write`].
+    ///
+    /// [`write`]: Session::write
+    pub fn key(&mut self, event: &KeyEvent) -> Result<()> {
+        let encoded = self.terminal.encode_key(event)?;
+        self.write(&encoded)
     }
 
     /// Select a range of the viewport, or clear the selection with `None`.
@@ -412,6 +434,18 @@ fn wind_up(broken: &AtomicBool, wake: &Debt, run: impl FnOnce() -> Result<()>) {
     wake.settle();
 }
 
+/// What the app asks the I/O thread to do to the engine on its behalf.
+///
+/// Both need the engine, and the engine is that thread's alone. What is
+/// bound for the child rather than for the engine does not come this way: it
+/// goes straight into the writer queue, which both threads reach.
+pub(crate) enum Request {
+    /// Select a range of the viewport, or clear the selection with `None`.
+    Select(Option<SelectionRange>),
+    /// Encode a key and queue what it comes to for the child.
+    Key(KeyEvent),
+}
+
 /// A session with a child process behind a pseudoterminal.
 ///
 /// One thread per session owns the engine and everything that touches it: the
@@ -429,10 +463,10 @@ pub struct PtySession {
     // The session's own, shared rather than reached for: registering a
     // consumer must not have to cross to a thread that may be mid-parse.
     wake: Arc<Debt>,
-    // Requests the I/O thread applies to the engine on the app's behalf. Only
-    // the selection travels this way: what is bound for the child goes in the
-    // queue below, which both threads reach.
-    selection: Sender<Option<SelectionRange>>,
+    // Requests the I/O thread applies to the engine on the app's behalf.
+    // Everything that needs the engine to answer travels this way; what is
+    // bound for the child goes in the queue below, which both threads reach.
+    requests: Sender<Request>,
     // The bytes waiting for the child, whoever queued them. Shared with the
     // session on the I/O thread rather than counted on each side, so the cap
     // is checked where the bytes are.
@@ -462,7 +496,7 @@ impl PtySession {
         max_scrollback: usize,
     ) -> Result<Self> {
         let (mut terminal, waker) = Pty::spawn(program, args, cols, rows)?;
-        let (selection, arriving) = mpsc::channel();
+        let (requests, arriving) = mpsc::channel();
         let stopping = Arc::new(AtomicBool::new(false));
         let child_exit = Arc::new(AtomicI32::new(STILL_RUNNING));
         let broken = Arc::new(AtomicBool::new(false));
@@ -520,7 +554,7 @@ impl PtySession {
             mailbox,
             events,
             wake,
-            selection,
+            requests,
             writes,
             child_exit,
             broken,
@@ -613,9 +647,32 @@ impl PtySession {
     /// An endpoint outside the viewport is not reported: by the time the
     /// thread finds that out, this call has long returned.
     pub fn set_selection(&self, range: Option<SelectionRange>) -> Result<()> {
-        // The thread is gone once the child is, and what this carried has
-        // nowhere left to go. Saying so beats swallowing it.
-        self.selection.send(range).map_err(|_| Error::Io)?;
+        self.request(Request::Select(range))
+    }
+
+    /// Encode a key event and queue what it comes to for the child.
+    ///
+    /// The encoding is the thread's to do, because the modes it reads the key
+    /// against are the engine's and the engine is that thread's alone. So the
+    /// bytes join the queue when the thread picks the request up rather than
+    /// here, and a raw [`write`] made in between reaches the child first.
+    /// Nothing the app sends is both at once — a key goes one way and
+    /// committed text the other — but a key and the text after it are only in
+    /// order if the app leaves the thread its turn between them.
+    ///
+    /// [`write`]: PtySession::write
+    pub fn key(&self, event: KeyEvent) -> Result<()> {
+        self.request(Request::Key(event))
+    }
+
+    /// Put a request where the I/O thread will find it, and tell it to look.
+    ///
+    /// What the engine makes of it is not reported: by the time the thread
+    /// finds that out, this call has long returned. The thread being gone is,
+    /// though — the child is gone with it, and what this carried has nowhere
+    /// left to go. Saying so beats swallowing it.
+    fn request(&self, request: Request) -> Result<()> {
+        self.requests.send(request).map_err(|_| Error::Io)?;
         self.waker.nudge();
         Ok(())
     }
