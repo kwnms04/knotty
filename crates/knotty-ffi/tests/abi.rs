@@ -13,9 +13,9 @@ use rustix::process::{Pid, test_kill_process};
 use knotty_ffi::{
     Attribute, Cell, ClipboardTarget, Cursor, CursorShape, Dirty, Key, KeyAction, KtBytes,
     KtChildState, KtEventKind, KtEvents, KtKeyEvent, KtSession, KtSessionState, KtSnapshot,
-    KtSnapshotView, KtStatus, KtText, Modifier, Rgb, Row, RowFlag, SelectionRange, Underline,
-    kt_abi_version, kt_session_feed, kt_session_free, kt_session_key, kt_session_new_detached,
-    kt_session_new_pty, kt_session_set_selection, kt_session_set_wake, kt_session_take_events,
+    KtSnapshotView, KtStatus, KtText, Rgb, Row, RowFlag, SelectionRange, Underline, kt_abi_version,
+    kt_session_feed, kt_session_free, kt_session_key, kt_session_new_detached, kt_session_new_pty,
+    kt_session_set_selection, kt_session_set_wake, kt_session_take_events,
     kt_session_take_snapshot, kt_session_take_writes, kt_session_write, kt_snapshot_free,
     kt_snapshot_view,
 };
@@ -1644,6 +1644,10 @@ fn a_key_that_names_nothing_is_refused_and_one_that_encodes_to_nothing_is_not() 
 #[cfg(target_os = "macos")]
 #[test]
 fn a_command_key_sends_the_child_nothing() {
+    // Named here rather than at the top: this is the only test that holds a
+    // modifier, and it is one the other platform does not compile.
+    use knotty_ffi::Modifier;
+
     let session = detached(4, 1);
 
     // With the character macOS puts on the event, which is what makes this
