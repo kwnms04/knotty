@@ -165,12 +165,12 @@ knotty-ffi` fails when it drifts from the Rust source; regenerate with
 
 ### Issue tracker
 
-Specs live as GitHub issues on `kwnms04/knotty`, one parent issue per feature. Implementation tickets are files under `.scratch/<feature-slug>/issues/`, not issues.
+Bug reports arrive as GitHub issues on `kwnms04/knotty` and are the only thing the tracker holds. Specs and implementation tickets are files under `.scratch/<feature-slug>/`.
 See `docs/agents/issue-tracker.md`.
 
 ### Triage labels
 
-The five canonical triage roles, used verbatim as label strings.
+The seven canonical triage roles — two category, five state — used verbatim as label strings.
 See `docs/agents/triage-labels.md`.
 
 ### Domain docs

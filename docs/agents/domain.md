@@ -18,16 +18,20 @@ This is a single-context repo:
 
 ```
 /
-├── CONTEXT.md
+├── CONTEXT.md                  ← glossary; created lazily, may not exist yet
 ├── docs/
 │   ├── 00-overview.md          ← chapters: the live specification
 │   ├── 01-architecture.md
 │   ├── …
 │   ├── open-questions.md
-│   └── adr/
-│       ├── 0001-....md
-│       └── 0002-....md
-└── src/
+│   ├── adr/
+│   │   ├── 0001-....md
+│   │   └── 0002-....md
+│   └── agents/                 ← these files: how skills read the repo
+├── crates/                     ← the Rust core, FFI and harness
+├── App/                        ← the Swift app
+├── include/                    ← the generated C header
+└── fuzz/                       ← its own workspace
 ```
 
 ## Use the glossary's vocabulary

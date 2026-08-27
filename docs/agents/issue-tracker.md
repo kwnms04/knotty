@@ -17,6 +17,23 @@ Do not restate a label inside an issue body — the tracker owns it, and a copy 
 
 **GitHub Projects are deliberately unused.** Nothing in this flow reads a board: "which tickets are workable" is the file order below, not a column. Reach for a Project when a question comes up that the issue list genuinely cannot answer.
 
+## Driving the tracker
+
+`gh` infers the repo from `git remote -v`, so none of these has to name it.
+
+- **Create**: `gh issue create --title "..." --body "..." --label <name>`. Heredoc for a multi-line body.
+- **Read**: `gh issue view <number> --comments`
+- **List**: `gh issue list --state open --json number,title,body,labels,comments --jq '[.[] | {number, title, body, labels: [.labels[].name], comments: [.comments[].body]}]'`, with `--label` and `--state` filters as needed.
+- **Comment**: `gh issue comment <number> --body "..."`
+- **Label**: `gh issue edit <number> --add-label "..."` / `--remove-label "..."`
+- **Close**: `gh issue close <number> --comment "..."`
+
+## Pull requests as a request surface
+
+**No.** `/triage` reads this flag, and issues are the only request surface here — every pull request so far has been the author's own, so there is no external-PR queue to run through the states.
+
+Flipping it to yes means taking the `gh pr` half of the GitHub template in `setup-matt-pocock-skills`: the same labels and the same states, read against the diff instead of the body.
+
 ## When a skill says "publish to the issue tracker"
 
 Nothing a skill writes goes to the tracker any more — both of its outputs are files.
@@ -45,46 +62,12 @@ The lowest-numbered ticket whose `Blocked by:` list is all ticked.
 
 ## Wayfinding operations
 
-Used by `/wayfinder`. Its child tickets **are** issues — they carry a question, collect an answer in comments and close, which is issue-shaped work and not the ticket file above. The **map** is the parent issue; each **child ticket** is a sub-issue.
-
-- **Map**: the parent issue body holds Notes / Decisions-so-far / Fog.
-- **Child ticket**: a sub-issue whose body is the question. A `Type:` line records the ticket type (`research`/`prototype`/`grilling`/`task`).
-- **Blocking**: a native dependency. Sub-issue and dependency edges have no `gh issue` subcommand yet, so they go through GraphQL. Resolve node IDs first:
-
-```
-gh api graphql -f query='
-  query($n:Int!){ repository(owner:"kwnms04",name:"knotty"){ issue(number:$n){ id } } }
-' -F n=12
-```
-
-Then wire the edges:
-
-```
-# make CHILD a sub-issue of PARENT
-gh api graphql -f query='
-  mutation($p:ID!,$c:ID!){ addSubIssue(input:{issueId:$p, subIssueId:$c}){ clientMutationId } }
-' -f p=<parent-id> -f c=<child-id>
-
-# record that BLOCKED cannot start until BLOCKER is done
-gh api graphql -f query='
-  mutation($b:ID!,$k:ID!){ addBlockedBy(input:{issueId:$b, blockingIssueId:$k}){ clientMutationId } }
-' -f b=<blocked-id> -f k=<blocker-id>
-```
-
-- **Frontier**: open, unblocked, unassigned sub-issues; lowest number wins.
-- **Claim**: assign the issue to yourself (`gh issue edit <n> --add-assignee @me`) before any work.
-- **Resolve**: comment the answer, close the issue, then append a context pointer (gist + link) to Decisions-so-far in the parent body.
+`/wayfinder` has never been run here. Whether its child tickets are issues or files — whether the ticket rule above reaches them at all — is settled the first time it is used, and not before. No wiring is written down until then.
 
 ## History
 
-M0 ran on local markdown — parent spec and tickets under `.scratch/m0-headless-core/` — and was migrated to GitHub as parent #1 with tickets #2–#9. The original files remain in git history.
+M0–M2 ran their specs and tickets as GitHub issues. They came back as files under `.scratch/`, their acceptance criteria ticked to record that they are done, and the migrated issues (#1–#23, #27, #29, #32–#36) were deleted: across 25 ticket issues the only issue feature ever used was the closed bit, and a copy that answers nothing is a second place to look. The GitHub milestones went with them, having grouped a bug report or two at most.
 
-M1 (#11–#29) and M2 (#32–#36) ran their tickets as sub-issues, and M0's files were deleted when it migrated. **Tickets are files again.** Across those 25 ticket issues not one acceptance-criteria checkbox was ever ticked and every one carried the same `ready-for-agent` label, so the only issue feature they used was the closed bit — paid for with two GraphQL mutations each and a network round trip per read.
-
-The M0–M2 tickets were brought back as files under `.scratch/`, their acceptance criteria ticked to record that they are done, and the migrated issues (#1–#23, #27, #29, #32–#36) deleted — a copy that answers nothing is a second place to look. Nineteen commit footers cite numbers that no longer resolve; the `Was: #NN` line in each file is what maps them back. Their milestone specs came with them. M2's spec, #31, was kept an issue for a day on the argument that an open issue says the milestone is in flight and a file cannot — but with its sub-issues and milestone gone it was down to an open bit and a label, and the one spec nobody could read without a network was the one being worked on. An unticked exit criterion in `spec.md` says the same thing from inside the repo.
-
-The milestones went with them. M0's grouped nothing at all after the deletion, and M1's and M2's grouped a bug report or two — a grouping that small is read off the `.scratch/` directory name instead.
+Nineteen commit footers cite numbers that no longer resolve. The `Was: #NN` line in each ticket file is what maps them back.
 
 Bug reports (#28, #38, #40, #43) stay issues, and are now the only thing the tracker holds. A report arrives from outside, is triaged, and closes — that is issue-shaped work. Everything the project wrote about itself is in the repo.
-
-`/wayfinder`'s child tickets are the loose end. The flow has never been run here, and its questions are authored inside the project the way a spec is, so whether they stay issues is open until it is.
