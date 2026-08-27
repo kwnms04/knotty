@@ -2,48 +2,53 @@
 # requires-python = ">=3.11"
 # dependencies = ["fonttools>=4.53"]
 # ///
-"""PROTOTYPE — throwaway. Answers one question, then dies.
+"""PROTOTYPE — throwaway. Four questions, across every ligature font a v1
+user might pick.  (docs/04-renderer.md R3, docs/open-questions.md)
 
-    Is the set of codepoints that participate in ligatures small enough
-    to keep the fast path?  (docs/04-renderer.md R3, docs/open-questions.md)
+  Q1  How big is the participating set?   fast path is worth it if it stays small
+  Q2  How wide is the context window?     scan cost per cell
+  Q3  How far does ink overhang the cell? atlas and damage budget
+  Q4  Does any font collapse cells?       if yes, CTLine is unavoidable
 
-Two sets, because they cost different things:
+SUBSTITUTABLE  a codepoint whose own glyph a lookup can replace.  A cell
+               holding one cannot be a plain atlas lookup.
+CONTEXT-ONLY   a codepoint that only appears in backtrack or lookahead.  Its
+               own glyph never changes; it only decides a neighbour's.
 
-  SUBSTITUTABLE  a codepoint whose own glyph a lookup can replace.
-                 A cell holding one of these cannot be an atlas lookup.
-  CONTEXT-ONLY   a codepoint that only ever appears in backtrack or
-                 lookahead.  Its own glyph never changes; it only decides
-                 whether a neighbour's does.
+Both over-count: a rule covering a glyph may never fire.  Over-counting is
+the safe side of a fast-path decision.
 
-Both over-count: a rule that covers a glyph may never fire on real text.
-Over-counting is the safe side of a fast-path decision.
-
-    uv run prototype/gsub-probe/probe.py
+    ./fetch.sh && uv run probe.py
 """
 
+import glob
 import os
 import sys
+from fontTools.pens.boundsPen import BoundsPen
 from fontTools.ttLib import TTFont, TTCollection
 
-# What a terminal turns on.  JetBrains Mono puts everything in calt.
 FEATURES = {"liga", "calt", "clig", "rlig"}
 
-FONTS = [
-    ("JetBrains Mono (primary)", "~/Library/Fonts/JetBrainsMono-Regular.ttf", None),
-    ("Menlo (fallback)", "/System/Library/Fonts/Menlo.ttc", "Menlo-Regular"),
+HERE = os.path.dirname(os.path.abspath(__file__))
+SYSTEM = [
+    ("Menlo", "/System/Library/Fonts/Menlo.ttc", "Menlo-Regular"),
     ("SF Mono", "/System/Library/Fonts/SFNSMono.ttf", None),
+    ("JetBrains Mono", os.path.expanduser(
+        "~/Library/Fonts/JetBrainsMono-Regular.ttf"), None),
 ]
 
 
 class Probe:
     def __init__(self, font):
         self.font = font
-        self.subst = set()      # glyphs a lookup can replace
-        self.context = set()    # glyphs that only gate
-        self.max_input = 1      # longest matched input run, in cells
-        self.max_back = 0       # cells of backtrack a rule can demand
+        self.subst = set()       # glyphs a lookup can replace
+        self.context = set()     # glyphs that only gate
+        self.outputs = set()     # glyphs a lookup can produce
+        self.max_input = 1       # longest matched input, in cells
+        self.max_back = 0
         self.max_ahead = 0
-        self.open_class = False  # a rule matched class 0 == "anything else"
+        self.collapse = 1        # components a type-4 ligature folds into one
+        self.open_class = False
 
     def run(self, tags):
         gsub = self.font.get("GSUB")
@@ -55,7 +60,6 @@ class Probe:
             if fr.FeatureTag in tags:
                 seen_tags.add(fr.FeatureTag)
                 queue.extend(fr.Feature.LookupListIndex)
-
         lookups = table.LookupList.Lookup
         done = set()
         while queue:
@@ -63,9 +67,8 @@ class Probe:
             if i in done or i >= len(lookups):
                 continue
             done.add(i)
-            lk = lookups[i]
-            for sub in lk.SubTable:
-                queue.extend(self.visit(sub, lk.LookupType))
+            for sub in lookups[i].SubTable:
+                queue.extend(self.visit(sub, lookups[i].LookupType))
         return seen_tags
 
     def visit(self, sub, lookup_type):
@@ -74,74 +77,78 @@ class Probe:
         t = getattr(sub, "LookupType", None) or lookup_type
         fmt = getattr(sub, "Format", None)
 
-        if t == 1:
+        if t in (1, 2):
             self.subst |= set(sub.mapping)
-        elif t == 2:
-            self.subst |= set(sub.mapping)
+            for v in sub.mapping.values():
+                self.outputs |= {v} if isinstance(v, str) else set(v)
         elif t == 3:
             self.subst |= set(sub.alternates)
+            for v in sub.alternates.values():
+                self.outputs |= set(v)
         elif t == 4:
             for first, ligs in sub.ligatures.items():
                 self.subst.add(first)
                 for lig in ligs:
                     self.subst.update(lig.Component)
-                    self.max_input = max(self.max_input, 1 + len(lig.Component))
-        elif t == 6:
-            return self.chain(sub, fmt)
-        elif t == 5:
-            return self.chain(sub, fmt, plain=True)
+                    self.outputs.add(lig.LigGlyph)
+                    n = 1 + len(lig.Component)
+                    self.max_input = max(self.max_input, n)
+                    self.collapse = max(self.collapse, n)
+        elif t in (5, 6):
+            return self.chain(sub, fmt, plain=(t == 5))
         elif t == 8:
             self.subst |= set(sub.Coverage.glyphs)
+            self.outputs |= set(getattr(sub, "Substitute", None) or [])
         return ()
 
     def chain(self, sub, fmt, plain=False):
-        """Chain/plain context.  Returns nested lookup indices to follow."""
         nested = []
-
         if fmt == 3:
-            inputs = [set(c.glyphs) for c in (sub.InputCoverage or [])]
-            back = [set(c.glyphs) for c in (getattr(sub, "BacktrackCoverage", None) or [])]
-            ahead = [set(c.glyphs) for c in (getattr(sub, "LookAheadCoverage", None) or [])]
-            self.record(inputs, back, ahead)
-            nested += [r.LookupListIndex for r in (sub.SubstLookupRecord or [])]
-            return nested
+            # Plain context (type 5) names its inputs `Coverage`; the chained
+            # form (type 6) splits them into Input/Backtrack/LookAhead.
+            inputs = getattr(sub, "InputCoverage", None)
+            if inputs is None:
+                inputs = getattr(sub, "Coverage", None) or []
+                if not isinstance(inputs, list):
+                    inputs = [inputs]
+            self.record(
+                [set(c.glyphs) for c in inputs],
+                [set(c.glyphs) for c in (getattr(sub, "BacktrackCoverage", None) or [])],
+                [set(c.glyphs) for c in (getattr(sub, "LookAheadCoverage", None) or [])])
+            return [r.LookupListIndex for r in (sub.SubstLookupRecord or [])]
 
         first = set(sub.Coverage.glyphs)
-
         if fmt == 1:
-            attr = "ChainSubRuleSet" if not plain else "SubRuleSet"
-            rule_attr = "ChainSubRule" if not plain else "SubRule"
-            for rs in (getattr(sub, attr, None) or []):
+            sets = getattr(sub, "SubRuleSet" if plain else "ChainSubRuleSet", None)
+            rule_attr = "SubRule" if plain else "ChainSubRule"
+            for rs in (sets or []):
                 for rule in (getattr(rs, rule_attr, None) or []):
-                    inputs = [first] + [{g} for g in (getattr(rule, "Input", None) or [])]
-                    back = [{g} for g in (getattr(rule, "Backtrack", None) or [])]
-                    ahead = [{g} for g in (getattr(rule, "LookAhead", None) or [])]
-                    self.record(inputs, back, ahead)
-                    nested += [r.LookupListIndex
-                               for r in (rule.SubstLookupRecord or [])]
+                    self.record(
+                        [first] + [{g} for g in (getattr(rule, "Input", None) or [])],
+                        [{g} for g in (getattr(rule, "Backtrack", None) or [])],
+                        [{g} for g in (getattr(rule, "LookAhead", None) or [])])
+                    nested += [r.LookupListIndex for r in (rule.SubstLookupRecord or [])]
             return nested
 
         if fmt == 2:
-            in_cls = self.by_class(getattr(sub, "InputClassDef", None))
-            back_cls = self.by_class(getattr(sub, "BacktrackClassDef", None))
-            ahead_cls = self.by_class(getattr(sub, "LookAheadClassDef", None))
-            attr = "ChainSubClassSet" if not plain else "SubClassSet"
-            rule_attr = "ChainSubClassRule" if not plain else "SubClassRule"
-            for cs in (getattr(sub, attr, None) or []):
+            in_c = self.by_class(getattr(sub, "InputClassDef", None))
+            bk_c = self.by_class(getattr(sub, "BacktrackClassDef", None))
+            ah_c = self.by_class(getattr(sub, "LookAheadClassDef", None))
+            sets = getattr(sub, "SubClassSet" if plain else "ChainSubClassSet", None)
+            rule_attr = "SubClassRule" if plain else "ChainSubClassRule"
+            for cs in (sets or []):
                 if cs is None:
                     continue
                 for rule in (getattr(cs, rule_attr, None) or []):
-                    inputs = [first] + [self.cls(in_cls, c)
-                                        for c in (getattr(rule, "Input", None) or [])]
-                    back = [self.cls(back_cls, c)
-                            for c in (getattr(rule, "Backtrack", None) or [])]
-                    ahead = [self.cls(ahead_cls, c)
-                             for c in (getattr(rule, "LookAhead", None) or [])]
-                    self.record(inputs, back, ahead)
-                    nested += [r.LookupListIndex
-                               for r in (rule.SubstLookupRecord or [])]
+                    self.record(
+                        [first] + [self.cls(in_c, c)
+                                   for c in (getattr(rule, "Input", None) or [])],
+                        [self.cls(bk_c, c)
+                         for c in (getattr(rule, "Backtrack", None) or [])],
+                        [self.cls(ah_c, c)
+                         for c in (getattr(rule, "LookAhead", None) or [])])
+                    nested += [r.LookupListIndex for r in (rule.SubstLookupRecord or [])]
             return nested
-
         return nested
 
     def by_class(self, classdef):
@@ -152,7 +159,7 @@ class Probe:
 
     def cls(self, table, n):
         if n == 0 and 0 not in table:
-            self.open_class = True   # class 0 == every glyph not listed
+            self.open_class = True
             return set()
         return table.get(n, set())
 
@@ -166,17 +173,65 @@ class Probe:
         self.max_ahead = max(self.max_ahead, len(ahead))
 
 
-def load(path, ps_name):
+def cell_advance(font):
+    """Monospace: the advance nearly every glyph shares."""
+    hmtx = font["hmtx"]
+    counts = {}
+    for name in font.getBestCmap().values():
+        if name in hmtx.metrics:
+            adv = hmtx[name][0]
+            counts[adv] = counts.get(adv, 0) + 1
+    if not counts:
+        return font["head"].unitsPerEm, 0.0
+    total = sum(counts.values())
+    adv, n = max(counts.items(), key=lambda kv: kv[1])
+    return adv, n / total
+
+
+def overhang(font, glyphs, adv):
+    """Worst ink outside the cell, in cells, over the substitution outputs."""
+    gs = font.getGlyphSet()
+    left = right = 0.0
+    worst = None
+    for name in glyphs:
+        if name not in gs:
+            continue
+        pen = BoundsPen(gs)
+        try:
+            gs[name].draw(pen)
+        except Exception:
+            continue
+        if pen.bounds is None:
+            continue
+        x_min, _, x_max, _ = pen.bounds
+        l = max(0.0, -x_min / adv)
+        r = max(0.0, (x_max - adv) / adv)
+        if l > left:
+            left, worst = l, name
+        right = max(right, r)
+    return left, right, worst
+
+
+def load(path, ps_name=None):
     if path.endswith(".ttc"):
         coll = TTCollection(path, lazy=False)
-        return next(f for f in coll.fonts if f["name"].getDebugName(6) == ps_name)
+        return next(f for f in coll.fonts
+                    if f["name"].getDebugName(6) == ps_name)
     return TTFont(path, lazy=False, fontNumber=0)
 
 
-def show(cps, limit=200):
+def discover():
+    out = list(SYSTEM)
+    for path in sorted(glob.glob(os.path.join(HERE, "fonts", "*.ttf")) +
+                       glob.glob(os.path.join(HERE, "fonts", "*.otf"))):
+        out.append((os.path.basename(path).rsplit("-", 1)[0], path, None))
+    return out
+
+
+def show(cps, limit=60):
     printable = "".join(chr(c) for c in cps if 0x21 <= c < 0x7F)
     rest = [c for c in cps if not (0x21 <= c < 0x7F)]
-    line = f"      printable ASCII: {printable}" if printable else ""
+    line = f"      ASCII: {printable}" if printable else "      ASCII: (none)"
     if rest:
         head = " ".join(f"U+{c:04X}" for c in rest[:limit])
         line += f"\n      other ({len(rest)}): {head}"
@@ -185,12 +240,10 @@ def show(cps, limit=200):
     return line
 
 
-def report(label, path, ps_name):
-    path = os.path.expanduser(path)
+def report(label, path, ps_name, rows):
     if not os.path.exists(path):
-        print(f"\n{label}: not installed ({path})")
+        print(f"\n=== {label}: not installed ({path})")
         return
-
     font = load(path, ps_name)
     cmap = font.getBestCmap()
     rev = {}
@@ -199,31 +252,65 @@ def report(label, path, ps_name):
 
     p = Probe(font)
     tags = p.run(FEATURES)
+    adv, mono_share = cell_advance(font)
 
     def to_cps(glyphs):
         return sorted({cp for g in glyphs for cp in rev.get(g, ())})
 
     subst = to_cps(p.subst)
     context = to_cps(p.context - p.subst)
+    pct = 100 * len(subst) / max(len(cmap), 1)
+    left, right, worst = overhang(font, p.outputs, adv)
 
     print(f"\n=== {label} ===")
-    print(f"  features        : {sorted(tags) or 'none of ' + str(sorted(FEATURES))}")
-    print(f"  cmap            : {len(cmap)} codepoints")
-    print(f"  SUBSTITUTABLE   : {len(subst)}"
-          f"  ({100 * len(subst) / max(len(cmap), 1):.1f}% of cmap)")
+    print(f"  file            : {os.path.basename(path)}")
+    print(f"  features        : {sorted(tags) or '(no ligature features)'}")
+    print(f"  cmap / monospace: {len(cmap)} codepoints,"
+          f" {100 * mono_share:.0f}% share one advance")
+    print(f"  Q1 SUBSTITUTABLE: {len(subst)}  ({pct:.1f}% of cmap)")
     if subst:
         print(show(subst))
-    print(f"  CONTEXT-ONLY    : {len(context)}")
-    if context:
-        print(show(context, limit=40))
-    print(f"  longest input   : {p.max_input} cells"
-          f"   (backtrack {p.max_back}, lookahead {p.max_ahead})")
+    print(f"     context-only : {len(context)}")
+    print(f"  Q2 window       : input {p.max_input} cell(s),"
+          f" backtrack {p.max_back}, lookahead {p.max_ahead}")
+    print(f"  Q3 overhang     : left {left:.2f} cells, right {right:.2f} cells"
+          + (f"   (worst: {worst})" if worst else ""))
+    # Which feature does the collapsing?  Arabic's rlig folding lam-alef is a
+    # different fact from liga folding "!=" — only the latter breaks the grid.
+    blame = {}
+    for tag in sorted(tags):
+        solo = Probe(font)
+        solo.run({tag})
+        if solo.collapse > 1:
+            blame[tag] = solo.collapse
+    if p.collapse > 1:
+        who = ", ".join(f"{t} ×{n}" for t, n in blame.items()) or "unattributed"
+        print(f"  Q4 collapses    : YES — up to {p.collapse} cells into 1  ({who})")
+    else:
+        print("  Q4 collapses    : no (cell count invariant)")
     if p.open_class:
-        print("  NOTE: a rule matches class 0 (\"any glyph not otherwise "
-              "classed\") — context is effectively unbounded there.")
+        print("  NOTE: a rule matches class 0 (any glyph not otherwise classed)")
+
+    rows.append((label, len(subst), pct, p.max_input, p.max_back, p.max_ahead,
+                 left, right, p.collapse, bool(tags), blame))
 
 
 if __name__ == "__main__":
-    print(__doc__.split("\n\n")[1].strip())
-    for label, path, ps in FONTS:
-        report(label, path, ps)
+    print(__doc__.split("\n\n")[0].split("\n", 1)[1].strip())
+    rows = []
+    for label, path, ps in discover():
+        report(label, path, ps, rows)
+
+    print("\n" + "=" * 82)
+    print(f"{'font':<24}{'subst':>7}{'%':>7}{'in':>4}{'bk':>4}{'ah':>4}"
+          f"{'left':>7}{'right':>7}{'collapse':>14}")
+    print("-" * 82)
+    for (label, n, pct, mi, mb, ma, l, r, col, has, blame) in rows:
+        if not has:
+            print(f"{label:<24}{'—':>7}{'—':>7}{'—':>4}{'—':>4}{'—':>4}"
+                  f"{'—':>7}{'—':>7}{'no ligs':>14}")
+            continue
+        tag = ",".join(blame) if blame else ""
+        col_s = f"{tag} ×{col}" if col > 1 else "no"
+        print(f"{label:<24}{n:>7}{pct:>6.1f}%{mi:>4}{mb:>4}{ma:>4}"
+              f"{l:>7.2f}{r:>7.2f}{col_s:>14}")

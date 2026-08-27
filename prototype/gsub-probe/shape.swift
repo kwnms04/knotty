@@ -1,45 +1,82 @@
-// PROTOTYPE — throwaway. Does a JetBrains Mono ligature change the cell count?
+// PROTOTYPE — throwaway.  Ground truth for Q4: can a ligature ever make
+// CoreText return fewer glyphs than characters?  A GSUB table can hold a
+// cell-collapsing type-4 rule that shaping never reaches, or that a later
+// expansion undoes — only a real run settles it, under every feature
+// combination the renderer might choose.
+//
+//   swift prototype/gsub-probe/shape.swift
 import CoreText
 import Foundation
 
-let url = URL(fileURLWithPath: NSString(string: "~/Library/Fonts/JetBrainsMono-Regular.ttf").expandingTildeInPath)
-let descs = CTFontManagerCreateFontDescriptorsFromURL(url as CFURL) as! [CTFontDescriptor]
-let font = CTFontCreateWithFontDescriptor(descs[0], 16, nil)
+let dir = URL(fileURLWithPath: "prototype/gsub-probe/fonts")
 
-func shape(_ s: String) {
-    let attrs = [kCTFontAttributeName as NSAttributedString.Key: font]
-    let line = CTLineCreateWithAttributedString(NSAttributedString(string: s, attributes: attrs))
-    var glyphs: [CGGlyph] = []
-    var advances: [CGFloat] = []
+func load(_ path: String, _ features: [(String, Int)]) -> CTFont? {
+    guard let ds = CTFontManagerCreateFontDescriptorsFromURL(
+            URL(fileURLWithPath: path) as CFURL) as? [CTFontDescriptor],
+          let base = ds.first else { return nil }
+    if features.isEmpty { return CTFontCreateWithFontDescriptor(base, 16, nil) }
+    let settings = features.map { (tag, val) -> [String: Any] in
+        [kCTFontOpenTypeFeatureTag as String: tag,
+         kCTFontOpenTypeFeatureValue as String: val]
+    }
+    let d = CTFontDescriptorCreateCopyWithAttributes(
+        base, [kCTFontFeatureSettingsAttribute: settings] as CFDictionary)
+    return CTFontCreateWithFontDescriptor(d, 16, nil)
+}
+
+func shape(_ s: String, _ f: CTFont) -> (names: [String], adv: [Int]) {
+    let line = CTLineCreateWithAttributedString(NSAttributedString(
+        string: s, attributes: [kCTFontAttributeName as NSAttributedString.Key: f]))
+    var names: [String] = []; var adv: [Int] = []
     for run in CTLineGetGlyphRuns(line) as! [CTRun] {
         let n = CTRunGetGlyphCount(run)
         var g = [CGGlyph](repeating: 0, count: n)
         var a = [CGSize](repeating: .zero, count: n)
         CTRunGetGlyphs(run, CFRange(location: 0, length: n), &g)
         CTRunGetAdvances(run, CFRange(location: 0, length: n), &a)
-        glyphs += g
-        advances += a.map { $0.width }
+        names += g.map { (CTFontCopyNameForGlyph(f, $0) as String?) ?? "?" }
+        adv += a.map { Int($0.width.rounded()) }
     }
-    let names = glyphs.map { (CTFontCopyNameForGlyph(font, $0) as String?) ?? "?" }
-    print("  \(s.debugDescription.padding(toLength: 12, withPad: " ", startingAt: 0))"
-        + " chars=\(s.count) glyphs=\(glyphs.count) advances=\(advances.map { Int($0) })")
-    print("      \(names.joined(separator: " "))")
+    return (names, adv)
 }
 
-print("ligature candidates:")
-for s in ["!=", "=>", "->", "<=>", "===", "|>", "::", "/*", "www"] { shape(s) }
-print("guarded (should NOT ligate):")
-for s in ["a:b", "1:2", "http://x"] { shape(s) }
-print("sub-run vs whole line (does context past 4/5 cells matter?):")
-for s in ["x!=y", "!=y", "x!=", "!="] { shape(s) }
+var paths: [(String, String)] = []
+let jb = NSString(string: "~/Library/Fonts/JetBrainsMono-Regular.ttf").expandingTildeInPath
+if FileManager.default.fileExists(atPath: jb) { paths.append(("JetBrains Mono", jb)) }
+for f in (try? FileManager.default.contentsOfDirectory(atPath: dir.path))?.sorted() ?? [] {
+    if f.hasSuffix(".ttf") || f.hasSuffix(".otf") {
+        paths.append((f, dir.appendingPathComponent(f).path))
+    }
+}
 
-print("ink extents:")
-for name in ["m", "SPC", "exclam_equal.liga", "less_equal_greater.liga", "equal_equal_equal.liga"] {
-    let g = CTFontGetGlyphWithName(font, name as CFString)
-    var gg = g
-    var rect = CGRect.zero
-    CTFontGetBoundingRectsForGlyphs(font, .horizontal, &gg, &rect, 1)
-    var adv = CGSize.zero
-    CTFontGetAdvancesForGlyphs(font, .horizontal, &gg, &adv, 1)
-    print(String(format: "  %-26s bbox x=%.1f w=%.1f   advance=%.1f", (name as NSString).utf8String!, rect.origin.x, rect.width, adv.width))
+// Every sequence any of these fonts ligates, plus guards that must not.
+let samples = ["!=", "=>", "->", "<=>", "===", "//", "///", "|>", "::", "/*",
+               "<!--", "||", "!!", ";;", "...", "a:b", "www"]
+let combos: [(String, [(String, Int)])] = [
+    ("default", []),
+    ("liga+calt on", [("liga", 1), ("calt", 1)]),
+    ("liga on, calt off", [("liga", 1), ("calt", 0)]),
+    ("liga off, calt on", [("liga", 0), ("calt", 1)]),
+]
+
+for (label, path) in paths {
+    print("\n=== \(label) ===")
+    var broken: [String] = []
+    for (cname, feats) in combos {
+        guard let f = load(path, feats) else { continue }
+        for s in samples where shape(s, f).names.count != s.count {
+            broken.append("\(s) [\(cname)]")
+        }
+    }
+    if let f = load(path, [("liga", 1), ("calt", 1)]) {
+        for s in ["!=", "///"] {
+            let r = shape(s, f)
+            print("  \(s.debugDescription.padding(toLength: 7, withPad: " ", startingAt: 0))"
+                + "chars=\(s.count) glyphs=\(r.names.count) adv=\(r.adv)"
+                + "   \(r.names.joined(separator: " "))")
+        }
+    }
+    print("  cell count changes: "
+        + (broken.isEmpty ? "NEVER, across all four feature combinations"
+                          : broken.joined(separator: ", ")))
 }
