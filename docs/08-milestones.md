@@ -45,6 +45,8 @@ Swift 없이 knotty-core와 하네스만 만듭니다.
 
 ## M3 — Input and text
 
+스펙과 티켓: [`.scratch/m3-input-and-text/`](../.scratch/m3-input-and-text/)
+
 선행 조건이던 GSUB 프로브는 끝났고 [R3](04-renderer.md#r3--shaping-unit)의 셰이핑 경로는 [0016](adr/0016-derive-the-ligature-path.md)에서 확정되었습니다.
 
 - 입력 경로 전체 배선 (쓰기 / 붙여넣기 / 키 / 휠 / 마우스 / 포커스 / **리사이즈**). 경계를 건너는 것은 의미 이벤트이고 판정은 코어입니다. cf. [0017](adr/0017-semantic-input-events.md)
