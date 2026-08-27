@@ -45,11 +45,12 @@ Swift 없이 knotty-core와 하네스만 만듭니다.
 
 ## M3 — Input and text
 
-**선행 조건: GSUB 프로브.** [R3](04-renderer.md#r3--shaping-unit)의 셰이핑 경로가 확정되어야 합니다.
+선행 조건이던 GSUB 프로브는 끝났고 [R3](04-renderer.md#r3--shaping-unit)의 셰이핑 경로는 [0016](adr/0016-derive-the-ligature-path.md)에서 확정되었습니다.
 
-- 입력 경로 전체 배선 (쓰기 / 붙여넣기 / 특수키 / 휠 / 마우스 / 포커스 / **리사이즈**)
+- 입력 경로 전체 배선 (쓰기 / 붙여넣기 / 키 / 휠 / 마우스 / 포커스 / **리사이즈**). 경계를 건너는 것은 의미 이벤트이고 판정은 코어입니다. cf. [0017](adr/0017-semantic-input-events.md)
 - NSTextInputClient + preedit 오버레이, Option-as-Meta
 - 셰이핑 slow path(결합·ZWJ·이모지·**리거처**), 폴백, 정수 정렬, 선택 + 복사
+- **Bold·Italic 4종 face.** M2는 한 벌만 그립니다. 프롬프트와 하이라이트 대부분이 bold라 이것 없이는 "일상 사용 가능"이 성립하지 않습니다
 - **종료 기준**: IME 시나리오 전항 통과, vim/tmux/fzf 일상 사용 가능
     - 자가 데일리 드라이버 전환 시점입니다. 이후로는 실사용으로 버그를 수집합니다.
 

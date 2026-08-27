@@ -39,12 +39,17 @@ AppDelegate (설정 스토어, 세션 레지스트리)
    │                  (이벤트 드레인, 스냅샷 수령, 렌더러 소유)
    │                  스냅샷은 스코프 안에서만 유효하므로, 그것을
    │                  프레임으로 바꾸는 렌더러도 여기에 있습니다
-   └─ TerminalView  ← NSView: Metal 레이어, NSTextInputClient, 제스처 해석
+   └─ TerminalView  ← NSView: Metal 레이어, NSTextInputClient, 제스처 상태
                       FFI 직접 호출 금지 — SessionHost에 의도 전달만
 ```
 
 "세션당 호출 직렬화" 계약을 규율이 아니라 **구조**로 보장합니다.
 FFI를 아는 객체가 하나면 동시 호출 경로 자체가 없습니다.
+
+**뷰가 가진 "제스처 상태"는 앵커 셀·클릭 수·드래그 중인지 셋뿐입니다.**
+무엇이 선택되는지는 코어가 정합니다 — 워드·라인 경계는 엔진의 유니코드
+규칙이고, 뷰는 그것을 다시 계산하지 않습니다. cf.
+[0017](adr/0017-semantic-input-events.md)
 
 ## 5 — Main thread only
 
@@ -75,7 +80,9 @@ wake → `needsFrame` + 링크 재개 → vsync 틱에 스냅샷 수령 → dirt
     - 미확정 텍스트는 터미널에 입력된 것이 아닙니다. 그리드에 넣으면 취소 되돌리기가 지옥이 되고 PTY 부분 전송은 재앙입니다.
 - 후보창 위치는 스냅샷 커서 좌표에서 계산합니다.
 - keyDown은 IME에 먼저 기회를 줍니다. 미소비 키만 SessionHost를 거쳐 특수키 경로로 갑니다.
-    - Option-as-Meta 판정(좌/우 개별 설정)은 그 직전 Swift에서 합니다.
+    - Option-as-Meta는 **엔진의 인코더 옵션**입니다. 앱은 설정(좌/우 개별)을
+      코어에 넘길 뿐, 어떤 바이트가 나갈지 판정하지 않습니다. cf.
+      [0017](adr/0017-semantic-input-events.md)
 
 ## 8 — Event policy
 
