@@ -165,7 +165,7 @@ knotty-ffi` fails when it drifts from the Rust source; regenerate with
 
 ### Issue tracker
 
-Issues live as GitHub issues on `kwnms04/knotty`: a parent issue per feature holding the spec, tickets as its sub-issues.
+Specs live as GitHub issues on `kwnms04/knotty`, one parent issue per feature. Implementation tickets are files under `.scratch/<feature-slug>/issues/`, not issues.
 See `docs/agents/issue-tracker.md`.
 
 ### Triage labels

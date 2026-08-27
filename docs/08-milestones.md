@@ -7,7 +7,7 @@
 
 Swift 없이 knotty-core와 하네스만 만듭니다.
 
-스펙과 티켓: [#1](https://github.com/kwnms04/knotty/issues/1) 및 그 하위 이슈 (#2~#9)
+스펙과 티켓: [`.scratch/m0-headless-core/`](../.scratch/m0-headless-core/) (원래 #1과 #2~#9)
 
 - detached 세션 + `feed` + 메일박스 + 평탄 POD 스냅샷 변환
 - 헤더 생성, ABI 핸드셰이크, 불투명 핸들, 패닉 격리
@@ -16,7 +16,7 @@ Swift 없이 knotty-core와 하네스만 만듭니다.
 
 ## M1 — PTY and threading
 
-스펙: [#10](https://github.com/kwnms04/knotty/issues/10)
+스펙과 티켓: [`.scratch/m1-pty-and-threading/`](../.scratch/m1-pty-and-threading/) (원래 #10과 #11~#29)
 
 - I/O 스레드 ([C1](03-core.md#c1--thread-topology)), PTY 스폰, writer 큐 + 배압
 - 자식 종료 처리 + 순서 불변식 ([C6](03-core.md#c6--child-lifecycle))
