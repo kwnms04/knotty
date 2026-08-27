@@ -9,7 +9,7 @@
 - [ ] 256색 + 트루컬러, UTF-8, 스크롤백, 대체 화면, bracketed paste
 - [ ] SGR 마우스, 포커스(1004), alternate scroll(1007), 동기화 출력(2026)
 - [ ] OSC 0/2, 7, 52(쓰기. 읽기는 엔진이 버려 무응답), 4/10/11(질의 응답 포함)
-- [ ] **리거처** — 셰이핑 경로는 GSUB 프로브 결과로 확정 ([R3](04-renderer.md#r3--shaping-unit))
+- [ ] **리거처** — 셰이핑 경로는 [R3](04-renderer.md#r3--shaping-unit)와 [0016](adr/0016-derive-the-ligature-path.md)에서 확정
 - [ ] URL: ⌘ 지연 스캔 자동 감지, wrapped 줄 이어붙이기
 - [ ] 붙여넣기 검사·경고·정화, 제목·아이콘 라벨 질의 빈 응답
 - [ ] 창 복원(작업 디렉터리), 종료 경고, ⌘K, Option-as-Meta(좌/우)
