@@ -31,6 +31,8 @@ Swift 없이 knotty-core와 하네스만 만듭니다.
 
 ## M2 — First pixel
 
+스펙과 티켓: [`.scratch/m2-first-pixel/`](../.scratch/m2-first-pixel/) (원래 #31과 #32~#36)
+
 최소한의 Swift 셸을 세웁니다.
 
 - Swift Package 래핑, ABI 핸드셰이크 배선
