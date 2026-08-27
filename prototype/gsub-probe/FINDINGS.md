@@ -9,23 +9,30 @@ measured; the numbers that define it do not generalise, so the renderer has
 to derive them at font load.**
 
 Measured across every ligature font a v1 user is likely to pick, because M4
-makes the face configurable and the DoD puts ligatures in v1 scope. An
-earlier pass measured only JetBrains Mono and drew conclusions from it; three
-of the four numbers below turned out to be font-specific, and one earlier
-claim was wrong in a way one font could not show.
+makes the face configurable and the DoD puts ligatures in v1 scope. Two
+earlier passes each measured too little: the first only JetBrains Mono, the
+second only the Regular face of six fonts. Three of the four numbers turned
+out to be font-specific, one earlier claim was wrong in a way one font could
+not show, and one face turned out to be a different font from its own
+Regular.
 
 ## The numbers
 
-| font | substitutable | % of cmap | input | back | ahead | left overhang | right overhang | collapses cells |
-|---|---:|---:|---:|---:|---:|---:|---:|---|
-| Menlo | — | — | — | — | — | — | — | no ligature features |
-| SF Mono | — | — | — | — | — | — | — | no ligature features |
-| JetBrains Mono | 27 | 2.0% | 1 | 4 | 5 | 2.89 | 0.02 | no |
-| Fira Code | 140 | 8.8% | 1 | 3 | 4 | **2.96** | 0.02 | no |
-| Hasklig | 13 | 0.9% | 1 | 2 | 3 | 1.88 | 0.00 | no |
-| Iosevka | 106 | 1.4% | **4** | 3 | 3 | 1.42 | 1.38 | no |
-| Cascadia Code | 85 | 3.5% | **4** | 3 | 4 | 0.82 | **2.77** | Arabic only |
-| Monaspace Neon | **271** | **11.0%** | 3 | 1 | 3 | 1.79 | 0.34 | table says yes, shaping says no |
+| font | faces | substitutable | input | back | ahead | left | right | collapses |
+|---|---|---:|---:|---:|---:|---:|---:|---|
+| Menlo | 1 | — | — | — | — | — | — | no ligature features |
+| SF Mono | 1 | — | — | — | — | — | — | no ligature features |
+| JetBrains Mono | 4 | 27 | 1 | 4 | **5** | 2.91 | 0.05 | no |
+| Fira Code | 2 | 140 | 1 | 3 | 4 | **3.00** | 0.02 | no |
+| Hasklig | 8 | 13 | 1 | 2 | 3 | 1.94 | 0.00 | no |
+| Iosevka | 5 | 106 | **4** | 3 | 3 | 1.48 | 1.54 | no |
+| Cascadia Code | 12 | 85 · 34 | **4** · 1 | 3 | 4 | 0.82 | **2.81** | Arabic only |
+| Monaspace Neon | 1 | **271** | 3 | 1 | 3 | 1.79 | 0.34 | table says yes, shaping says no |
+
+33 faces in total — Regular, Bold, Italic and BoldItalic of each, plus
+Cascadia's Nerd Font (NF) and Powerline (PL) variants and Hasklig in both
+OTF and TTF. Each row carries the worst value across its faces; where a
+face differs structurally from Regular, both values are shown.
 
 Overhang is in cells. Bold marks the worst case, which is what the design
 has to budget for.
@@ -64,9 +71,9 @@ start 3 cells before or extend 3 cells after the cell that owns it. R6's
 shelf packing assumes cell-sized entries; that assumption does not survive.
 
 **Q4 — does any font collapse cells?** **No — verified, not assumed.** Across
-all six fonts and four feature combinations (default, `liga+calt`, `liga`
-only, `calt` only), CoreText returned exactly one glyph per character with a
-uniform advance every time.
+all 33 faces, four feature combinations (default, `liga+calt`, `liga` only,
+`calt` only) and 17 sample strings, CoreText returned exactly one glyph per
+character with a uniform advance every time.
 
 This is the claim the single-font pass got wrong for the right reason: it
 read "JetBrains Mono substitutes per cell" and generalised it into a law. It
@@ -102,11 +109,36 @@ assumption.
    cells of left context and 5 of right shapes identically to the whole line.
    "부분 셰이핑 일치율" was posed as a rate to measure; it is a hard bound.
 
+## What the other faces changed
+
+**Bold and Italic are not Regular scaled.** Two bounds moved:
+
+- Fira Code **Bold** pushes left overhang from 2.96 to **exactly 3.00 cells**.
+  The 3-cell figure is now an equality, not a margin.
+- Cascadia **Italic** pushes right overhang from 2.77 to **2.81**.
+
+**Cascadia Italic is structurally a different font from Cascadia Regular** —
+34 substitutable codepoints instead of 85, one input cell instead of four,
+left overhang 0.15 instead of 0.82. Measuring one face and assuming the other
+three would have been the same mistake as measuring one font.
+
+**The official Nerd Font variant does not break the cell model.**
+CascadiaCodeNF carries an 11652-codepoint cmap — 4.8× the base font — and
+still has **100% of it on a single advance**, with ligature numbers identical
+to the unpatched face. (Third-party non-Mono patches are a different matter,
+and are a cell-width question rather than a ligature one.)
+
+**Iosevka is the only font under 100% uniform advance** at 78%, and was
+already so at Regular. Its cmap carries 7582 codepoints including CJK and
+box-drawing at non-cell widths.
+
 ## Caveat
 
 **Hasklig produces no ligatures at all** under CoreText, in any of the four
-feature combinations — `!=` shapes as `exclam equal`. Its table numbers above
-are real but unreached. Not chased down; it does not move any bound.
+feature combinations, in any of its eight faces — `!=` shapes as
+`exclam equal`. Its table numbers are real but unreached. Not chased down; it
+does not move any bound. OTF and TTF builds agree exactly, which is the
+probe's own sanity check.
 
 ## Reproducing
 

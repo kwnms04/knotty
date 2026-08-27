@@ -33,8 +33,10 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 SYSTEM = [
     ("Menlo", "/System/Library/Fonts/Menlo.ttc", "Menlo-Regular"),
     ("SF Mono", "/System/Library/Fonts/SFNSMono.ttf", None),
-    ("JetBrains Mono", os.path.expanduser(
-        "~/Library/Fonts/JetBrainsMono-Regular.ttf"), None),
+] + [
+    (f"JetBrainsMono-{face}",
+     os.path.expanduser(f"~/Library/Fonts/JetBrainsMono-{face}.ttf"), None)
+    for face in ("Regular", "Bold", "Italic", "BoldItalic")
 ]
 
 
@@ -224,7 +226,9 @@ def discover():
     out = list(SYSTEM)
     for path in sorted(glob.glob(os.path.join(HERE, "fonts", "*.ttf")) +
                        glob.glob(os.path.join(HERE, "fonts", "*.otf"))):
-        out.append((os.path.basename(path).rsplit("-", 1)[0], path, None))
+        base = os.path.basename(path)
+        # fetch.sh prefixes each file with its repo name; the face is the rest.
+        out.append((base.split("-", 1)[1] if "-" in base else base, path, None))
     return out
 
 
@@ -238,6 +242,18 @@ def show(cps, limit=60):
         if len(rest) > limit:
             line += " …"
     return line
+
+
+def blame_of(font, tags):
+    """Which feature does the collapsing?  Arabic's rlig folding lam-alef is a
+    different fact from liga folding "!=" — only the latter breaks the grid."""
+    out = {}
+    for tag in sorted(tags):
+        solo = Probe(font)
+        solo.run({tag})
+        if solo.collapse > 1:
+            out[tag] = solo.collapse
+    return out
 
 
 def report(label, path, ps_name, rows):
@@ -262,6 +278,11 @@ def report(label, path, ps_name, rows):
     pct = 100 * len(subst) / max(len(cmap), 1)
     left, right, worst = overhang(font, p.outputs, adv)
 
+    if QUIET:
+        rows.append((label, len(subst), pct, p.max_input, p.max_back, p.max_ahead,
+                     left, right, p.collapse, bool(tags), blame_of(font, tags),
+                     mono_share, len(cmap)))
+        return
     print(f"\n=== {label} ===")
     print(f"  file            : {os.path.basename(path)}")
     print(f"  features        : {sorted(tags) or '(no ligature features)'}")
@@ -275,14 +296,7 @@ def report(label, path, ps_name, rows):
           f" backtrack {p.max_back}, lookahead {p.max_ahead}")
     print(f"  Q3 overhang     : left {left:.2f} cells, right {right:.2f} cells"
           + (f"   (worst: {worst})" if worst else ""))
-    # Which feature does the collapsing?  Arabic's rlig folding lam-alef is a
-    # different fact from liga folding "!=" — only the latter breaks the grid.
-    blame = {}
-    for tag in sorted(tags):
-        solo = Probe(font)
-        solo.run({tag})
-        if solo.collapse > 1:
-            blame[tag] = solo.collapse
+    blame = blame_of(font, tags)
     if p.collapse > 1:
         who = ", ".join(f"{t} ×{n}" for t, n in blame.items()) or "unattributed"
         print(f"  Q4 collapses    : YES — up to {p.collapse} cells into 1  ({who})")
@@ -292,8 +306,10 @@ def report(label, path, ps_name, rows):
         print("  NOTE: a rule matches class 0 (any glyph not otherwise classed)")
 
     rows.append((label, len(subst), pct, p.max_input, p.max_back, p.max_ahead,
-                 left, right, p.collapse, bool(tags), blame))
+                 left, right, p.collapse, bool(tags), blame, mono_share, len(cmap)))
 
+
+QUIET = "--summary" in sys.argv
 
 if __name__ == "__main__":
     print(__doc__.split("\n\n")[0].split("\n", 1)[1].strip())
@@ -301,16 +317,17 @@ if __name__ == "__main__":
     for label, path, ps in discover():
         report(label, path, ps, rows)
 
-    print("\n" + "=" * 82)
-    print(f"{'font':<24}{'subst':>7}{'%':>7}{'in':>4}{'bk':>4}{'ah':>4}"
-          f"{'left':>7}{'right':>7}{'collapse':>14}")
-    print("-" * 82)
-    for (label, n, pct, mi, mb, ma, l, r, col, has, blame) in rows:
+    print("\n" + "=" * 90)
+    print(f"{'font':<34}{'cmap':>6}{'mono%':>7}{'subst':>7}{'in':>4}{'bk':>4}"
+          f"{'ah':>4}{'left':>7}{'right':>7}{'collapse':>10}")
+    print("-" * 90)
+    for (label, n, pct, mi, mb, ma, l, r, col, has, blame, mono, ncmap) in rows:
+        label = label[:34]
         if not has:
-            print(f"{label:<24}{'—':>7}{'—':>7}{'—':>4}{'—':>4}{'—':>4}"
-                  f"{'—':>7}{'—':>7}{'no ligs':>14}")
+            print(f"{label:<34}{ncmap:>6}{100 * mono:>6.0f}%{'—':>7}{'—':>4}"
+                  f"{'—':>4}{'—':>4}{'—':>7}{'—':>7}{'no ligs':>10}")
             continue
         tag = ",".join(blame) if blame else ""
-        col_s = f"{tag} ×{col}" if col > 1 else "no"
-        print(f"{label:<24}{n:>7}{pct:>6.1f}%{mi:>4}{mb:>4}{ma:>4}"
-              f"{l:>7.2f}{r:>7.2f}{col_s:>14}")
+        col_s = f"{tag}×{col}" if col > 1 else "no"
+        print(f"{label:<34}{ncmap:>6}{100 * mono:>6.0f}%{n:>7}{mi:>4}{mb:>4}{ma:>4}"
+              f"{l:>7.2f}{r:>7.2f}{col_s:>10}")

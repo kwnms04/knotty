@@ -41,8 +41,12 @@ func shape(_ s: String, _ f: CTFont) -> (names: [String], adv: [Int]) {
 }
 
 var paths: [(String, String)] = []
-let jb = NSString(string: "~/Library/Fonts/JetBrainsMono-Regular.ttf").expandingTildeInPath
-if FileManager.default.fileExists(atPath: jb) { paths.append(("JetBrains Mono", jb)) }
+for face in ["Regular", "Bold", "Italic", "BoldItalic"] {
+    let jb = NSString(string: "~/Library/Fonts/JetBrainsMono-\(face).ttf").expandingTildeInPath
+    if FileManager.default.fileExists(atPath: jb) {
+        paths.append(("JetBrainsMono-\(face)", jb))
+    }
+}
 for f in (try? FileManager.default.contentsOfDirectory(atPath: dir.path))?.sorted() ?? [] {
     if f.hasSuffix(".ttf") || f.hasSuffix(".otf") {
         paths.append((f, dir.appendingPathComponent(f).path))
@@ -60,23 +64,22 @@ let combos: [(String, [(String, Int)])] = [
 ]
 
 for (label, path) in paths {
-    print("\n=== \(label) ===")
     var broken: [String] = []
+    var ragged: [String] = []
     for (cname, feats) in combos {
         guard let f = load(path, feats) else { continue }
-        for s in samples where shape(s, f).names.count != s.count {
-            broken.append("\(s) [\(cname)]")
-        }
-    }
-    if let f = load(path, [("liga", 1), ("calt", 1)]) {
-        for s in ["!=", "///"] {
+        for s in samples {
             let r = shape(s, f)
-            print("  \(s.debugDescription.padding(toLength: 7, withPad: " ", startingAt: 0))"
-                + "chars=\(s.count) glyphs=\(r.names.count) adv=\(r.adv)"
-                + "   \(r.names.joined(separator: " "))")
+            if r.names.count != s.count { broken.append("\(s) [\(cname)]") }
+            if Set(r.adv).count > 1 { ragged.append("\(s) [\(cname)]") }
         }
     }
-    print("  cell count changes: "
-        + (broken.isEmpty ? "NEVER, across all four feature combinations"
-                          : broken.joined(separator: ", ")))
+    let ligated = load(path, [("liga", 1), ("calt", 1)]).map {
+        shape("!=", $0).names.joined(separator: "+")
+    } ?? "?"
+    let verdict = broken.isEmpty
+        ? (ragged.isEmpty ? "ok" : "RAGGED ADVANCE: " + ragged.joined(separator: " "))
+        : "COLLAPSES: " + broken.joined(separator: " ")
+    print("  \(label.padding(toLength: 34, withPad: " ", startingAt: 0))"
+        + "\(verdict.padding(toLength: 12, withPad: " ", startingAt: 0))  != -> \(ligated)")
 }
