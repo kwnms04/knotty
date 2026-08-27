@@ -5,10 +5,15 @@
 # the key rather than being told it twice. ⌥A arrives as the character Option
 # already made, with the modifier marked as spent on it.
 #
-# ⌘A and the release encode nothing, which is the point of both lines: a
-# command key is the app's to act on and a release has nothing to say. Both
-# sit between keys that do encode something, so their silence is held in
-# place by what is on either side of it.
+# The release encodes nothing, which is the point of that line, and it sits
+# between two keys that do encode something so its silence is held in place
+# by what is on either side of it.
+#
+# ⌘ is not here. What a command key comes to is the platform's answer rather
+# than the terminal's — macOS sends no text under one because it is the app's
+# to act on, Linux sends the character — and a golden two CI runners read the
+# same way cannot hold both. The half knotty runs on is pinned in
+# knotty-ffi's `a_command_key_sends_the_child_nothing` instead.
 
 # A prompt to type at, so the screen the golden holds is one a terminal
 # would really be showing when the keys below arrive.
@@ -16,7 +21,6 @@ out "$ "
 
 key A "a"
 key A ctrl
-key A super "a"
 key A shift "A"
 key A release "a"
 key A alt consumed=alt "å"

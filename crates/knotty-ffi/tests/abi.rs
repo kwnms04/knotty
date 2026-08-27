@@ -13,9 +13,9 @@ use rustix::process::{Pid, test_kill_process};
 use knotty_ffi::{
     Attribute, Cell, ClipboardTarget, Cursor, CursorShape, Dirty, Key, KeyAction, KtBytes,
     KtChildState, KtEventKind, KtEvents, KtKeyEvent, KtSession, KtSessionState, KtSnapshot,
-    KtSnapshotView, KtStatus, KtText, Rgb, Row, RowFlag, SelectionRange, Underline, kt_abi_version,
-    kt_session_feed, kt_session_free, kt_session_key, kt_session_new_detached, kt_session_new_pty,
-    kt_session_set_selection, kt_session_set_wake, kt_session_take_events,
+    KtSnapshotView, KtStatus, KtText, Modifier, Rgb, Row, RowFlag, SelectionRange, Underline,
+    kt_abi_version, kt_session_feed, kt_session_free, kt_session_key, kt_session_new_detached,
+    kt_session_new_pty, kt_session_set_selection, kt_session_set_wake, kt_session_take_events,
     kt_session_take_snapshot, kt_session_take_writes, kt_session_write, kt_snapshot_free,
     kt_snapshot_view,
 };
@@ -1632,6 +1632,32 @@ fn a_key_that_names_nothing_is_refused_and_one_that_encodes_to_nothing_is_not() 
         KtStatus::UnidentifiedKey,
     );
     assert_eq!(writes(session), b"", "a key that named nothing was encoded");
+
+    unsafe { kt_session_free(session) };
+}
+
+/// macOS sends no text under a command key — it is the app's to act on and
+/// never the child's to receive — while Linux sends the character. That split
+/// is the platform's answer rather than knotty's, so it cannot live in a
+/// golden two runners read the same way. It lives here, on the platform
+/// knotty runs on.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_command_key_sends_the_child_nothing() {
+    let session = detached(4, 1);
+
+    // With the character macOS puts on the event, which is what makes this
+    // worth asking: the same event without it could encode nothing anywhere.
+    press(
+        session,
+        &KtKeyEvent {
+            mods: Modifier::Super as u16,
+            text: KtText::from("a"),
+            ..pressed(Key::A)
+        },
+    );
+
+    assert_eq!(writes(session), b"", "a command key reached the child");
 
     unsafe { kt_session_free(session) };
 }
