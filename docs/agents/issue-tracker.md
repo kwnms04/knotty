@@ -40,7 +40,8 @@ cat .scratch/<feature-slug>/issues/<NN>-<slug>.md
 ```
 
 The user will normally pass the path directly. A `Was: #NN` line in each file
-names the issue it came from, for commits and CI logs that cite the number.
+names the issue it was migrated from. That issue is gone, so the number now
+resolves only against git history and against this line.
 
 ## Finding the workable tickets
 
@@ -88,6 +89,6 @@ M0 ran on local markdown — parent spec and tickets under `.scratch/m0-headless
 
 M1 (#11–#29) and M2 (#32–#36) ran their tickets as sub-issues, and M0's files were deleted when it migrated. **Tickets are files again.** Across those 25 ticket issues not one acceptance-criteria checkbox was ever ticked and every one carried the same `ready-for-agent` label, so the only issue feature they used was the closed bit — paid for with two GraphQL mutations each and a network round trip per read.
 
-The M0–M2 tickets were brought back as files under `.scratch/`, their acceptance criteria ticked to record that they are done, and the closed issues left on GitHub as an archive. Their milestone specs came with them, except M2's: **the spec stays an issue while its milestone is in flight**, because an open issue says so and a file cannot. #31 becomes `.scratch/m2-first-pixel/spec.md` when M2 closes.
+The M0–M2 tickets were brought back as files under `.scratch/`, their acceptance criteria ticked to record that they are done, and the migrated issues (#1–#23, #27, #29, #32–#36) deleted — a copy that answers nothing is a second place to look. Nineteen commit footers cite numbers that no longer resolve; the `Was: #NN` line in each file is what maps them back. Their milestone specs came with them, except M2's: **the spec stays an issue while its milestone is in flight**, because an open issue says so and a file cannot. #31 becomes `.scratch/m2-first-pixel/spec.md` when M2 closes.
 
 Bug reports (#28, #38, #40, #43) stay issues. A report arrives from outside, gets triaged, and closes — that is issue-shaped work, and none of them came from `/to-tickets`.
