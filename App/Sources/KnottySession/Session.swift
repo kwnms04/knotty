@@ -148,6 +148,23 @@ public final class Session {
         }
     }
 
+    /// Resize the grid, and say how big one cell now is in pixels.
+    ///
+    /// The primary screen reflows: a line longer than the new width folds
+    /// rather than losing its tail, and widening unfolds it again. The pixel
+    /// size is a cell's, and a session with a PTY behind it tells its child
+    /// both — which is the `SIGWINCH` that makes an editor redraw.
+    ///
+    /// **Only when one of them has changed**, for the reason
+    /// `kt_session_resize` gives: a window being dragged must not reach the
+    /// reflow on every pixel.
+    public func resize(cols: UInt16, rows: UInt16, cellWidth: UInt32, cellHeight: UInt32) throws {
+        try check(
+            "kt_session_resize",
+            kt_session_resize(handle, cols, rows, cellWidth, cellHeight)
+        )
+    }
+
     /// Take the bytes a detached session has queued for its child, emptying
     /// the queue.
     ///

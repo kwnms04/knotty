@@ -1,0 +1,7 @@
+# The other direction, and the round trip that shows nothing was lost on the
+# way. A line as wide as the grid folds into a grid half as wide, and then the
+# grid it started at unfolds it back onto one row — which is the screen this
+# pins. A fold that dropped the tail leaves a short line here.
+out "abcdefghijklmnopqrst"
+resize 10 4 8 16
+resize 20 2 8 16

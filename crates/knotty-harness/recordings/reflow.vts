@@ -1,0 +1,9 @@
+# In-band size reports on, so that what a resize tells the child — the grid
+# and how big one cell is — lands in the golden beside the screen it reflowed.
+# Nothing a recording holds asks the terminal for its size in pixels.
+out "\x1b[?2048h"
+# A line exactly as wide as the grid, and then a grid half as wide. What was
+# one row has to become two, the first of them marked as running on — a screen
+# that lost the tail instead is what this holds against.
+out "abcdefghijklmnopqrst"
+resize 10 4 8 16

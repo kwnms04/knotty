@@ -89,7 +89,12 @@ pub struct Pty {
     ///
     /// It costs the end-of-file that used to be how the child's exit
     /// arrived — hence the lifeline below.
-    _far: OwnedFd,
+    ///
+    /// It is also the end the size is set on, for the reason [`set_size`]
+    /// gives.
+    ///
+    /// [`set_size`]: Pty::set_size
+    far: OwnedFd,
     /// Read end of the nudge pipe, waited on beside the terminal so that
     /// input from another thread cuts the wait short.
     nudge: Arc<OwnedFd>,
@@ -238,18 +243,10 @@ impl Pty {
         // Sized before the child exists, so its first frame is drawn to the
         // real width rather than to a default it has to be told to leave.
         //
-        // Set on the far end rather than ours: macOS answers this ioctl on our
-        // end with `ENOTTY`, and both ends of a pseudoterminal share the one
-        // size anyway.
-        tcsetwinsize(
-            &far,
-            Winsize {
-                ws_row: rows,
-                ws_col: cols,
-                ws_xpixel: 0,
-                ws_ypixel: 0,
-            },
-        )?;
+        // In cells only: how many pixels one of them is belongs to the display
+        // the window came up on, which nothing here has been told. The app
+        // fills it in with its first resize. cf. `02-ffi.md`
+        tcsetwinsize(&far, winsize(cols, rows, 0, 0))?;
 
         let mut command = Command::new(OsStr::from_bytes(program));
         command
@@ -289,7 +286,7 @@ impl Pty {
         Ok((
             Self {
                 terminal,
-                _far: far,
+                far,
                 nudge: Arc::clone(&nudge),
                 lifeline,
                 child: Kept { process: child },
@@ -351,6 +348,23 @@ impl Pty {
         })
     }
 
+    /// Tell the terminal how big it now is, which is what raises `SIGWINCH`
+    /// in the child.
+    ///
+    /// Set on the far end rather than ours: macOS answers this ioctl on our
+    /// end with `ENOTTY`, and both ends of a pseudoterminal share the one
+    /// size anyway.
+    ///
+    /// The pixel size goes with the counts because a program that asks in
+    /// pixels asks the terminal, and a zero there is knotty saying it does
+    /// not know.
+    pub fn set_size(&self, cols: u16, rows: u16, cell_width: u32, cell_height: u32) -> Result<()> {
+        Ok(tcsetwinsize(
+            &self.far,
+            winsize(cols, rows, cell_width, cell_height),
+        )?)
+    }
+
     /// Take what the child wrote into `buffer`.
     pub fn read(&self, buffer: &mut [u8]) -> Result<Chunk> {
         match rustix::io::read(&self.terminal, buffer) {
@@ -375,6 +389,21 @@ impl Pty {
             Err(Errno::IO | Errno::PIPE) => Ok(0),
             Err(error) => Err(error.into()),
         }
+    }
+}
+
+/// The size a terminal is set to, in the two units it is measured in.
+///
+/// The pixel fields are the whole grid rather than one cell, and they are
+/// 16 bits wide — so a grid that does not fit is reported as the largest one
+/// that does. Nothing is looking at a terminal that wide, and a number that
+/// wrapped would be a smaller lie than a saturated one.
+fn winsize(cols: u16, rows: u16, cell_width: u32, cell_height: u32) -> Winsize {
+    Winsize {
+        ws_row: rows,
+        ws_col: cols,
+        ws_xpixel: u16::try_from(u32::from(cols) * cell_width).unwrap_or(u16::MAX),
+        ws_ypixel: u16::try_from(u32::from(rows) * cell_height).unwrap_or(u16::MAX),
     }
 }
 
@@ -412,6 +441,17 @@ pub(crate) fn run(
             let _ = match request {
                 Request::Select(range) => session.set_selection(range),
                 Request::Key(event) => session.key(&event),
+                // The engine first: what the child draws when it hears of the
+                // new size arrives back here, and it has to meet a grid that
+                // is already that size.
+                Request::Resize {
+                    cols,
+                    rows,
+                    cell_width,
+                    cell_height,
+                } => session
+                    .resize(cols, rows, cell_width, cell_height)
+                    .and_then(|()| terminal.set_size(cols, rows, cell_width, cell_height)),
             };
         }
 
@@ -479,6 +519,8 @@ mod tests {
     use std::thread;
     use std::time::{Duration, Instant};
 
+    use rustix::termios::tcgetwinsize;
+
     use super::{Chunk, Pty};
 
     /// How long a release is given before it counts as one that never ends.
@@ -526,6 +568,25 @@ mod tests {
         waiting
             .recv_timeout(PATIENCE)
             .expect("the child was put down and collected");
+    }
+
+    /// What a program asking the terminal how big it is in pixels reads.
+    ///
+    /// The counts are what a resize is mostly about, but the pixel pair is the
+    /// half that was nailed to zero and the half nothing else here would
+    /// catch: it reaches neither the engine nor the screen. Read back off the
+    /// terminal's far end, which is the very field a child's `TIOCGWINSZ`
+    /// answers from.
+    #[test]
+    fn a_resize_fills_in_the_size_in_pixels() {
+        let (terminal, _waker) =
+            Pty::spawn(b"/bin/echo", &[b"knotty".to_vec()], 80, 24).expect("a terminal");
+
+        terminal.set_size(100, 30, 8, 16).expect("a resize");
+
+        let size = tcgetwinsize(&terminal.far).expect("the terminal's own size");
+        assert_eq!((size.ws_col, size.ws_row), (100, 30));
+        assert_eq!((size.ws_xpixel, size.ws_ypixel), (800, 480));
     }
 
     /// Long enough to be on the far side of the window macOS leaves before it

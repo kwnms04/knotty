@@ -5,10 +5,8 @@ import KnottyRender
 /// One window and everything under it: the session that feeds it and the view
 /// that beats with it. cf. 05-swift-app 4.
 final class TerminalWindowController: NSWindowController {
-    /// The grid, fixed, and the window does not resize to another one. Reflow
-    /// is the exception to the boundary's non-blocking contract and costs what
-    /// the scrollback is long, so it arrives with the input path in M3 rather
-    /// than in the milestone that proves the pipeline runs.
+    /// The grid a window opens at. What it is afterwards is what the user
+    /// dragged it to, and the view is what measures that.
     private static let columns: UInt16 = 80
     private static let rows: UInt16 = 24
     /// The one size this milestone draws at. The configuration pipeline is
@@ -34,37 +32,32 @@ final class TerminalWindowController: NSWindowController {
         // times the counts above. cf. 04-renderer R4.
         //
         // Measured against the main screen because there is no window yet to
-        // ask, so a window that opens on a display of another scale is one
-        // whose cells were snapped to the wrong pixels. Following the window
-        // instead means re-measuring and resizing, which is the resize path M2
-        // leaves out.
+        // ask. A window that opens on a display of another scale is one whose
+        // cells were snapped to the wrong pixels for as long as it takes the
+        // view to lay out, which is what re-measures them against the display
+        // it really came up on.
         let scale = Double(NSScreen.main?.backingScaleFactor ?? 2)
         let metrics = CellMetrics.system(pointSize: pointSize, scale: scale)
-        // The grid in device pixels is what the renderer places into and what
-        // the drawable is sized to; the window is that in points.
-        let pixels = NSSize(
-            width: Double(Int32(columns) * metrics.width),
-            height: Double(Int32(rows) * metrics.height)
+        // The grid in device pixels, which is what the renderer places into.
+        // The window is that in points, so it opens on whole cells and the
+        // step it resizes by keeps it on them.
+        let content = NSSize(
+            width: Double(Int32(columns) * metrics.width) / scale,
+            height: Double(Int32(rows) * metrics.height) / scale
         )
-        let content = NSSize(width: pixels.width / scale, height: pixels.height / scale)
 
         let host = try SessionHost(
             columns: columns, rows: rows, scrollback: scrollback, metrics: metrics
         )
 
-        // Resizable is left out of the style rather than taken away later: a
-        // window that proves the pipeline runs does not offer what the
-        // pipeline cannot yet do.
         let window = NSWindow(
             contentRect: NSRect(origin: .zero, size: content),
-            styleMask: [.titled, .closable, .miniaturizable],
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false
         )
         window.title = "knotty"
-        let view = try TerminalView(
-            host: host, metrics: metrics, pixels: pixels, scale: scale
-        )
+        let view = try TerminalView(host: host, pointSize: pointSize, scale: scale)
         window.contentView = view
         // A key reaches a view through the responder chain, and a window whose
         // first responder is still itself answers a `keyDown` with a beep. The

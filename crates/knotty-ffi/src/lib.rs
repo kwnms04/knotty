@@ -362,6 +362,14 @@ impl Driver {
         }
     }
 
+    /// Resize the grid, with how big one cell now is in pixels.
+    fn resize(&mut self, cols: u16, rows: u16, cell_width: u32, cell_height: u32) -> KtStatus {
+        match self {
+            Self::Detached(session) => status(session.resize(cols, rows, cell_width, cell_height)),
+            Self::Pty(session) => status(session.resize(cols, rows, cell_width, cell_height)),
+        }
+    }
+
     fn set_selection(&mut self, range: Option<SelectionRange>) -> KtStatus {
         match self {
             Self::Detached(session) => status(session.set_selection(range)),
@@ -753,6 +761,51 @@ pub unsafe extern "C" fn kt_session_key(
             composing: event.composing,
         };
         Ok(session.drive(|driver| driver.key(event)))
+    })
+}
+
+/// Resize the terminal's grid, and say how big one cell now is in pixels.
+///
+/// The primary screen reflows: a line longer than the new width folds rather
+/// than losing its tail, and widening unfolds it again. The alternate screen
+/// does not — a full-screen program redraws itself for the size it is told
+/// about, which is what the resize tells it.
+///
+/// **Call this only when what it carries has changed.** Reflow is one of the
+/// two exceptions to the boundary's non-blocking contract and costs what the
+/// scrollback is long, so a window being dragged must not reach here on every
+/// pixel. Only the counts moving rewraps anything — a call carrying nothing
+/// but a new cell size costs none of it — but keeping the idle calls out is
+/// the caller's. cf. `docs/02-ffi.md`
+///
+/// The pixel size is a cell's, not the grid's. It is what an in-band size
+/// report carries and what fills in the pseudoterminal's own pixel fields, so
+/// that a program asking the terminal how big it is in pixels gets an answer
+/// rather than a zero. Zero is how a caller says it does not know.
+///
+/// A session with a PTY behind it also tells its child, which is the
+/// `SIGWINCH` that makes an editor redraw. Reflow and that telling are one
+/// request on its own thread, so this returns once it is queued and an
+/// engine that refused the size comes back as a frame that did not change
+/// shape rather than as a status.
+///
+/// A grid of no columns or no rows is refused with `KT_STATUS_ENGINE`.
+///
+/// # Safety
+///
+/// `session` must be a live handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kt_session_resize(
+    session: *mut KtSession,
+    cols: u16,
+    rows: u16,
+    cell_width: u32,
+    cell_height: u32,
+) -> KtStatus {
+    entry::answer(|| {
+        let session = unsafe { entry::at_mut(session) }?;
+
+        Ok(session.drive(|driver| driver.resize(cols, rows, cell_width, cell_height)))
     })
 }
 

@@ -81,6 +81,7 @@ key ArrowUp
 key A ctrl
 key A alt consumed=alt "å"
 key Enter composing
+resize 10 4 8 16
 ```
 
 What each word means is `parse`'s to say, in

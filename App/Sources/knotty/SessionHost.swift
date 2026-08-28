@@ -17,7 +17,17 @@ import KnottySession
 @MainActor
 final class SessionHost {
     private let session: Session
-    private let renderer: Renderer
+    private var renderer: Renderer
+    /// What one cell measures, on the display the window is on now.
+    private var metrics: CellMetrics
+    /// The grid the last resize sent.
+    ///
+    /// Zero rather than the counts the session was spawned with, so that the
+    /// first layout always reaches the core: spawning could say how many cells
+    /// there were but not how many pixels one of them is, and a resize is what
+    /// fills that in.
+    private var columns: UInt16 = 0
+    private var rows: UInt16 = 0
 
     /// Which cell the cursor stood on when the last frame was taken, or nil
     /// when there was none to draw.
@@ -35,6 +45,39 @@ final class SessionHost {
             command: LoginShell.command, cols: columns, rows: rows, scrollback: scrollback
         )
         renderer = Renderer(metrics: metrics)
+        self.metrics = metrics
+    }
+
+    /// Tell the session the grid it now has, and how big a cell is on the
+    /// display it is drawn on.
+    ///
+    /// The view calls this on every layout, and this is what decides whether
+    /// the core hears about it: the same grid drawn at the same cell goes no
+    /// further, which is what keeps a drag off the reflow the boundary's
+    /// non-blocking contract makes an exception of. A cell that changed size
+    /// does go down even when the counts held — that is the pixel size the
+    /// terminal reports, and the engine rewraps nothing for it. cf. 02-ffi.
+    ///
+    /// New metrics are a new raster: the cell is a different number of pixels
+    /// and every glyph baked at the old size is the wrong shape. The renderer
+    /// is replaced rather than told, which is the "atlas included" reset of
+    /// 04-renderer R8 written out.
+    func resize(columns: UInt16, rows: UInt16, metrics: CellMetrics) {
+        guard (columns, rows, metrics) != (self.columns, self.rows, self.metrics) else { return }
+        if metrics != self.metrics {
+            self.metrics = metrics
+            renderer = Renderer(metrics: metrics)
+        }
+        (self.columns, self.rows) = (columns, rows)
+
+        do {
+            try session.resize(
+                cols: columns, rows: rows,
+                cellWidth: UInt32(metrics.width), cellHeight: UInt32(metrics.height)
+            )
+        } catch {
+            report(error)
+        }
     }
 
     /// Register what the session calls when it has something to be taken.

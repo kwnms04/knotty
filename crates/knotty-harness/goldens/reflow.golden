@@ -1,0 +1,61 @@
+knotty-golden 3
+wakes 3
+writes "\x1b[48;4;10;64;80t"
+events 0 dropped 0
+size 10 4
+child none
+session ok
+dirty full
+selection none
+cursor 9 1 visible block
+title ""
+pwd ""
+graphemes 0
+row 0 flags dirty,wrapped selection none
+text "abcdefghij"
+cell 0 0 ffffff 000000 0000 none 0061
+cell 0 1 ffffff 000000 0000 none 0062
+cell 0 2 ffffff 000000 0000 none 0063
+cell 0 3 ffffff 000000 0000 none 0064
+cell 0 4 ffffff 000000 0000 none 0065
+cell 0 5 ffffff 000000 0000 none 0066
+cell 0 6 ffffff 000000 0000 none 0067
+cell 0 7 ffffff 000000 0000 none 0068
+cell 0 8 ffffff 000000 0000 none 0069
+cell 0 9 ffffff 000000 0000 none 006A
+row 1 flags dirty selection none
+text "klmnopqrst"
+cell 1 0 ffffff 000000 0000 none 006B
+cell 1 1 ffffff 000000 0000 none 006C
+cell 1 2 ffffff 000000 0000 none 006D
+cell 1 3 ffffff 000000 0000 none 006E
+cell 1 4 ffffff 000000 0000 none 006F
+cell 1 5 ffffff 000000 0000 none 0070
+cell 1 6 ffffff 000000 0000 none 0071
+cell 1 7 ffffff 000000 0000 none 0072
+cell 1 8 ffffff 000000 0000 none 0073
+cell 1 9 ffffff 000000 0000 none 0074
+row 2 flags dirty selection none
+text "          "
+cell 2 0 ffffff 000000 0000 none 0000
+cell 2 1 ffffff 000000 0000 none 0000
+cell 2 2 ffffff 000000 0000 none 0000
+cell 2 3 ffffff 000000 0000 none 0000
+cell 2 4 ffffff 000000 0000 none 0000
+cell 2 5 ffffff 000000 0000 none 0000
+cell 2 6 ffffff 000000 0000 none 0000
+cell 2 7 ffffff 000000 0000 none 0000
+cell 2 8 ffffff 000000 0000 none 0000
+cell 2 9 ffffff 000000 0000 none 0000
+row 3 flags dirty selection none
+text "          "
+cell 3 0 ffffff 000000 0000 none 0000
+cell 3 1 ffffff 000000 0000 none 0000
+cell 3 2 ffffff 000000 0000 none 0000
+cell 3 3 ffffff 000000 0000 none 0000
+cell 3 4 ffffff 000000 0000 none 0000
+cell 3 5 ffffff 000000 0000 none 0000
+cell 3 6 ffffff 000000 0000 none 0000
+cell 3 7 ffffff 000000 0000 none 0000
+cell 3 8 ffffff 000000 0000 none 0000
+cell 3 9 ffffff 000000 0000 none 0000

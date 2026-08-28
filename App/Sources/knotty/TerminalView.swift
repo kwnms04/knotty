@@ -42,42 +42,50 @@ final class TerminalView: NSView {
     /// Where a composition is drawn: over the cursor, above both passes, and
     /// off the cell grid — which is why it is a view and not a third pass.
     private let preedit = NSTextField(labelWithString: "")
-    private let preeditFont: NSFont
+    private var preeditFont: NSFont
     /// One cell in points, which is what places anything AppKit lays out.
-    private let cellSize: NSSize
+    private var cellSize = NSSize.zero
     /// What watches for the window to stop being the one typed into.
     private var resigning: (any NSObjectProtocol)?
 
-    /// The grid, in device pixels. The window does not resize and the metrics
-    /// do not move, so this is measured once and is the drawable's size for
-    /// as long as the view lives.
-    private let pixels: CGSize
-    private let metrics: CellMetrics
+    /// The face's size in points, which is the one thing about the grid that
+    /// a display of another scale does not change. Everything else is
+    /// measured from it again when one does.
+    private let pointSize: Double
+    /// How many device pixels a point is on the display the view is on.
+    private var scale: Double
+    /// The drawable, in device pixels — the view rather than the grid, so
+    /// that no scaling sits between a cell and a texel when a window was
+    /// sized to something the grid does not divide.
+    private var viewport = CGSize.zero
+    private var metrics: CellMetrics
 
     private let queue: MTLCommandQueue
     private let backgroundPipeline: MTLRenderPipelineState
     private let glyphPipeline: MTLRenderPipelineState
     /// The one A8 page, filled in as the renderer bakes into it.
     private let atlas: MTLTexture
-    /// What both passes need and neither instance carries.
-    private let uniforms: Uniforms
 
-    init(host: SessionHost, metrics: CellMetrics, pixels: CGSize, scale: Double) throws {
-        self.host = host
-        self.metrics = metrics
-        self.pixels = pixels
-        cellSize = NSSize(
-            width: Double(metrics.width) / scale, height: Double(metrics.height) / scale
+    /// What both passes need and neither instance carries. Derived, so that
+    /// where the view's size is settled is also the only place it is said.
+    private var uniforms: Uniforms {
+        Uniforms(
+            viewport: SIMD2(Float(viewport.width), Float(viewport.height)),
+            cell: SIMD2(Float(metrics.width), Float(metrics.height)),
+            atlasSide: Float(Renderer.atlasSide)
         )
-        // The same face `CellMetrics` measured the grid from — the system's
-        // fixed-pitch font, which is the one this milestone draws with — asked
-        // for in points, because the overlay is AppKit's to lay out and not
-        // the grid's. cf. 05-swift-app 10 for when the two stop being a
-        // constant and start being configured together.
-        let pointSize = metrics.fontPixelSize / scale
-        preeditFont =
-            NSFont.userFixedPitchFont(ofSize: pointSize)
-            ?? .monospacedSystemFont(ofSize: pointSize, weight: .regular)
+    }
+
+    init(host: SessionHost, pointSize: Double, scale: Double) throws {
+        self.host = host
+        self.pointSize = pointSize
+        self.scale = scale
+        // Measured here rather than handed in, because the view is what
+        // measures it again on a display of another scale. `CellMetrics` is a
+        // function of these two numbers, so this is the same grid the window
+        // around it was sized to. cf. 04-renderer R4.
+        metrics = .system(pointSize: pointSize, scale: scale)
+        preeditFont = Self.overlayFont(pointSize: pointSize)
 
         guard let device = MTLCreateSystemDefaultDevice() else {
             throw MetalMissing("a GPU")
@@ -116,12 +124,6 @@ final class TerminalView: NSView {
         }
         self.atlas = atlas
 
-        uniforms = Uniforms(
-            viewport: SIMD2(Float(pixels.width), Float(pixels.height)),
-            cell: SIMD2(Float(metrics.width), Float(metrics.height)),
-            atlasSide: Float(side)
-        )
-
         super.init(frame: .zero)
 
         // ponytail: the composition is drawn white on black, which is what
@@ -145,7 +147,6 @@ final class TerminalView: NSView {
         // the display untouched, and on a wide-gamut panel that is every
         // colour a shade louder than the one the terminal asked for.
         layer.colorspace = CGColorSpace(name: CGColorSpace.sRGB)
-        layer.contentsScale = scale
 
         // All the core's thread does is raise the flag, and it crosses to main
         // only on the raise that changed it. N wakes become one block, which
@@ -165,15 +166,69 @@ final class TerminalView: NSView {
 
     override func makeBackingLayer() -> CALayer { CAMetalLayer() }
 
-    /// The drawable is the grid to the pixel, rather than the bounds times the
-    /// scale — so no rounding sits between a cell and a texel.
+    /// The face the composition is drawn in: the one `CellMetrics` measured
+    /// the grid from, asked for in points because the overlay is AppKit's to
+    /// lay out and not the grid's. cf. 05-swift-app 10 for when the face and
+    /// the size stop being constants and start being configured together.
+    private static func overlayFont(pointSize: Double) -> NSFont {
+        NSFont.userFixedPitchFont(ofSize: pointSize)
+            ?? .monospacedSystemFont(ofSize: pointSize, weight: .regular)
+    }
+
+    /// Settle everything that follows from the view's size and the display's
+    /// scale, and tell the session the grid it now has.
     ///
-    /// Here and not in the initializer because a Metal layer derives that
-    /// product again on every bounds change, and the view is sized after it is
-    /// built. This is the last word on it.
+    /// One place for all of it: the drawable, what the shaders are told about
+    /// it, the cell AppKit places the overlay in, the step the window resizes
+    /// by, and the grid the core reflows to. AppKit marks a view whose size
+    /// changed as needing layout, so a drag arrives here of its own accord.
+    ///
+    /// The reflow itself is not this call's to hold back — the session takes
+    /// the grid every time and reflows only when the count of cells moved.
+    /// cf. 02-ffi.
     override func layout() {
         super.layout()
-        (layer as? CAMetalLayer)?.drawableSize = pixels
+
+        if let scale = window?.backingScaleFactor, scale != self.scale {
+            self.scale = scale
+            // Device pixels are what a cell is measured in, so a display of
+            // another scale is a different cell and a whole new raster.
+            // cf. 04-renderer R8.
+            metrics = .system(pointSize: pointSize, scale: scale)
+            preeditFont = Self.overlayFont(pointSize: pointSize)
+        }
+        cellSize = NSSize(
+            width: Double(metrics.width) / scale, height: Double(metrics.height) / scale
+        )
+        // What keeps half a cell from being left along an edge: AppKit snaps
+        // a drag to whole steps of this, so every size a drag can reach is a
+        // whole number of cells.
+        window?.contentResizeIncrements = cellSize
+
+        viewport = convertToBacking(bounds.size)
+        if let layer = layer as? CAMetalLayer {
+            layer.contentsScale = scale
+            layer.drawableSize = viewport
+        }
+
+        // Whole cells, and never none: a window can be dragged smaller than
+        // the one cell a terminal has to have. What the division leaves over
+        // is nothing on the path a drag takes, and elsewhere — zooming, which
+        // rounds to the screen and not to the step above — it is the strip
+        // along the edge that the pass clears to the terminal's background.
+        host?.resize(
+            columns: UInt16(clamping: max(1, Int(viewport.width) / Int(metrics.width))),
+            rows: UInt16(clamping: max(1, Int(viewport.height) / Int(metrics.height))),
+            metrics: metrics
+        )
+    }
+
+    /// A display of another scale is a different number of device pixels to
+    /// the point, which is every measurement above. Nothing resizes the view
+    /// for it, so the layout that would settle them has to be asked for.
+    override func viewDidChangeBackingProperties() {
+        super.viewDidChangeBackingProperties()
+        needsLayout = true
     }
 
     /// The link belongs to the display the view is on, so it is asked for once

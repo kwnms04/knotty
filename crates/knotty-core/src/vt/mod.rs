@@ -162,8 +162,12 @@ impl Terminal {
 
         // A clipboard read gets no callback because the engine drops the
         // request without telling us: there is nothing to answer, so nothing
-        // goes out. The pixel size and color scheme queries get none either —
-        // both are answers the core cannot know. cf.
+        // goes out. The color scheme query gets none because that one is an
+        // answer the core cannot know. The size query is no longer one of
+        // those — a resize tells the terminal how big a cell is — but it
+        // stays unanswered all the same: what asks in pixels today asks the
+        // pseudoterminal, and answering the escape sequence as well is a
+        // reflection path to weigh rather than one to add in passing. cf.
         // `docs/adr/0007-input-security.md`
         Ok(())
     }
@@ -175,6 +179,34 @@ impl Terminal {
     pub fn feed(&mut self, bytes: &[u8]) {
         // SAFETY: the engine reads `len` bytes and keeps none of them.
         unsafe { ffi::ghostty_terminal_vt_write(self.raw, bytes.as_ptr(), bytes.len()) }
+    }
+
+    /// Resize the grid, and say how big one cell now is in pixels.
+    ///
+    /// The primary screen reflows; the alternate screen does not, which is
+    /// the engine's own rule and the right one — a full-screen program redraws
+    /// itself for the new size rather than having its old screen folded.
+    ///
+    /// The pixel size travels with the counts because this is the one moment
+    /// the engine can be told it: it is what an in-band size report carries,
+    /// and a cell is only ever measured where the display is.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Engine`] when the engine refused the size, which a grid of no
+    /// columns or no rows comes back as.
+    pub fn resize(
+        &mut self,
+        cols: u16,
+        rows: u16,
+        cell_width: u32,
+        cell_height: u32,
+    ) -> Result<()> {
+        // SAFETY: the terminal is ours, and the call takes nothing but
+        // numbers alongside it.
+        check(unsafe {
+            ffi::ghostty_terminal_resize(self.raw, cols, rows, cell_width, cell_height)
+        })
     }
 
     /// Encode a key event as the modes this terminal holds make of it.

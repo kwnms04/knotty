@@ -10,7 +10,7 @@ import KnottySession
 /// so. The snapping happens once, where the font's fractional advance meets
 /// the grid — which is ``system(pointSize:scale:)`` — and never again.
 /// cf. 04-renderer R5.
-public struct CellMetrics: Sendable {
+public struct CellMetrics: Sendable, Equatable {
     /// Cell width in device pixels.
     public let width: Int32
     /// Cell height in device pixels.

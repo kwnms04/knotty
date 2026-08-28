@@ -17,8 +17,8 @@ use knotty_ffi::{
     Attribute, Cell, ClipboardTarget, CursorShape, Dirty, Key, KeyAction, KtBytes, KtChildState,
     KtEvent, KtEventKind, KtEvents, KtKeyEvent, KtSessionState, KtSnapshotView, KtStatus, KtText,
     Modifier, RowFlag, Underline, kt_session_feed, kt_session_free, kt_session_key,
-    kt_session_new_detached, kt_session_set_wake, kt_session_take_events, kt_session_take_snapshot,
-    kt_session_take_writes, kt_snapshot_free, kt_snapshot_view,
+    kt_session_new_detached, kt_session_resize, kt_session_set_wake, kt_session_take_events,
+    kt_session_take_snapshot, kt_session_take_writes, kt_snapshot_free, kt_snapshot_view,
 };
 
 /// The format the goldens are written in. Bump it when the encoding changes,
@@ -52,6 +52,13 @@ enum Step {
     Out(Vec<u8>),
     /// A key event from the app.
     Key(KeyStep),
+    /// A resize from the app: the new grid, and how big one cell now is.
+    Resize {
+        cols: u16,
+        rows: u16,
+        cell_width: u32,
+        cell_height: u32,
+    },
 }
 
 /// A key event and the text it carries, which the event borrows.
@@ -91,13 +98,15 @@ impl KeyStep {
 /// key A ctrl
 /// key A alt consumed=alt "å"
 /// key Enter composing
+/// resize 10 4 8 16
 /// ```
 ///
 /// `out` takes a quoted run of bytes, written the way the golden writes one.
 /// `key` takes a key's name, then any of `ctrl`, `shift`, `alt`, `super`,
 /// `release`, `repeat`, `composing` and `consumed=<mods>`, and last of all a
 /// quoted run for what the layout made of the key. A key is a press with
-/// nothing held unless a word says otherwise.
+/// nothing held unless a word says otherwise. `resize` takes the new grid in
+/// cells and then one cell in pixels, in that order.
 fn parse(script: &str) -> Result<Vec<Step>, String> {
     script
         .lines()
@@ -127,9 +136,41 @@ fn step(line: &str) -> Result<Step, String> {
             Ok(Step::Out(quoted.ok_or("out says nothing to feed")?))
         }
         Some("key") => key_step(words, quoted.unwrap_or_default()).map(Step::Key),
+        Some("resize") => {
+            if quoted.is_some() {
+                return Err("resize takes numbers and nothing else".to_owned());
+            }
+            resize_step(words)
+        }
         Some(other) => Err(format!("{other} is not a directive this format knows")),
         None => Err("a line with only a quoted run says nothing to do with it".to_owned()),
     }
+}
+
+/// A resize: the grid in cells, then one cell in pixels.
+///
+/// All four are named rather than defaulted. The pixel pair is the half of a
+/// resize that is easiest to leave out and hardest to notice missing, so a
+/// script that leaves it out is a script that says so.
+fn resize_step<'a>(words: impl Iterator<Item = &'a str>) -> Result<Step, String> {
+    let numbers: Vec<&str> = words.collect();
+    let [cols, rows, cell_width, cell_height] = numbers[..] else {
+        return Err(format!(
+            "resize takes cols, rows, cell width and cell height, not {} words",
+            numbers.len()
+        ));
+    };
+    Ok(Step::Resize {
+        cols: number(cols)?,
+        rows: number(rows)?,
+        cell_width: number(cell_width)?,
+        cell_height: number(cell_height)?,
+    })
+}
+
+fn number<T: std::str::FromStr>(word: &str) -> Result<T, String> {
+    word.parse()
+        .map_err(|_| format!("{word} is not a number this format can use"))
 }
 
 fn key_step<'a>(
@@ -275,6 +316,14 @@ fn run(steps: &[Step], cols: u16, rows: u16, scrollback: usize) -> Result<String
                 }
                 Step::Key(key) => check("kt_session_key", unsafe {
                     kt_session_key(session, &key.event())
+                })?,
+                Step::Resize {
+                    cols,
+                    rows,
+                    cell_width,
+                    cell_height,
+                } => check("kt_session_resize", unsafe {
+                    kt_session_resize(session, *cols, *rows, *cell_width, *cell_height)
                 })?,
             }
         }

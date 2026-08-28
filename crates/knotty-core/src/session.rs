@@ -198,6 +198,26 @@ impl Session {
         self.write(&encoded)
     }
 
+    /// Resize the grid, and say how big one cell now is in pixels.
+    ///
+    /// Reflow is one of the two exceptions to the boundary's non-blocking
+    /// contract: the primary screen is rewrapped inside this call, and what
+    /// that costs is what the scrollback is long. cf. `02-ffi.md`
+    ///
+    /// Publishes whether or not the screen moved. The grid is a different
+    /// shape, so every consumer still holding the last frame is holding one
+    /// of the old one — and widening an empty screen moves no cell at all.
+    pub fn resize(
+        &mut self,
+        cols: u16,
+        rows: u16,
+        cell_width: u32,
+        cell_height: u32,
+    ) -> Result<()> {
+        self.terminal.resize(cols, rows, cell_width, cell_height)?;
+        self.publish(true)
+    }
+
     /// Select a range of the viewport, or clear the selection with `None`.
     ///
     /// Publishes a snapshot: the selection is part of what a consumer draws.
@@ -444,6 +464,13 @@ pub(crate) enum Request {
     Select(Option<SelectionRange>),
     /// Encode a key and queue what it comes to for the child.
     Key(KeyEvent),
+    /// Resize the grid, with how big one cell now is in pixels.
+    Resize {
+        cols: u16,
+        rows: u16,
+        cell_width: u32,
+        cell_height: u32,
+    },
 }
 
 /// A session with a child process behind a pseudoterminal.
@@ -663,6 +690,26 @@ impl PtySession {
     /// [`write`]: PtySession::write
     pub fn key(&self, event: KeyEvent) -> Result<()> {
         self.request(Request::Key(event))
+    }
+
+    /// Resize the grid and the pseudoterminal both.
+    ///
+    /// One request rather than two calls, because the two are the same fact:
+    /// the engine reflows to the new grid and the terminal tells the child it
+    /// has one, and a child that hears about a size the engine has not taken
+    /// yet redraws to the wrong screen.
+    ///
+    /// What the engine made of it is not reported, for the reason [`request`]
+    /// gives.
+    ///
+    /// [`request`]: PtySession::request
+    pub fn resize(&self, cols: u16, rows: u16, cell_width: u32, cell_height: u32) -> Result<()> {
+        self.request(Request::Resize {
+            cols,
+            rows,
+            cell_width,
+            cell_height,
+        })
     }
 
     /// Put a request where the I/O thread will find it, and tell it to look.

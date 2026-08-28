@@ -131,3 +131,19 @@ fn modifiers() {
 fn composing() {
     check_script("composing");
 }
+
+/// A line as wide as the grid, and then a narrower grid. What the reflow made
+/// of it is the screen this pins, and the in-band size report beside it is
+/// what the child was told the new size was.
+#[test]
+fn reflow() {
+    check_script("reflow");
+}
+
+/// The same line, folded and then unfolded by a second resize. What this pins
+/// is the widening — and, because it is a round trip, that the fold before it
+/// kept every cell it was given.
+#[test]
+fn unfold() {
+    check_script("unfold");
+}
