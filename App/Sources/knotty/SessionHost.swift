@@ -19,6 +19,15 @@ final class SessionHost {
     private let session: Session
     private let renderer: Renderer
 
+    /// Which cell the cursor stood on when the last frame was taken, or nil
+    /// when there was none to draw.
+    ///
+    /// Read off the snapshot rather than counted alongside it: an input method
+    /// places its candidate window from where the cursor is, and a view
+    /// keeping a second count of that is a view that can disagree with the
+    /// terminal. cf. 05-swift-app 7.
+    private(set) var cursorCell: (column: Int, row: Int)?
+
     /// Spawn the user's login shell behind a terminal of this size, drawn at
     /// these metrics.
     init(columns: UInt16, rows: UInt16, scrollback: Int, metrics: CellMetrics) throws {
@@ -46,7 +55,12 @@ final class SessionHost {
     func takeFrame() -> Frame? {
         do {
             try session.drainEvents()
-            return try session.withSnapshot { renderer.frame(for: $0) }
+            return try session.withSnapshot { snapshot in
+                cursorCell =
+                    snapshot.cursor.visible
+                    ? (column: Int(snapshot.cursor.x), row: Int(snapshot.cursor.y)) : nil
+                return renderer.frame(for: snapshot)
+            }
         } catch {
             report(error)
             return nil
@@ -62,6 +76,20 @@ final class SessionHost {
     func send(_ key: KeyEvent) {
         do {
             try session.key(key)
+        } catch {
+            report(error)
+        }
+    }
+
+    /// Hand the session text that is already text.
+    ///
+    /// What an input method finished making, which is not a key and so has no
+    /// encoding left to decide. Marked text never comes this way — it is not
+    /// in the terminal until it is committed, and putting it in the grid is
+    /// what would make cancelling it impossible. cf. 05-swift-app 7.
+    func write(_ text: String) {
+        do {
+            try session.write(Array(text.utf8))
         } catch {
             report(error)
         }

@@ -114,6 +114,22 @@ public final class Session {
         }
     }
 
+    /// Queue bytes for the session's child.
+    ///
+    /// What is already text and has nothing left to decide: an input method's
+    /// finished composition is the first of them. A composed syllable belongs
+    /// to no place on the keyboard, so there is no key for the core to encode
+    /// it from — the bytes are the whole of it. cf. 05-swift-app 7.
+    ///
+    /// Refused when the writer queue could not hold them, and in that case
+    /// none of them were queued: a prefix of what the user typed reaching the
+    /// child is worse than none of it.
+    public func write(_ bytes: [UInt8]) throws {
+        try bytes.withUnsafeBufferPointer { bytes in
+            try check("kt_session_write", kt_session_write(handle, bytes.baseAddress, bytes.count))
+        }
+    }
+
     /// Encode a key and queue what it comes to for the child.
     ///
     /// Which bytes that is belongs to the core, for the reason ``KeyEvent``

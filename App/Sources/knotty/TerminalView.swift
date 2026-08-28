@@ -28,6 +28,26 @@ final class TerminalView: NSView {
 
     private var link: CADisplayLink?
 
+    /// The composition an input method has open, or nil when there is none.
+    ///
+    /// The one piece of typed text this view holds on to, and it is held
+    /// precisely so that it does not go down: text still being made is not in
+    /// the terminal, and a half-made syllable in the grid could not be taken
+    /// back. cf. 05-swift-app 7.
+    private var marked: NSAttributedString?
+    /// What an input method committed during the `keyDown` being handled.
+    private var committedText: String?
+    /// Whether a `keyDown` is the reason an input method is calling back.
+    private var handlingKeyDown = false
+    /// Where a composition is drawn: over the cursor, above both passes, and
+    /// off the cell grid — which is why it is a view and not a third pass.
+    private let preedit = NSTextField(labelWithString: "")
+    private let preeditFont: NSFont
+    /// One cell in points, which is what places anything AppKit lays out.
+    private let cellSize: NSSize
+    /// What watches for the window to stop being the one typed into.
+    private var resigning: (any NSObjectProtocol)?
+
     /// The grid, in device pixels. The window does not resize and the metrics
     /// do not move, so this is measured once and is the drawable's size for
     /// as long as the view lives.
@@ -46,6 +66,18 @@ final class TerminalView: NSView {
         self.host = host
         self.metrics = metrics
         self.pixels = pixels
+        cellSize = NSSize(
+            width: Double(metrics.width) / scale, height: Double(metrics.height) / scale
+        )
+        // The same face `CellMetrics` measured the grid from — the system's
+        // fixed-pitch font, which is the one this milestone draws with — asked
+        // for in points, because the overlay is AppKit's to lay out and not
+        // the grid's. cf. 05-swift-app 10 for when the two stop being a
+        // constant and start being configured together.
+        let pointSize = metrics.fontPixelSize / scale
+        preeditFont =
+            NSFont.userFixedPitchFont(ofSize: pointSize)
+            ?? .monospacedSystemFont(ofSize: pointSize, weight: .regular)
 
         guard let device = MTLCreateSystemDefaultDevice() else {
             throw MetalMissing("a GPU")
@@ -91,6 +123,14 @@ final class TerminalView: NSView {
         )
 
         super.init(frame: .zero)
+
+        // ponytail: the composition is drawn white on black, which is what
+        // this milestone's terminal is. The theme it should take these from
+        // arrives with the configuration pipeline in M4. cf. 05-swift-app 10.
+        preedit.drawsBackground = true
+        preedit.backgroundColor = .black
+        preedit.isHidden = true
+        addSubview(preedit)
 
         // What asks `makeBackingLayer()` for the layer configured just below.
         wantsLayer = true
@@ -145,11 +185,23 @@ final class TerminalView: NSView {
         // that leaves its window and is never invalidated is a pair that keeps
         // each other alive. One window makes that invisible; the second one
         // makes it a leak.
-        guard window != nil else {
+        guard let window else {
+            resigning.map(NotificationCenter.default.removeObserver)
+            resigning = nil
             link?.invalidate()
             link = nil
             return
         }
+        // The window and not the responder chain, because this window has one
+        // view and nothing ever takes first responder from it: what really
+        // ends a composition here is the window ceasing to be the one being
+        // typed into. cf. 07-definition-of-done C.
+        resigning = resigning
+            ?? NotificationCenter.default.addObserver(
+                forName: NSWindow.didResignKeyNotification, object: window, queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated { self?.endComposition() }
+            }
         guard link == nil else { return }
         let link = displayLink(target: self, selector: #selector(tick))
         // Running rather than paused: a wake that arrived before there was a
@@ -161,26 +213,188 @@ final class TerminalView: NSView {
     /// What makes a window's keys arrive here at all.
     override var acceptsFirstResponder: Bool { true }
 
-    /// What the user typed, on its way to the child.
+    /// What the user typed, on its way to the child — by way of the input
+    /// method, which gets the first say. cf. 05-swift-app 7.
     ///
-    /// The key crosses undecided: which bytes it comes to depends on modes the
-    /// terminal holds, and nothing here reads one. What this adds is only what
-    /// AppKit knows and the core cannot — where on the keyboard the key sits,
-    /// what was held with it, and what the layout made of it. cf. adr/0017.
-    ///
-    /// An input method takes its chance ahead of this in M3's next ticket.
-    /// Until then a `keyDown` is the whole of the event.
+    /// What the method did with the key is read off what it called back and
+    /// not off its answer: a Roman layout reports every plain letter consumed
+    /// and hands it straight back through ``insertText(_:replacementRange:)``,
+    /// so an answer of "handled" says nothing about whose key it was. Whether
+    /// a composition was open across it does.
     override func keyDown(with event: NSEvent) {
-        host?.send(
-            KeyEvent(
-                macOSKeyCode: event.keyCode,
-                // A key held down is the platform repeating it, and the core
-                // has an action of its own for that.
-                action: event.isARepeat ? .repeat : .press,
-                mods: Modifiers(event.modifierFlags),
-                consumedMods: Self.consumedModifiers(of: event),
-                text: event.characters ?? ""
-            )
+        let wasComposing = marked != nil
+        committedText = nil
+        handlingKeyDown = true
+        interpretKeyEvents([event])
+        handlingKeyDown = false
+
+        // A composition the key was open across owns it. What the method
+        // finished making goes down as the text it already is — it stands at
+        // no place on the keyboard, so there is nothing for the core to encode
+        // it from — and the key itself is spent on ending the composition.
+        if wasComposing {
+            // Nothing committed is a composition still being made — a jamo
+            // deleted, a candidate stepped through — and none of that is the
+            // terminal's.
+            guard let committedText else { return }
+            if Self.isText(committedText) {
+                host?.write(committedText)
+            }
+            if marked == nil, Self.movesTheCursor(event) {
+                host?.send(Self.key(of: event, composing: false))
+            }
+            return
+        }
+        // No composition was open across it. Whatever the method made of it is
+        // then only the layout's answer to this very key, and the key is what
+        // carries that down — to where the modes that decide its bytes are
+        // read. A key that opened a composition goes down too, carrying the
+        // flag the engine reads to leave it alone. cf. adr/0017.
+        host?.send(Self.key(of: event, composing: marked != nil))
+    }
+
+    /// One `NSEvent` as the core takes a key: undecided.
+    ///
+    /// Which bytes it comes to depends on modes the terminal holds, and
+    /// nothing here reads one. What this adds is only what AppKit knows and
+    /// the core cannot — where on the keyboard the key sits, what was held
+    /// with it, what the layout made of it, and whether a composition is open.
+    /// cf. adr/0017.
+    private static func key(of event: NSEvent, composing: Bool) -> KeyEvent {
+        KeyEvent(
+            macOSKeyCode: event.keyCode,
+            // A key held down is the platform repeating it, and the core has
+            // an action of its own for that.
+            action: event.isARepeat ? .repeat : .press,
+            mods: Modifiers(event.modifierFlags),
+            consumedMods: consumedModifiers(of: event),
+            text: event.characters ?? "",
+            composing: composing
+        )
+    }
+
+    /// Whether what an input method committed is text at all.
+    ///
+    /// A method composing across `⌃H` hands the control character straight
+    /// back rather than acting on it, and a terminal reading that as text
+    /// would see a backspace nobody typed. A lone character is the whole of
+    /// the case: what made one is a key still on its way down, and the core
+    /// derives the control character from that key — which is the half of the
+    /// rule ``KnottySession/KeyEvent`` keeps its own text by that applies
+    /// here, the other half being about codepoints only AppKit puts on a key.
+    private static func isText(_ committed: String) -> Bool {
+        guard committed.unicodeScalars.count == 1,
+            let scalar = committed.unicodeScalars.first
+        else { return !committed.isEmpty }
+        return scalar.value >= 0x20 && scalar.value != 0x7f
+    }
+
+    /// Which keys a finished composition still hands on to the terminal.
+    ///
+    /// An input method that commits on a cursor key does nothing further with
+    /// it, so the movement is the terminal's to make — and only then, since a
+    /// cursor key the method spent stepping through its own candidates commits
+    /// nothing. Everything else that ends a composition — Enter, Escape — is
+    /// spent on ending it, and a second press is what carries it down. Where
+    /// exactly this line falls is what the manual pass over DoD C is for.
+    private static func movesTheCursor(_ event: NSEvent) -> Bool {
+        switch event.specialKey {
+        case .upArrow, .downArrow, .leftArrow, .rightArrow: true
+        default: false
+        }
+    }
+
+    /// What an input method reaches the responder chain with for anything it
+    /// did not turn into text — a cursor key, a deletion. Nothing here acts on
+    /// one: the key itself is still on its way to the terminal, which is where
+    /// every one of these commands belongs. Swallowing it is what keeps AppKit
+    /// from beeping at a command no responder up the chain implements.
+    override func doCommand(by selector: Selector) {}
+
+    /// Focus leaving takes an unfinished composition with it.
+    ///
+    /// Nothing of one was ever in the grid — that is what makes it droppable
+    /// rather than something to unpick — but an overlay left standing over a
+    /// window no longer being typed into is the one way it could look as
+    /// though it had been. cf. 07-definition-of-done C.
+    ///
+    /// The window losing key is the path that really runs here; this is the
+    /// one that will, once a window holds more than the terminal.
+    override func resignFirstResponder() -> Bool {
+        endComposition()
+        return super.resignFirstResponder()
+    }
+
+    /// Drop an unfinished composition, telling the input method so.
+    private func endComposition() {
+        guard marked != nil else { return }
+        inputContext?.discardMarkedText()
+        unmark()
+    }
+
+    /// Where the cursor's cell sits in the view.
+    ///
+    /// The renderer places from the top left in device pixels and a view
+    /// counts from the bottom left in points, which is the whole of this. The
+    /// cell itself comes off the snapshot: this view keeps no cursor of its
+    /// own. cf. 05-swift-app 7.
+    private func cursorRect() -> NSRect? {
+        guard let cell = host?.cursorCell else { return nil }
+        return NSRect(
+            x: Double(cell.column) * cellSize.width,
+            y: bounds.height - Double(cell.row + 1) * cellSize.height,
+            width: cellSize.width,
+            height: cellSize.height
+        )
+    }
+
+    /// Show the composition, in the one face the grid is drawn in.
+    private func show(_ text: NSAttributedString) {
+        let shown = NSMutableAttributedString(attributedString: text)
+        shown.addAttributes(
+            [.font: preeditFont, .foregroundColor: NSColor.white],
+            range: NSRange(location: 0, length: shown.length)
+        )
+        preedit.attributedStringValue = shown
+        preedit.sizeToFit()
+        placeComposition()
+    }
+
+    /// Put the composition where the cursor now is, and tell the input method
+    /// that what it last asked about has moved.
+    ///
+    /// Called on every frame an open composition sees: output nobody typed
+    /// moves the cursor out from under it, and macOS holds on to the rectangle
+    /// ``firstRect(forCharacterRange:actualRange:)`` answered with until it is
+    /// told that answer went stale.
+    private func placeComposition() {
+        // No cursor is nowhere to put it. The terminal hides one, and a
+        // composition drawn where the last one stood points at a cell that no
+        // longer means anything.
+        guard marked != nil, let cell = cursorRect() else {
+            preedit.isHidden = true
+            return
+        }
+        preedit.setFrameOrigin(cell.origin)
+        preedit.isHidden = false
+        inputContext?.invalidateCharacterCoordinates()
+    }
+
+    /// Take the composition down. What was never committed was never in the
+    /// terminal, so there is nothing to undo — only an overlay to stop showing.
+    private func unmark() {
+        marked = nil
+        preedit.isHidden = true
+    }
+
+    /// A string an input method handed over, which it may do either way. A
+    /// bare one is underlined here, so that text in the middle of being made
+    /// never looks like text that already is.
+    private static func attributed(_ string: Any) -> NSAttributedString {
+        if let attributed = string as? NSAttributedString { return attributed }
+        return NSAttributedString(
+            string: string as? String ?? "",
+            attributes: [.underlineStyle: NSUnderlineStyle.single.rawValue]
         )
     }
 
@@ -215,6 +429,7 @@ final class TerminalView: NSView {
         }
         guard let frame = host?.takeFrame() else { return }
         draw(frame)
+        placeComposition()
     }
 
     /// Put one frame on the screen: the page gets what was baked for it, then
@@ -311,6 +526,96 @@ final class TerminalView: NSView {
             attachment.destinationAlphaBlendFactor = .one
         }
         return try device.makeRenderPipelineState(descriptor: description)
+    }
+}
+
+/// The input method's side of the view. cf. 05-swift-app 7.
+///
+/// The document an input method is shown is the composition and nothing else.
+/// What is already on the screen is the child's text, not this view's to offer
+/// back for replacement or to be asked about — so the ranges are the marked
+/// text's own, the selection is empty, and there is no substring to hand out.
+extension TerminalView: @MainActor NSTextInputClient {
+    /// Text an input method finished making.
+    ///
+    /// Inside a `keyDown` it is that key's answer and ``keyDown(with:)``
+    /// decides what becomes of it. Outside one there is no key at all — the
+    /// emoji palette and the character viewer insert straight into the client —
+    /// so it goes down where it arrives, by the path a composition takes.
+    func insertText(_ string: Any, replacementRange: NSRange) {
+        let text = Self.attributed(string).string
+        unmark()
+        // Appended rather than assigned: one key can be committed in more than
+        // one call, and the second overwriting the first would drop what the
+        // method already handed over.
+        if handlingKeyDown {
+            committedText = (committedText ?? "") + text
+        } else if !text.isEmpty {
+            host?.write(text)
+        }
+    }
+
+    func setMarkedText(_ string: Any, selectedRange: NSRange, replacementRange: NSRange) {
+        let text = Self.attributed(string)
+        // An input method ends a composition by marking it empty as readily as
+        // by unmarking it, and an empty overlay left on screen is a black
+        // rectangle over a cell.
+        guard text.length > 0 else {
+            unmark()
+            return
+        }
+        marked = text
+        show(text)
+    }
+
+    func unmarkText() {
+        unmark()
+    }
+
+    func hasMarkedText() -> Bool {
+        marked != nil
+    }
+
+    func markedRange() -> NSRange {
+        guard let marked else { return NSRange(location: NSNotFound, length: 0) }
+        return NSRange(location: 0, length: marked.length)
+    }
+
+    /// Empty, at the start: the caret a composition is being made at is the
+    /// terminal's cursor, and there is no selection of this view's for an
+    /// input method to be replacing.
+    func selectedRange() -> NSRange {
+        NSRange(location: 0, length: 0)
+    }
+
+    /// Nothing. An input method asking to read back what surrounds the cursor
+    /// is asking about a document that is not here — the grid is the child's.
+    func attributedSubstring(forProposedRange range: NSRange, actualRange: NSRangePointer?)
+        -> NSAttributedString?
+    {
+        nil
+    }
+
+    /// What marked text may be styled with, which is what an input method
+    /// checks before sending any of it. The clause segments a Japanese
+    /// conversion underlines apart from one another are the third.
+    func validAttributesForMarkedText() -> [NSAttributedString.Key] {
+        [.underlineStyle, .underlineColor, .markedClauseSegment]
+    }
+
+    /// Where the candidate window goes: the cursor's cell, in screen
+    /// coordinates. Taken from the snapshot's cursor and not from a count of
+    /// this view's own. cf. 05-swift-app 7.
+    func firstRect(forCharacterRange range: NSRange, actualRange: NSRangePointer?) -> NSRect {
+        guard let cell = cursorRect(), let window else { return .zero }
+        return window.convertToScreen(convert(cell, to: nil))
+    }
+
+    /// No cell answers for a character: the composition is drawn over the grid
+    /// rather than in it, and nothing an input method could point at is text
+    /// that it owns.
+    func characterIndex(for point: NSPoint) -> Int {
+        NSNotFound
     }
 }
 

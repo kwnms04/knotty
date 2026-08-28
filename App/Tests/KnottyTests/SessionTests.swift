@@ -49,6 +49,17 @@ private func text(of snapshot: Snapshot, row: Int) -> String {
     #expect(drawn == true)
 }
 
+/// The other way into the writer queue: bytes that are already the bytes,
+/// which is what an input method's finished composition is. Nothing encodes
+/// them, so what comes out is what went in. cf. 05-swift-app 7.
+@Test func writtenTextReachesTheChildAsTheBytesItAlreadyIs() throws {
+    let session = try Session(cols: cols, rows: rows, scrollback: scrollback)
+
+    try session.write(Array("한".utf8))
+
+    #expect(try session.takeWrites() == Array("한".utf8))
+}
+
 /// Anything that outlives the frame is copied out of it, which is what the
 /// borrowed pointers leave a consumer no choice about.
 @Test func aTitleKeptPastTheFrameIsACopy() throws {
