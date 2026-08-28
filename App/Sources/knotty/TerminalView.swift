@@ -309,7 +309,7 @@ final class TerminalView: NSView {
     /// one: the key itself is still on its way to the terminal, which is where
     /// every one of these commands belongs. Swallowing it is what keeps AppKit
     /// from beeping at a command no responder up the chain implements.
-    override func doCommand(by selector: Selector) {}
+    nonisolated override func doCommand(by selector: Selector) {}
 
     /// Focus leaving takes an unfinished composition with it.
     ///
@@ -535,86 +535,111 @@ final class TerminalView: NSView {
 /// What is already on the screen is the child's text, not this view's to offer
 /// back for replacement or to be asked about — so the ranges are the marked
 /// text's own, the selection is empty, and there is no substring to hand out.
-extension TerminalView: @MainActor NSTextInputClient {
+///
+/// Every member is `nonisolated`, and the ones that touch the view assume the
+/// main actor rather than being declared on it. AppKit calls all of these on
+/// the main thread and 05-swift-app 5 already says so; what the annotation is
+/// really about is the SDK, which declares this protocol isolated on macOS 26
+/// and unisolated on the one CI builds against. A witness that is isolated to
+/// nothing satisfies it either way, and the isolated-conformance syntax that
+/// would say it once is newer than the compiler on that runner.
+extension TerminalView: NSTextInputClient {
     /// Text an input method finished making.
     ///
     /// Inside a `keyDown` it is that key's answer and ``keyDown(with:)``
     /// decides what becomes of it. Outside one there is no key at all — the
     /// emoji palette and the character viewer insert straight into the client —
     /// so it goes down where it arrives, by the path a composition takes.
-    func insertText(_ string: Any, replacementRange: NSRange) {
-        let text = Self.attributed(string).string
-        unmark()
-        // Appended rather than assigned: one key can be committed in more than
-        // one call, and the second overwriting the first would drop what the
-        // method already handed over.
-        if handlingKeyDown {
-            committedText = (committedText ?? "") + text
-        } else if !text.isEmpty {
-            host?.write(text)
-        }
-    }
-
-    func setMarkedText(_ string: Any, selectedRange: NSRange, replacementRange: NSRange) {
-        let text = Self.attributed(string)
-        // An input method ends a composition by marking it empty as readily as
-        // by unmarking it, and an empty overlay left on screen is a black
-        // rectangle over a cell.
-        guard text.length > 0 else {
+    nonisolated func insertText(_ string: Any, replacementRange: NSRange) {
+        // AppKit hands this over on the main thread and keeps no reference of
+        // its own to it, which is what makes the hop below sound and what
+        // region isolation has no way to see. cf. 05-swift-app 5.
+        nonisolated(unsafe) let string = string
+        MainActor.assumeIsolated {
+            let text = Self.attributed(string).string
             unmark()
-            return
+            // Appended rather than assigned: one key can be committed in more
+            // than one call, and the second overwriting the first would drop
+            // what the method already handed over.
+            if handlingKeyDown {
+                committedText = (committedText ?? "") + text
+            } else if !text.isEmpty {
+                host?.write(text)
+            }
         }
-        marked = text
-        show(text)
     }
 
-    func unmarkText() {
-        unmark()
+    nonisolated func setMarkedText(
+        _ string: Any, selectedRange: NSRange, replacementRange: NSRange
+    ) {
+        nonisolated(unsafe) let string = string
+        MainActor.assumeIsolated {
+            let text = Self.attributed(string)
+            // An input method ends a composition by marking it empty as
+            // readily as by unmarking it, and an empty overlay left on screen
+            // is a black rectangle over a cell.
+            guard text.length > 0 else {
+                unmark()
+                return
+            }
+            marked = text
+            show(text)
+        }
     }
 
-    func hasMarkedText() -> Bool {
-        marked != nil
+    nonisolated func unmarkText() {
+        MainActor.assumeIsolated { unmark() }
     }
 
-    func markedRange() -> NSRange {
-        guard let marked else { return NSRange(location: NSNotFound, length: 0) }
-        return NSRange(location: 0, length: marked.length)
+    nonisolated func hasMarkedText() -> Bool {
+        MainActor.assumeIsolated { marked != nil }
+    }
+
+    nonisolated func markedRange() -> NSRange {
+        MainActor.assumeIsolated {
+            guard let marked else { return NSRange(location: NSNotFound, length: 0) }
+            return NSRange(location: 0, length: marked.length)
+        }
     }
 
     /// Empty, at the start: the caret a composition is being made at is the
     /// terminal's cursor, and there is no selection of this view's for an
     /// input method to be replacing.
-    func selectedRange() -> NSRange {
+    nonisolated func selectedRange() -> NSRange {
         NSRange(location: 0, length: 0)
     }
 
     /// Nothing. An input method asking to read back what surrounds the cursor
     /// is asking about a document that is not here — the grid is the child's.
-    func attributedSubstring(forProposedRange range: NSRange, actualRange: NSRangePointer?)
-        -> NSAttributedString?
-    {
+    nonisolated func attributedSubstring(
+        forProposedRange range: NSRange, actualRange: NSRangePointer?
+    ) -> NSAttributedString? {
         nil
     }
 
     /// What marked text may be styled with, which is what an input method
     /// checks before sending any of it. The clause segments a Japanese
     /// conversion underlines apart from one another are the third.
-    func validAttributesForMarkedText() -> [NSAttributedString.Key] {
+    nonisolated func validAttributesForMarkedText() -> [NSAttributedString.Key] {
         [.underlineStyle, .underlineColor, .markedClauseSegment]
     }
 
     /// Where the candidate window goes: the cursor's cell, in screen
     /// coordinates. Taken from the snapshot's cursor and not from a count of
     /// this view's own. cf. 05-swift-app 7.
-    func firstRect(forCharacterRange range: NSRange, actualRange: NSRangePointer?) -> NSRect {
-        guard let cell = cursorRect(), let window else { return .zero }
-        return window.convertToScreen(convert(cell, to: nil))
+    nonisolated func firstRect(forCharacterRange range: NSRange, actualRange: NSRangePointer?)
+        -> NSRect
+    {
+        MainActor.assumeIsolated {
+            guard let cell = cursorRect(), let window else { return .zero }
+            return window.convertToScreen(convert(cell, to: nil))
+        }
     }
 
     /// No cell answers for a character: the composition is drawn over the grid
     /// rather than in it, and nothing an input method could point at is text
     /// that it owns.
-    func characterIndex(for point: NSPoint) -> Int {
+    nonisolated func characterIndex(for point: NSPoint) -> Int {
         NSNotFound
     }
 }
