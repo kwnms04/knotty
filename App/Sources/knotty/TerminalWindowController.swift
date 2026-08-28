@@ -62,9 +62,15 @@ final class TerminalWindowController: NSWindowController {
             defer: false
         )
         window.title = "knotty"
-        window.contentView = try TerminalView(
+        let view = try TerminalView(
             host: host, metrics: metrics, pixels: pixels, scale: scale
         )
+        window.contentView = view
+        // A key reaches a view through the responder chain, and a window whose
+        // first responder is still itself answers a `keyDown` with a beep. The
+        // window is what hands that out, so the object that made the window is
+        // where it is handed out. cf. 05-swift-app 4.
+        window.makeFirstResponder(view)
         window.center()
 
         let controller = TerminalWindowController(window: window)

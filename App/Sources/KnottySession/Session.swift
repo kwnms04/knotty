@@ -8,6 +8,10 @@ public struct SessionError: Error, CustomStringConvertible {
     public let status: Int32
 
     public var description: String { "\(call) returned status \(status)" }
+
+    /// What a key naming no physical key is refused with, which is a mapping
+    /// to fill in rather than a key that has no bytes.
+    public static let unidentifiedKey = Int32(KT_STATUS_UNIDENTIFIED_KEY.rawValue)
 }
 
 /// A session, and the only way to reach the handle behind one.
@@ -108,6 +112,37 @@ public final class Session {
         try bytes.withUnsafeBufferPointer { bytes in
             try check("kt_session_feed", kt_session_feed(handle, bytes.baseAddress, bytes.count))
         }
+    }
+
+    /// Encode a key and queue what it comes to for the child.
+    ///
+    /// Which bytes that is belongs to the core, for the reason ``KeyEvent``
+    /// gives.
+    ///
+    /// A key that comes to nothing queues nothing and is not a failure — a
+    /// bare modifier, a release, and every key at all while an input method is
+    /// composing. A key that names nothing is refused with
+    /// ``SessionError/unidentifiedKey`` instead, so a hole in a mapping is
+    /// heard about where it happens.
+    public func key(_ event: KeyEvent) throws {
+        try event.withRaw { event in
+            try withUnsafePointer(to: event) { event in
+                try check("kt_session_key", kt_session_key(handle, event))
+            }
+        }
+    }
+
+    /// Take the bytes a detached session has queued for its child, emptying
+    /// the queue.
+    ///
+    /// What the terminal answered and what was typed into it, in the order
+    /// they were queued. A session with a PTY behind it has its own reader
+    /// draining this, and refuses the call.
+    public func takeWrites() throws -> [UInt8] {
+        var bytes = KtBytes()
+        try check("kt_session_take_writes", kt_session_take_writes(handle, &bytes))
+        guard let queued = bytes.bytes else { return [] }
+        return [UInt8](UnsafeBufferPointer(start: queued, count: bytes.len))
     }
 
     /// Take the latest frame and lend a view of it to `body`, or answer nil

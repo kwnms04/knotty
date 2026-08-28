@@ -158,6 +158,53 @@ final class TerminalView: NSView {
         self.link = link
     }
 
+    /// What makes a window's keys arrive here at all.
+    override var acceptsFirstResponder: Bool { true }
+
+    /// What the user typed, on its way to the child.
+    ///
+    /// The key crosses undecided: which bytes it comes to depends on modes the
+    /// terminal holds, and nothing here reads one. What this adds is only what
+    /// AppKit knows and the core cannot — where on the keyboard the key sits,
+    /// what was held with it, and what the layout made of it. cf. adr/0017.
+    ///
+    /// An input method takes its chance ahead of this in M3's next ticket.
+    /// Until then a `keyDown` is the whole of the event.
+    override func keyDown(with event: NSEvent) {
+        host?.send(
+            KeyEvent(
+                macOSKeyCode: event.keyCode,
+                // A key held down is the platform repeating it, and the core
+                // has an action of its own for that.
+                action: event.isARepeat ? .repeat : .press,
+                mods: Modifiers(event.modifierFlags),
+                consumedMods: Self.consumedModifiers(of: event),
+                text: event.characters ?? ""
+            )
+        )
+    }
+
+    /// Which of what was held the layout already spent on the characters.
+    ///
+    /// Option is the one macOS spends: `⌥A` is `å` on a US layout, and a
+    /// terminal encoding Meta on top of that would be the same modifier
+    /// counted twice. What tells the two apart is whether the characters
+    /// differ from the ones the key makes without it —
+    /// `charactersIgnoringModifiers` drops every modifier but shift, so an
+    /// arrow or a plain letter answers the same string either way.
+    ///
+    /// Control and Command are asked after because they change the characters
+    /// too, and what they changed is not Option's to be credited with: `⌃⌥A`
+    /// is the control character Control made, and calling Option spent on it
+    /// is what would take the Meta prefix back off.
+    private static func consumedModifiers(of event: NSEvent) -> Modifiers {
+        guard event.modifierFlags.contains(.option),
+            event.modifierFlags.isDisjoint(with: [.control, .command]),
+            event.characters != event.charactersIgnoringModifiers
+        else { return [] }
+        return .alt
+    }
+
     @objc private func tick() {
         // One tick with nothing behind it stops the link, with no hysteresis.
         // Coming back costs a frame; what it buys is an idle app that does
@@ -264,6 +311,22 @@ final class TerminalView: NSView {
             attachment.destinationAlphaBlendFactor = .one
         }
         return try device.makeRenderPipelineState(descriptor: description)
+    }
+}
+
+extension Modifiers {
+    /// What AppKit says was held, as the core counts it.
+    ///
+    /// Two of AppKit's bits are dropped rather than translated: `.function` is
+    /// a key of its own here and travels as one, and `.numericPad` says where
+    /// the key was rather than what was held down with it.
+    fileprivate init(_ flags: NSEvent.ModifierFlags) {
+        self = []
+        if flags.contains(.shift) { insert(.shift) }
+        if flags.contains(.control) { insert(.ctrl) }
+        if flags.contains(.option) { insert(.alt) }
+        if flags.contains(.command) { insert(.super) }
+        if flags.contains(.capsLock) { insert(.capsLock) }
     }
 }
 

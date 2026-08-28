@@ -48,12 +48,30 @@ final class SessionHost {
             try session.drainEvents()
             return try session.withSnapshot { renderer.frame(for: $0) }
         } catch {
-            // Nothing can act on this yet: a broken session keeps its last
-            // screen and M2 has nothing to put in its place. Saying so beats
-            // a window that quietly stops moving. cf. 05-swift-app 8 for the
-            // policy that arrives in M4.
-            FileHandle.standardError.write(Data("knotty: \(error)\n".utf8))
+            report(error)
             return nil
         }
+    }
+
+    /// Hand one key to the session, which is what decides its bytes.
+    ///
+    /// The view says which key moved and what was held with it; this is the
+    /// only object that calls with any of it. A key naming no physical key
+    /// comes back as a refusal, which is a hole in the app's own table rather
+    /// than a key that quietly did nothing.
+    func send(_ key: KeyEvent) {
+        do {
+            try session.key(key)
+        } catch {
+            report(error)
+        }
+    }
+
+    /// Nothing can act on a broken session yet: it keeps its last screen and
+    /// M3 has nothing to put in its place. Saying so beats a window that
+    /// quietly stops moving. cf. 05-swift-app 8 for the policy that arrives in
+    /// M4.
+    private func report(_ error: Error) {
+        FileHandle.standardError.write(Data("knotty: \(error)\n".utf8))
     }
 }
