@@ -1,4 +1,4 @@
-knotty-render-golden 1
+knotty-render-golden 2
 cell 16 34
 backgrounds 1920
 background 0 0 16 34 000000
@@ -1922,310 +1922,314 @@ background 1232 782 16 34 b5bd68
 background 1248 782 16 34 b5bd68
 background 1264 782 16 34 b5bd68
 cursor 32 476 16 34 ffffff
-glyphs 306
-glyph 0 0 0070 ffffff
-glyph 16 0 0072 ffffff
-glyph 32 0 0069 ffffff
-glyph 48 0 006E ffffff
-glyph 64 0 0074 ffffff
-glyph 80 0 0066 ffffff
-glyph 112 0 0022 ffffff
-glyph 128 0 005C ffffff
-glyph 144 0 0030 ffffff
-glyph 160 0 0033 ffffff
-glyph 176 0 0033 ffffff
-glyph 192 0 005B ffffff
-glyph 208 0 0031 ffffff
-glyph 224 0 003B ffffff
-glyph 240 0 0033 ffffff
-glyph 256 0 0032 ffffff
-glyph 272 0 006D ffffff
-glyph 288 0 0067 ffffff
-glyph 304 0 0072 ffffff
-glyph 320 0 0065 ffffff
-glyph 336 0 0065 ffffff
-glyph 352 0 006E ffffff
-glyph 368 0 005C ffffff
-glyph 384 0 0030 ffffff
-glyph 400 0 0033 ffffff
-glyph 416 0 0033 ffffff
-glyph 432 0 005B ffffff
-glyph 448 0 0030 ffffff
-glyph 464 0 006D ffffff
-glyph 496 0 005C ffffff
-glyph 512 0 0030 ffffff
-glyph 528 0 0033 ffffff
-glyph 544 0 0033 ffffff
-glyph 560 0 005B ffffff
-glyph 576 0 0034 ffffff
-glyph 592 0 006D ffffff
-glyph 608 0 0075 ffffff
-glyph 624 0 006E ffffff
-glyph 640 0 0064 ffffff
-glyph 656 0 0065 ffffff
-glyph 672 0 0072 ffffff
-glyph 688 0 006C ffffff
-glyph 704 0 0069 ffffff
-glyph 720 0 006E ffffff
-glyph 736 0 0065 ffffff
-glyph 752 0 005C ffffff
-glyph 768 0 0030 ffffff
-glyph 784 0 0033 ffffff
-glyph 800 0 0033 ffffff
-glyph 816 0 005B ffffff
-glyph 832 0 0030 ffffff
-glyph 848 0 006D ffffff
-glyph 864 0 005C ffffff
-glyph 880 0 006E ffffff
-glyph 896 0 0022 ffffff
-glyph 912 0 003B ffffff
-glyph 944 0 006C ffffff
-glyph 960 0 0073 ffffff
-glyph 992 0 002F ffffff
-glyph 1008 0 0075 ffffff
-glyph 1024 0 0073 ffffff
-glyph 1040 0 0072 ffffff
-glyph 16 34 006B 8abeb7
-glyph 32 34 006E 8abeb7
-glyph 48 34 006F 8abeb7
-glyph 64 34 0074 8abeb7
-glyph 80 34 0074 8abeb7
-glyph 96 34 0079 8abeb7
-glyph 208 34 006D ffffff
-glyph 224 34 0061 ffffff
-glyph 240 34 0069 ffffff
-glyph 256 34 006E ffffff
-glyph 288 34 003F cc6666
-glyph 304 34 0034 cc6666
-glyph 336 34 0021 f0c674
-glyph 352 34 0036 f0c674
-glyph 400 34 0036 cc6666
-glyph 32 68 0070 b5bd68
-glyph 48 68 0072 b5bd68
-glyph 64 68 0069 b5bd68
-glyph 80 68 006E b5bd68
-glyph 96 68 0074 b5bd68
-glyph 112 68 0066 b5bd68
-glyph 144 68 0022 f0c674
-glyph 160 68 005C f0c674
-glyph 176 68 0030 f0c674
-glyph 192 68 0033 f0c674
-glyph 208 68 0033 f0c674
-glyph 224 68 005B f0c674
-glyph 240 68 0031 f0c674
-glyph 256 68 003B f0c674
-glyph 272 68 0033 f0c674
-glyph 288 68 0032 f0c674
-glyph 304 68 006D f0c674
-glyph 320 68 0067 f0c674
-glyph 336 68 0072 f0c674
-glyph 352 68 0065 f0c674
-glyph 368 68 0065 f0c674
-glyph 384 68 006E f0c674
-glyph 400 68 005C f0c674
-glyph 416 68 0030 f0c674
-glyph 432 68 0033 f0c674
-glyph 448 68 0033 f0c674
-glyph 464 68 005B f0c674
-glyph 480 68 0030 f0c674
-glyph 496 68 006D f0c674
-glyph 528 68 005C f0c674
-glyph 544 68 0030 f0c674
-glyph 560 68 0033 f0c674
-glyph 576 68 0033 f0c674
-glyph 592 68 005B f0c674
-glyph 608 68 0034 f0c674
-glyph 624 68 006D f0c674
-glyph 640 68 0075 f0c674
-glyph 656 68 006E f0c674
-glyph 672 68 0064 f0c674
-glyph 688 68 0065 f0c674
-glyph 704 68 0072 f0c674
-glyph 720 68 006C f0c674
-glyph 736 68 0069 f0c674
-glyph 752 68 006E f0c674
-glyph 768 68 0065 f0c674
-glyph 784 68 005C f0c674
-glyph 800 68 0030 f0c674
-glyph 816 68 0033 f0c674
-glyph 832 68 0033 f0c674
-glyph 848 68 005B f0c674
-glyph 864 68 0030 f0c674
-glyph 880 68 006D f0c674
-glyph 896 68 005C f0c674
-glyph 912 68 006E f0c674
-glyph 928 68 0022 f0c674
-glyph 944 68 003B ffffff
-glyph 976 68 006C b5bd68
-glyph 992 68 0073 b5bd68
-glyph 1024 68 002F ffffff
-glyph 1040 68 0075 ffffff
-glyph 1056 68 0073 ffffff
-glyph 1072 68 0072 ffffff
-glyph 0 102 0067 b5bd68
-glyph 16 102 0072 b5bd68
-glyph 32 102 0065 b5bd68
-glyph 48 102 0065 b5bd68
-glyph 64 102 006E b5bd68
-glyph 96 102 0075 ffffff
-glyph 112 102 006E ffffff
-glyph 128 102 0064 ffffff
-glyph 144 102 0065 ffffff
-glyph 160 102 0072 ffffff
-glyph 176 102 006C ffffff
-glyph 192 102 0069 ffffff
-glyph 208 102 006E ffffff
-glyph 224 102 0065 ffffff
-glyph 32 136 0062 81a2be
-glyph 48 136 0069 81a2be
-glyph 64 136 006E 81a2be
-glyph 32 170 006C 81a2be
-glyph 48 170 0069 81a2be
-glyph 64 170 0062 81a2be
-glyph 32 204 006C 81a2be
-glyph 48 204 0069 81a2be
-glyph 64 204 0062 81a2be
-glyph 80 204 0065 81a2be
-glyph 96 204 0078 81a2be
-glyph 112 204 0065 81a2be
-glyph 128 204 0063 81a2be
-glyph 32 238 006C 81a2be
-glyph 48 238 006F 81a2be
-glyph 64 238 0063 81a2be
-glyph 80 238 0061 81a2be
-glyph 96 238 006C 81a2be
-glyph 32 272 0073 81a2be
-glyph 48 272 0062 81a2be
-glyph 64 272 0069 81a2be
-glyph 80 272 006E 81a2be
-glyph 32 306 0073 81a2be
-glyph 48 306 0068 81a2be
-glyph 64 306 0061 81a2be
-glyph 80 306 0072 81a2be
-glyph 96 306 0065 81a2be
-glyph 32 340 0073 81a2be
-glyph 48 340 0074 81a2be
-glyph 64 340 0061 81a2be
-glyph 80 340 006E 81a2be
-glyph 96 340 0064 81a2be
-glyph 112 340 0061 81a2be
-glyph 128 340 006C 81a2be
-glyph 144 340 006F 81a2be
-glyph 160 340 006E 81a2be
-glyph 176 340 0065 81a2be
-glyph 32 374 0058 8abeb7
-glyph 48 374 0031 8abeb7
-glyph 64 374 0031 8abeb7
-glyph 96 374 002D cc6666
-glyph 112 374 003E cc6666
-glyph 144 374 002E cc6666
-glyph 160 374 002E cc6666
-glyph 176 374 002F cc6666
-glyph 192 374 0070 cc6666
-glyph 208 374 0072 cc6666
-glyph 224 374 0069 cc6666
-glyph 240 374 0076 cc6666
-glyph 256 374 0061 cc6666
-glyph 272 374 0074 cc6666
-glyph 288 374 0065 cc6666
-glyph 304 374 002F cc6666
-glyph 320 374 0076 cc6666
-glyph 336 374 0061 cc6666
-glyph 352 374 0072 cc6666
-glyph 368 374 002F cc6666
-glyph 384 374 0073 cc6666
-glyph 400 374 0065 cc6666
-glyph 416 374 006C cc6666
-glyph 432 374 0065 cc6666
-glyph 448 374 0063 cc6666
-glyph 464 374 0074 cc6666
-glyph 480 374 002F cc6666
-glyph 496 374 0058 cc6666
-glyph 512 374 0031 cc6666
-glyph 528 374 0031 cc6666
-glyph 32 408 0058 8abeb7
-glyph 48 408 0031 8abeb7
-glyph 64 408 0031 8abeb7
-glyph 80 408 0052 8abeb7
-glyph 96 408 0036 8abeb7
-glyph 128 408 002D cc6666
-glyph 144 408 003E cc6666
-glyph 176 408 002E cc6666
-glyph 192 408 002E cc6666
-glyph 208 408 002F cc6666
-glyph 224 408 0070 cc6666
-glyph 240 408 0072 cc6666
-glyph 256 408 0069 cc6666
-glyph 272 408 0076 cc6666
-glyph 288 408 0061 cc6666
-glyph 304 408 0074 cc6666
-glyph 320 408 0065 cc6666
-glyph 336 408 002F cc6666
-glyph 352 408 0076 cc6666
-glyph 368 408 0061 cc6666
-glyph 384 408 0072 cc6666
-glyph 400 408 002F cc6666
-glyph 416 408 0073 cc6666
-glyph 432 408 0065 cc6666
-glyph 448 408 006C cc6666
-glyph 464 408 0065 cc6666
-glyph 480 408 0063 cc6666
-glyph 496 408 0074 cc6666
-glyph 512 408 002F cc6666
-glyph 528 408 0058 cc6666
-glyph 544 408 0031 cc6666
-glyph 560 408 0031 cc6666
-glyph 16 442 006B 8abeb7
-glyph 32 442 006E 8abeb7
-glyph 48 442 006F 8abeb7
-glyph 64 442 0074 8abeb7
-glyph 80 442 0074 8abeb7
-glyph 96 442 0079 8abeb7
-glyph 208 442 006D ffffff
-glyph 224 442 0061 ffffff
-glyph 240 442 0069 ffffff
-glyph 256 442 006E ffffff
-glyph 288 442 003F cc6666
-glyph 304 442 0034 cc6666
-glyph 336 442 0021 f0c674
-glyph 352 442 0036 f0c674
-glyph 400 442 0036 cc6666
-glyph 0 782 005B 1d1f21
-glyph 16 782 0072 1d1f21
-glyph 32 782 0065 1d1f21
-glyph 48 782 0063 1d1f21
-glyph 64 782 005D 1d1f21
-glyph 96 782 0030 1d1f21
-glyph 112 782 003A 1d1f21
-glyph 128 782 007A 1d1f21
-glyph 144 782 0073 1d1f21
-glyph 160 782 0068 1d1f21
-glyph 176 782 002A 1d1f21
-glyph 800 782 0022 1d1f21
-glyph 816 782 006B 1d1f21
-glyph 832 782 0077 1d1f21
-glyph 848 782 006E 1d1f21
-glyph 864 782 004D 1d1f21
-glyph 880 782 0042 1d1f21
-glyph 896 782 0050 1d1f21
-glyph 912 782 002E 1d1f21
-glyph 928 782 006C 1d1f21
-glyph 944 782 006F 1d1f21
-glyph 960 782 0063 1d1f21
-glyph 976 782 0061 1d1f21
-glyph 992 782 006C 1d1f21
-glyph 1008 782 0022 1d1f21
-glyph 1040 782 0031 1d1f21
-glyph 1056 782 0037 1d1f21
-glyph 1072 782 003A 1d1f21
-glyph 1088 782 0033 1d1f21
-glyph 1104 782 0032 1d1f21
-glyph 1136 782 0031 1d1f21
-glyph 1152 782 0034 1d1f21
-glyph 1168 782 002D 1d1f21
-glyph 1184 782 0041 1d1f21
-glyph 1200 782 0075 1d1f21
-glyph 1216 782 0067 1d1f21
-glyph 1232 782 002D 1d1f21
-glyph 1248 782 0032 1d1f21
-glyph 1264 782 0036 1d1f21
+glyphs 310
+glyph 0 0 fast 0/1 0070 ffffff
+glyph 16 0 fast 0/1 0072 ffffff
+glyph 32 0 fast 0/1 0069 ffffff
+glyph 48 0 fast 0/1 006E ffffff
+glyph 64 0 fast 0/1 0074 ffffff
+glyph 80 0 fast 0/1 0066 ffffff
+glyph 112 0 fast 0/1 0022 ffffff
+glyph 128 0 fast 0/1 005C ffffff
+glyph 144 0 fast 0/1 0030 ffffff
+glyph 160 0 fast 0/1 0033 ffffff
+glyph 176 0 fast 0/1 0033 ffffff
+glyph 192 0 fast 0/1 005B ffffff
+glyph 208 0 fast 0/1 0031 ffffff
+glyph 224 0 fast 0/1 003B ffffff
+glyph 240 0 fast 0/1 0033 ffffff
+glyph 256 0 fast 0/1 0032 ffffff
+glyph 272 0 fast 0/1 006D ffffff
+glyph 288 0 fast 0/1 0067 ffffff
+glyph 304 0 fast 0/1 0072 ffffff
+glyph 320 0 fast 0/1 0065 ffffff
+glyph 336 0 fast 0/1 0065 ffffff
+glyph 352 0 fast 0/1 006E ffffff
+glyph 368 0 fast 0/1 005C ffffff
+glyph 384 0 fast 0/1 0030 ffffff
+glyph 400 0 fast 0/1 0033 ffffff
+glyph 416 0 fast 0/1 0033 ffffff
+glyph 432 0 fast 0/1 005B ffffff
+glyph 448 0 fast 0/1 0030 ffffff
+glyph 464 0 fast 0/1 006D ffffff
+glyph 496 0 fast 0/1 005C ffffff
+glyph 512 0 fast 0/1 0030 ffffff
+glyph 528 0 fast 0/1 0033 ffffff
+glyph 544 0 fast 0/1 0033 ffffff
+glyph 560 0 fast 0/1 005B ffffff
+glyph 576 0 fast 0/1 0034 ffffff
+glyph 592 0 fast 0/1 006D ffffff
+glyph 608 0 fast 0/1 0075 ffffff
+glyph 624 0 fast 0/1 006E ffffff
+glyph 640 0 fast 0/1 0064 ffffff
+glyph 656 0 fast 0/1 0065 ffffff
+glyph 672 0 fast 0/1 0072 ffffff
+glyph 688 0 fast 0/1 006C ffffff
+glyph 704 0 fast 0/1 0069 ffffff
+glyph 720 0 fast 0/1 006E ffffff
+glyph 736 0 fast 0/1 0065 ffffff
+glyph 752 0 fast 0/1 005C ffffff
+glyph 768 0 fast 0/1 0030 ffffff
+glyph 784 0 fast 0/1 0033 ffffff
+glyph 800 0 fast 0/1 0033 ffffff
+glyph 816 0 fast 0/1 005B ffffff
+glyph 832 0 fast 0/1 0030 ffffff
+glyph 848 0 fast 0/1 006D ffffff
+glyph 864 0 fast 0/1 005C ffffff
+glyph 880 0 fast 0/1 006E ffffff
+glyph 896 0 fast 0/1 0022 ffffff
+glyph 912 0 fast 0/1 003B ffffff
+glyph 944 0 fast 0/1 006C ffffff
+glyph 960 0 fast 0/1 0073 ffffff
+glyph 992 0 fast 0/1 002F ffffff
+glyph 1008 0 fast 0/1 0075 ffffff
+glyph 1024 0 fast 0/1 0073 ffffff
+glyph 1040 0 fast 0/1 0072 ffffff
+glyph 16 34 fast 0/1 006B 8abeb7
+glyph 32 34 fast 0/1 006E 8abeb7
+glyph 48 34 fast 0/1 006F 8abeb7
+glyph 64 34 fast 0/1 0074 8abeb7
+glyph 80 34 fast 0/1 0074 8abeb7
+glyph 96 34 fast 0/1 0079 8abeb7
+glyph 208 34 fast 0/1 006D ffffff
+glyph 224 34 fast 0/1 0061 ffffff
+glyph 240 34 fast 0/1 0069 ffffff
+glyph 256 34 fast 0/1 006E ffffff
+glyph 288 34 fast 0/1 003F cc6666
+glyph 304 34 fast 0/1 0034 cc6666
+glyph 336 34 fast 0/1 0021 f0c674
+glyph 352 34 fast 0/1 0036 f0c674
+glyph 384 34 fast 0/1 21E1 cc6666
+glyph 400 34 fast 0/1 0036 cc6666
+glyph 0 68 fast 0/1 276F b5bd68
+glyph 32 68 fast 0/1 0070 b5bd68
+glyph 48 68 fast 0/1 0072 b5bd68
+glyph 64 68 fast 0/1 0069 b5bd68
+glyph 80 68 fast 0/1 006E b5bd68
+glyph 96 68 fast 0/1 0074 b5bd68
+glyph 112 68 fast 0/1 0066 b5bd68
+glyph 144 68 fast 0/1 0022 f0c674
+glyph 160 68 fast 0/1 005C f0c674
+glyph 176 68 fast 0/1 0030 f0c674
+glyph 192 68 fast 0/1 0033 f0c674
+glyph 208 68 fast 0/1 0033 f0c674
+glyph 224 68 fast 0/1 005B f0c674
+glyph 240 68 fast 0/1 0031 f0c674
+glyph 256 68 fast 0/1 003B f0c674
+glyph 272 68 fast 0/1 0033 f0c674
+glyph 288 68 fast 0/1 0032 f0c674
+glyph 304 68 fast 0/1 006D f0c674
+glyph 320 68 fast 0/1 0067 f0c674
+glyph 336 68 fast 0/1 0072 f0c674
+glyph 352 68 fast 0/1 0065 f0c674
+glyph 368 68 fast 0/1 0065 f0c674
+glyph 384 68 fast 0/1 006E f0c674
+glyph 400 68 fast 0/1 005C f0c674
+glyph 416 68 fast 0/1 0030 f0c674
+glyph 432 68 fast 0/1 0033 f0c674
+glyph 448 68 fast 0/1 0033 f0c674
+glyph 464 68 fast 0/1 005B f0c674
+glyph 480 68 fast 0/1 0030 f0c674
+glyph 496 68 fast 0/1 006D f0c674
+glyph 528 68 fast 0/1 005C f0c674
+glyph 544 68 fast 0/1 0030 f0c674
+glyph 560 68 fast 0/1 0033 f0c674
+glyph 576 68 fast 0/1 0033 f0c674
+glyph 592 68 fast 0/1 005B f0c674
+glyph 608 68 fast 0/1 0034 f0c674
+glyph 624 68 fast 0/1 006D f0c674
+glyph 640 68 fast 0/1 0075 f0c674
+glyph 656 68 fast 0/1 006E f0c674
+glyph 672 68 fast 0/1 0064 f0c674
+glyph 688 68 fast 0/1 0065 f0c674
+glyph 704 68 fast 0/1 0072 f0c674
+glyph 720 68 fast 0/1 006C f0c674
+glyph 736 68 fast 0/1 0069 f0c674
+glyph 752 68 fast 0/1 006E f0c674
+glyph 768 68 fast 0/1 0065 f0c674
+glyph 784 68 fast 0/1 005C f0c674
+glyph 800 68 fast 0/1 0030 f0c674
+glyph 816 68 fast 0/1 0033 f0c674
+glyph 832 68 fast 0/1 0033 f0c674
+glyph 848 68 fast 0/1 005B f0c674
+glyph 864 68 fast 0/1 0030 f0c674
+glyph 880 68 fast 0/1 006D f0c674
+glyph 896 68 fast 0/1 005C f0c674
+glyph 912 68 fast 0/1 006E f0c674
+glyph 928 68 fast 0/1 0022 f0c674
+glyph 944 68 fast 0/1 003B ffffff
+glyph 976 68 fast 0/1 006C b5bd68
+glyph 992 68 fast 0/1 0073 b5bd68
+glyph 1024 68 fast 0/1 002F ffffff
+glyph 1040 68 fast 0/1 0075 ffffff
+glyph 1056 68 fast 0/1 0073 ffffff
+glyph 1072 68 fast 0/1 0072 ffffff
+glyph 0 102 fast 0/1 0067 b5bd68
+glyph 16 102 fast 0/1 0072 b5bd68
+glyph 32 102 fast 0/1 0065 b5bd68
+glyph 48 102 fast 0/1 0065 b5bd68
+glyph 64 102 fast 0/1 006E b5bd68
+glyph 96 102 fast 0/1 0075 ffffff
+glyph 112 102 fast 0/1 006E ffffff
+glyph 128 102 fast 0/1 0064 ffffff
+glyph 144 102 fast 0/1 0065 ffffff
+glyph 160 102 fast 0/1 0072 ffffff
+glyph 176 102 fast 0/1 006C ffffff
+glyph 192 102 fast 0/1 0069 ffffff
+glyph 208 102 fast 0/1 006E ffffff
+glyph 224 102 fast 0/1 0065 ffffff
+glyph 32 136 fast 0/1 0062 81a2be
+glyph 48 136 fast 0/1 0069 81a2be
+glyph 64 136 fast 0/1 006E 81a2be
+glyph 32 170 fast 0/1 006C 81a2be
+glyph 48 170 fast 0/1 0069 81a2be
+glyph 64 170 fast 0/1 0062 81a2be
+glyph 32 204 fast 0/1 006C 81a2be
+glyph 48 204 fast 0/1 0069 81a2be
+glyph 64 204 fast 0/1 0062 81a2be
+glyph 80 204 fast 0/1 0065 81a2be
+glyph 96 204 fast 0/1 0078 81a2be
+glyph 112 204 fast 0/1 0065 81a2be
+glyph 128 204 fast 0/1 0063 81a2be
+glyph 32 238 fast 0/1 006C 81a2be
+glyph 48 238 fast 0/1 006F 81a2be
+glyph 64 238 fast 0/1 0063 81a2be
+glyph 80 238 fast 0/1 0061 81a2be
+glyph 96 238 fast 0/1 006C 81a2be
+glyph 32 272 fast 0/1 0073 81a2be
+glyph 48 272 fast 0/1 0062 81a2be
+glyph 64 272 fast 0/1 0069 81a2be
+glyph 80 272 fast 0/1 006E 81a2be
+glyph 32 306 fast 0/1 0073 81a2be
+glyph 48 306 fast 0/1 0068 81a2be
+glyph 64 306 fast 0/1 0061 81a2be
+glyph 80 306 fast 0/1 0072 81a2be
+glyph 96 306 fast 0/1 0065 81a2be
+glyph 32 340 fast 0/1 0073 81a2be
+glyph 48 340 fast 0/1 0074 81a2be
+glyph 64 340 fast 0/1 0061 81a2be
+glyph 80 340 fast 0/1 006E 81a2be
+glyph 96 340 fast 0/1 0064 81a2be
+glyph 112 340 fast 0/1 0061 81a2be
+glyph 128 340 fast 0/1 006C 81a2be
+glyph 144 340 fast 0/1 006F 81a2be
+glyph 160 340 fast 0/1 006E 81a2be
+glyph 176 340 fast 0/1 0065 81a2be
+glyph 32 374 fast 0/1 0058 8abeb7
+glyph 48 374 fast 0/1 0031 8abeb7
+glyph 64 374 fast 0/1 0031 8abeb7
+glyph 96 374 fast 0/1 002D cc6666
+glyph 112 374 fast 0/1 003E cc6666
+glyph 144 374 fast 0/1 002E cc6666
+glyph 160 374 fast 0/1 002E cc6666
+glyph 176 374 fast 0/1 002F cc6666
+glyph 192 374 fast 0/1 0070 cc6666
+glyph 208 374 fast 0/1 0072 cc6666
+glyph 224 374 fast 0/1 0069 cc6666
+glyph 240 374 fast 0/1 0076 cc6666
+glyph 256 374 fast 0/1 0061 cc6666
+glyph 272 374 fast 0/1 0074 cc6666
+glyph 288 374 fast 0/1 0065 cc6666
+glyph 304 374 fast 0/1 002F cc6666
+glyph 320 374 fast 0/1 0076 cc6666
+glyph 336 374 fast 0/1 0061 cc6666
+glyph 352 374 fast 0/1 0072 cc6666
+glyph 368 374 fast 0/1 002F cc6666
+glyph 384 374 fast 0/1 0073 cc6666
+glyph 400 374 fast 0/1 0065 cc6666
+glyph 416 374 fast 0/1 006C cc6666
+glyph 432 374 fast 0/1 0065 cc6666
+glyph 448 374 fast 0/1 0063 cc6666
+glyph 464 374 fast 0/1 0074 cc6666
+glyph 480 374 fast 0/1 002F cc6666
+glyph 496 374 fast 0/1 0058 cc6666
+glyph 512 374 fast 0/1 0031 cc6666
+glyph 528 374 fast 0/1 0031 cc6666
+glyph 32 408 fast 0/1 0058 8abeb7
+glyph 48 408 fast 0/1 0031 8abeb7
+glyph 64 408 fast 0/1 0031 8abeb7
+glyph 80 408 fast 0/1 0052 8abeb7
+glyph 96 408 fast 0/1 0036 8abeb7
+glyph 128 408 fast 0/1 002D cc6666
+glyph 144 408 fast 0/1 003E cc6666
+glyph 176 408 fast 0/1 002E cc6666
+glyph 192 408 fast 0/1 002E cc6666
+glyph 208 408 fast 0/1 002F cc6666
+glyph 224 408 fast 0/1 0070 cc6666
+glyph 240 408 fast 0/1 0072 cc6666
+glyph 256 408 fast 0/1 0069 cc6666
+glyph 272 408 fast 0/1 0076 cc6666
+glyph 288 408 fast 0/1 0061 cc6666
+glyph 304 408 fast 0/1 0074 cc6666
+glyph 320 408 fast 0/1 0065 cc6666
+glyph 336 408 fast 0/1 002F cc6666
+glyph 352 408 fast 0/1 0076 cc6666
+glyph 368 408 fast 0/1 0061 cc6666
+glyph 384 408 fast 0/1 0072 cc6666
+glyph 400 408 fast 0/1 002F cc6666
+glyph 416 408 fast 0/1 0073 cc6666
+glyph 432 408 fast 0/1 0065 cc6666
+glyph 448 408 fast 0/1 006C cc6666
+glyph 464 408 fast 0/1 0065 cc6666
+glyph 480 408 fast 0/1 0063 cc6666
+glyph 496 408 fast 0/1 0074 cc6666
+glyph 512 408 fast 0/1 002F cc6666
+glyph 528 408 fast 0/1 0058 cc6666
+glyph 544 408 fast 0/1 0031 cc6666
+glyph 560 408 fast 0/1 0031 cc6666
+glyph 16 442 fast 0/1 006B 8abeb7
+glyph 32 442 fast 0/1 006E 8abeb7
+glyph 48 442 fast 0/1 006F 8abeb7
+glyph 64 442 fast 0/1 0074 8abeb7
+glyph 80 442 fast 0/1 0074 8abeb7
+glyph 96 442 fast 0/1 0079 8abeb7
+glyph 208 442 fast 0/1 006D ffffff
+glyph 224 442 fast 0/1 0061 ffffff
+glyph 240 442 fast 0/1 0069 ffffff
+glyph 256 442 fast 0/1 006E ffffff
+glyph 288 442 fast 0/1 003F cc6666
+glyph 304 442 fast 0/1 0034 cc6666
+glyph 336 442 fast 0/1 0021 f0c674
+glyph 352 442 fast 0/1 0036 f0c674
+glyph 384 442 fast 0/1 21E1 cc6666
+glyph 400 442 fast 0/1 0036 cc6666
+glyph 0 476 fast 0/1 276F b5bd68
+glyph 0 782 fast 0/1 005B 1d1f21
+glyph 16 782 fast 0/1 0072 1d1f21
+glyph 32 782 fast 0/1 0065 1d1f21
+glyph 48 782 fast 0/1 0063 1d1f21
+glyph 64 782 fast 0/1 005D 1d1f21
+glyph 96 782 fast 0/1 0030 1d1f21
+glyph 112 782 fast 0/1 003A 1d1f21
+glyph 128 782 fast 0/1 007A 1d1f21
+glyph 144 782 fast 0/1 0073 1d1f21
+glyph 160 782 fast 0/1 0068 1d1f21
+glyph 176 782 fast 0/1 002A 1d1f21
+glyph 800 782 fast 0/1 0022 1d1f21
+glyph 816 782 fast 0/1 006B 1d1f21
+glyph 832 782 fast 0/1 0077 1d1f21
+glyph 848 782 fast 0/1 006E 1d1f21
+glyph 864 782 fast 0/1 004D 1d1f21
+glyph 880 782 fast 0/1 0042 1d1f21
+glyph 896 782 fast 0/1 0050 1d1f21
+glyph 912 782 fast 0/1 002E 1d1f21
+glyph 928 782 fast 0/1 006C 1d1f21
+glyph 944 782 fast 0/1 006F 1d1f21
+glyph 960 782 fast 0/1 0063 1d1f21
+glyph 976 782 fast 0/1 0061 1d1f21
+glyph 992 782 fast 0/1 006C 1d1f21
+glyph 1008 782 fast 0/1 0022 1d1f21
+glyph 1040 782 fast 0/1 0031 1d1f21
+glyph 1056 782 fast 0/1 0037 1d1f21
+glyph 1072 782 fast 0/1 003A 1d1f21
+glyph 1088 782 fast 0/1 0033 1d1f21
+glyph 1104 782 fast 0/1 0032 1d1f21
+glyph 1136 782 fast 0/1 0031 1d1f21
+glyph 1152 782 fast 0/1 0034 1d1f21
+glyph 1168 782 fast 0/1 002D 1d1f21
+glyph 1184 782 fast 0/1 0041 1d1f21
+glyph 1200 782 fast 0/1 0075 1d1f21
+glyph 1216 782 fast 0/1 0067 1d1f21
+glyph 1232 782 fast 0/1 002D 1d1f21
+glyph 1248 782 fast 0/1 0032 1d1f21
+glyph 1264 782 fast 0/1 0036 1d1f21

@@ -71,7 +71,6 @@ final class TerminalView: NSView {
     private var uniforms: Uniforms {
         Uniforms(
             viewport: SIMD2(Float(viewport.width), Float(viewport.height)),
-            cell: SIMD2(Float(metrics.width), Float(metrics.height)),
             atlasSide: Float(Renderer.atlasSide)
         )
     }
@@ -105,9 +104,9 @@ final class TerminalView: NSView {
             vertex: "knotty_background_vertex", fragment: "knotty_background_fragment",
             blending: false
         )
-        // The glyph pass blends: a quad is a whole cell and a letter is not,
-        // so what the page says is uncovered has to leave the background
-        // showing.
+        // The glyph pass blends: a quad is at least a whole cell and a letter
+        // is not, so what the page says is uncovered has to leave the
+        // background showing.
         glyphPipeline = try Self.pipeline(
             device: device, library: library,
             vertex: "knotty_glyph_vertex", fragment: "knotty_glyph_fragment",
@@ -496,11 +495,11 @@ final class TerminalView: NSView {
         for update in frame.atlasUpdates {
             atlas.replace(
                 region: MTLRegionMake2D(
-                    Int(update.x), Int(update.y), Int(metrics.width), Int(metrics.height)
+                    Int(update.x), Int(update.y), Int(update.width), Int(metrics.height)
                 ),
                 mipmapLevel: 0,
                 withBytes: update.coverage,
-                bytesPerRow: Int(metrics.width)
+                bytesPerRow: Int(update.width)
             )
         }
 
@@ -525,7 +524,10 @@ final class TerminalView: NSView {
 
         encode(frame.backgrounds.map(Instance.init), with: backgroundPipeline, into: encoder)
         encoder.setFragmentTexture(atlas, index: 0)
-        encode(frame.glyphs.map(Instance.init), with: glyphPipeline, into: encoder)
+        encode(
+            frame.glyphs.map { Quad($0, height: metrics.height) },
+            with: glyphPipeline, into: encoder
+        )
 
         encoder.endEncoding()
         commands.present(drawable)
@@ -533,8 +535,8 @@ final class TerminalView: NSView {
     }
 
     /// One pass: one buffer, one draw call. cf. 04-renderer R1.
-    private func encode(
-        _ instances: [Instance], with pipeline: MTLRenderPipelineState,
+    private func encode<T: BitwiseCopyable>(
+        _ instances: [T], with pipeline: MTLRenderPipelineState,
         into encoder: MTLRenderCommandEncoder
     ) {
         // A pass with nothing in it is a screen with no letters on it, which
@@ -548,7 +550,7 @@ final class TerminalView: NSView {
         guard
             let buffer = queue.device.makeBuffer(
                 bytes: instances,
-                length: MemoryLayout<Instance>.stride * instances.count,
+                length: MemoryLayout<T>.stride * instances.count,
                 options: .storageModeShared
             )
         else { return }
@@ -724,12 +726,11 @@ struct MetalMissing: Error, CustomStringConvertible {
     var description: String { "knotty could not get \(what)" }
 }
 
-/// One instance of either pass, laid out as `Shaders.metal` reads it.
+/// One background instance, laid out as `Shaders.metal` reads it.
 ///
 /// Floats and not the renderer's integers: a `float4` is the one thing the two
 /// languages agree the size and the alignment of without either being told.
 private struct Instance {
-    /// The background pass's rectangle, or the glyph pass's two origins.
     var geometry: SIMD4<Float>
     var color: SIMD4<Float>
 
@@ -739,11 +740,22 @@ private struct Instance {
         )
         color = SIMD4(instance.color)
     }
+}
 
-    init(_ instance: GlyphInstance) {
+/// One glyph instance, the same way. The quad starts where the glyph's ink
+/// does rather than where its cell does, and both it and the slot it samples
+/// are one cell tall. cf. adr/0016.
+private struct Quad {
+    var geometry: SIMD4<Float>
+    var atlas: SIMD4<Float>
+    var color: SIMD4<Float>
+
+    init(_ instance: GlyphInstance, height: Int32) {
         geometry = SIMD4(
-            Float(instance.x), Float(instance.y), Float(instance.atlasX), Float(instance.atlasY)
+            Float(instance.x + instance.offsetX), Float(instance.y),
+            Float(instance.width), Float(height)
         )
+        atlas = SIMD4(Float(instance.atlasX), Float(instance.atlasY), 0, 0)
         color = SIMD4(instance.color)
     }
 }
@@ -751,7 +763,6 @@ private struct Instance {
 /// What both passes need and neither instance carries.
 private struct Uniforms {
     var viewport: SIMD2<Float>
-    var cell: SIMD2<Float>
     var atlasSide: Float
 }
 

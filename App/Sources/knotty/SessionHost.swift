@@ -62,6 +62,13 @@ final class SessionHost {
     /// and every glyph baked at the old size is the wrong shape. The renderer
     /// is replaced rather than told, which is the "atlas included" reset of
     /// 04-renderer R8 written out.
+    ///
+    /// ponytail: that walks the face's GSUB again, and what it derives — a
+    /// set of glyph ids, a window in cells, an overhang in cells — does not
+    /// depend on the size it was measured at. Measured at 0.29ms against the
+    /// face this milestone loads, beside a reset that bakes every glyph on
+    /// screen again; carrying the derivation across the new size is what to
+    /// do if a face with a larger table ever makes it show.
     func resize(columns: UInt16, rows: UInt16, metrics: CellMetrics) {
         guard (columns, rows, metrics) != (self.columns, self.rows, self.metrics) else { return }
         if metrics != self.metrics {

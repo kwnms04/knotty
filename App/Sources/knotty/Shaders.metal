@@ -5,21 +5,25 @@ using namespace metal;
 // Two passes, a draw call each: cell rectangles, then atlas quads tinted with
 // the cell's foreground. cf. 04-renderer R1.
 
-/// One instance of either pass: a rectangle and a colour.
-///
-/// The background pass reads `geometry` as the rectangle itself. The glyph
-/// pass reads it as the cell's origin and the atlas origin, because a glyph
-/// quad is always exactly its cell — which is why nothing here carries a size.
+/// One background instance: a rectangle and a colour.
 struct Instance {
     float4 geometry;
+    float4 color;
+};
+
+/// One glyph instance: the quad on the screen, where its coverage was baked,
+/// and the colour to tint it. The quad carries its own size because a
+/// ligature is drawn by one of the cells it spans and reaches across the
+/// others. cf. adr/0016.
+struct GlyphInstance {
+    float4 geometry;
+    float4 atlas;
     float4 color;
 };
 
 struct Uniforms {
     /// The drawable, in device pixels.
     float2 viewport;
-    /// One cell, in device pixels.
-    float2 cell;
     /// A page side, in device pixels.
     float atlasSide;
 };
@@ -62,22 +66,22 @@ fragment float4 knotty_background_fragment(Varying in [[stage_in]]) {
 vertex Varying knotty_glyph_vertex(
     uint vertex_id [[vertex_id]],
     uint instance_id [[instance_id]],
-    constant Instance *instances [[buffer(0)]],
+    constant GlyphInstance *instances [[buffer(0)]],
     constant Uniforms &uniforms [[buffer(1)]]
 ) {
-    const Instance instance = instances[instance_id];
+    const GlyphInstance instance = instances[instance_id];
     const float2 corner = corners[vertex_id];
     Varying out;
-    out.position = clip(instance.geometry.xy + corner * uniforms.cell, uniforms.viewport);
+    out.position = clip(instance.geometry.xy + corner * instance.geometry.zw, uniforms.viewport);
     out.color = instance.color;
-    out.texture = (instance.geometry.zw + corner * uniforms.cell) / uniforms.atlasSide;
+    out.texture = (instance.atlas.xy + corner * instance.geometry.zw) / uniforms.atlasSide;
     return out;
 }
 
 fragment float4 knotty_glyph_fragment(
     Varying in [[stage_in]], texture2d<float> atlas [[texture(0)]]
 ) {
-    // Nearest, because a quad is its cell and a slot is its cell: every fetch
+    // Nearest, because a quad and its slot are the same size: every fetch
     // lands on a texel centre, and there is nothing for a filter to average.
     constexpr sampler texel(filter::nearest, coord::normalized, address::clamp_to_edge);
     // The page holds coverage, and the colour comes from the cell — which is
