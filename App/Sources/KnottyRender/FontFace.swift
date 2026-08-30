@@ -184,9 +184,9 @@ public final class FontFace {
         ligatures.participating.contains(glyph)
     }
 
-    /// The same question of a codepoint, which is the one a reader outside
-    /// the renderer has: the participating set is a set of glyphs, and which
-    /// glyph a codepoint draws as is this face's to say.
+    /// The same question asked in codepoints. The set itself is glyph ids and
+    /// an id moves with the font's version, so a caller holding a character
+    /// rather than a glyph asks here rather than resolving one for itself.
     public func participates(codepoint: UInt32) -> Bool {
         glyph(for: codepoint).map(participates) ?? false
     }

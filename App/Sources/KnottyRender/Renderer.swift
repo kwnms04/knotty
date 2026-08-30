@@ -140,7 +140,7 @@ public final class Renderer {
     /// The one face this milestone draws with, and what its GSUB said about
     /// its ligatures. Four of them is ticket 10's; a second one for the
     /// cascade is 09's.
-    public let face: FontFace
+    private let face: FontFace
     private let atlas: Atlas
     /// How heavy the cursor's stroke is, in device pixels. One number for
     /// the bar and the underline both: a stroke weighs the same whichever

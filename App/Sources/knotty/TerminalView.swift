@@ -525,7 +525,7 @@ final class TerminalView: NSView {
         encode(frame.backgrounds.map(Instance.init), with: backgroundPipeline, into: encoder)
         encoder.setFragmentTexture(atlas, index: 0)
         encode(
-            frame.glyphs.map { Quad($0, height: metrics.height) },
+            frame.glyphs.map { GlyphInstance($0, height: metrics.height) },
             with: glyphPipeline, into: encoder
         )
 
@@ -742,15 +742,16 @@ private struct Instance {
     }
 }
 
-/// One glyph instance, the same way. The quad starts where the glyph's ink
-/// does rather than where its cell does, and both it and the slot it samples
-/// are one cell tall. cf. adr/0016.
-private struct Quad {
+/// One glyph instance, the same way — and named the way `Shaders.metal` names
+/// it, since the two layouts have to agree byte for byte. The quad starts where
+/// the glyph's ink does rather than where its cell does, and both it and the
+/// slot it samples are one cell tall. cf. adr/0016.
+private struct GlyphInstance {
     var geometry: SIMD4<Float>
     var atlas: SIMD4<Float>
     var color: SIMD4<Float>
 
-    init(_ instance: GlyphInstance, height: Int32) {
+    init(_ instance: KnottyRender.GlyphInstance, height: Int32) {
         geometry = SIMD4(
             Float(instance.x + instance.offsetX), Float(instance.y),
             Float(instance.width), Float(height)
