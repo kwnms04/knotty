@@ -183,7 +183,10 @@ extension GsubRules {
 /// says for "nothing here": an offset of zero is absent and a count of zero
 /// ends a loop. So a table that is short answers with less rather than
 /// faulting, and no caller has a length to check.
-private struct Reader {
+///
+/// The one place untrusted bytes are read, so the promise above is this
+/// type's to keep and not its callers'.
+struct Reader {
     private let bytes: [UInt8]
 
     init(_ bytes: [UInt8]) { self.bytes = bytes }
@@ -235,8 +238,12 @@ private struct Reader {
         var named = 0
         switch u16(at) {
         case 1:
+            // The count is capped at what is left above the first glyph
+            // rather than at the whole range: ids stop at 65535, so a table
+            // whose first plus count runs past that is naming glyphs that do
+            // not exist.
             let start = u16(at + 2)
-            for i in 0..<min(u16(at + 4), Self.everyGlyph) {
+            for i in 0..<min(u16(at + 4), Self.everyGlyph - start) {
                 out[u16(at + 6 + 2 * i), default: []].insert(CGGlyph(start + i))
             }
         case 2:
@@ -257,11 +264,21 @@ private struct Reader {
     /// Every rule in every rule set a format 1 or 2 subtable holds, as the
     /// offsets they start at. The two levels of indirection are the same
     /// shape at both, so they are walked as one.
+    ///
+    /// Both levels are counts, and a lying table multiplies them: the cap is
+    /// on the answer rather than on either one, for the reason
+    /// ``everyGlyph`` gives.
     func rules(_ subtable: Int, at sets: Int) -> [Int] {
-        (0..<u16(sets)).map { u16(sets + 2 + 2 * $0) }.filter { $0 != 0 }.flatMap { offset -> [Int] in
+        var out: [Int] = []
+        for i in 0..<u16(sets) where out.count < Self.everyGlyph {
+            let offset = u16(sets + 2 + 2 * i)
+            guard offset != 0 else { continue }
             let set = subtable + offset
-            return (0..<u16(set)).map { set + u16(set + 2 + 2 * $0) }
+            for j in 0..<u16(set) where out.count < Self.everyGlyph {
+                out.append(set + u16(set + 2 + 2 * j))
+            }
         }
+        return out
     }
 
     /// One rule, read as the three lengths and the middle array — which is
