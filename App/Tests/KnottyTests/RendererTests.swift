@@ -166,13 +166,13 @@ func aRecordingDrawsWhatItsGoldenSays(name: String) throws {
 /// font yields such metrics, and that the grid is laid out from them.
 /// cf. 04-renderer R5.
 @Test func cellOriginsSitOnDevicePixels() throws {
-    let measured = CellMetrics.system(pointSize: 13, scale: 2)
+    let measured = CellMetrics.system(pointSize: 13, scale: 2, name: nil)
     #expect(measured.width > 0)
     #expect(measured.height > 0)
 
     let session = try Session(cols: cols, rows: rows, scrollback: scrollback)
     try session.feed(recording("vim"))
-    let renderer = Renderer(metrics: measured)
+    let renderer = Renderer(metrics: measured, face: FontFace(metrics: measured, name: nil))
 
     try session.withSnapshot { snapshot in
         let frame = renderer.frame(for: snapshot)
@@ -195,7 +195,7 @@ private func sessionWithCursor(style: Int) throws -> Session {
 /// A frame of the one-letter screen, with the cursor in the shape asked for.
 private func frame(cursorStyle: Int) throws -> Frame {
     let session = try sessionWithCursor(style: cursorStyle)
-    return try #require(try session.withSnapshot { Renderer(metrics: metrics).frame(for: $0) })
+    return try #require(try session.withSnapshot { Renderer(metrics: metrics, face: pinned()).frame(for: $0) })
 }
 
 /// The three shapes are told apart by the rectangle and by nothing else.
@@ -236,7 +236,7 @@ private func frame(cursorStyle: Int) throws -> Frame {
     let asked = Rgb(r: 200, g: 100, b: 50)
 
     try session.withSnapshot { snapshot in
-        let renderer = Renderer(metrics: metrics)
+        let renderer = Renderer(metrics: metrics, face: pinned())
 
         let themed = renderer.frame(for: snapshot, cursorColor: asked).backgrounds.last
         #expect(themed.map(\.color).map(hex) == "c86432")
@@ -254,7 +254,7 @@ private func frame(cursorStyle: Int) throws -> Frame {
 /// the pixels are looked at once, here, for the two things about them that do
 /// not depend on which machine drew them.
 @Test func aBakedGlyphHasInkAndSitsOnItsBaseline() throws {
-    let measured = CellMetrics.system(pointSize: 13, scale: 2)
+    let measured = CellMetrics.system(pointSize: 13, scale: 2, name: nil)
     let session = try Session(cols: cols, rows: rows, scrollback: scrollback)
     try session.feed(Array("M.".utf8))
     let renderer = Renderer(metrics: measured, face: FontFace(metrics: measured, name: nil))
