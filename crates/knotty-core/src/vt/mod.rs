@@ -42,6 +42,21 @@ use crate::{Error, Result};
 /// and only ANSI modes carry a bit alongside it.
 const SYNC_OUTPUT: ffi::Mode = 2026;
 
+/// DEC mode 2027, grapheme clustering.
+///
+/// Held on from the moment a terminal exists rather than waiting to be asked
+/// for. With it off, a cell is a codepoint and its width is `wcwidth`'s: a
+/// flag arrives as two cells and a family emoji as three, so what is one
+/// character to the person reading the screen is several to everything that
+/// draws it. With it on, a cell is a grapheme cluster, and the cluster is what
+/// the snapshot's grapheme table carries.
+///
+/// The cost is that an application computing its own widths the old way
+/// disagrees about where its columns are. That is the trade the mode exists to
+/// name, and it is the one ghostty's own app takes by default. cf.
+/// `docs/adr/0019-grapheme-clustering-on.md`.
+const GRAPHEME_CLUSTERING: ffi::Mode = 2027;
+
 /// What knotty answers a device attributes query with.
 ///
 /// A VT220 with color, which is what the engine implements. DA2's firmware
@@ -125,6 +140,9 @@ impl Terminal {
         })?;
 
         terminal.listen()?;
+        // SAFETY: the terminal is ours, and the call takes nothing but a mode
+        // number and a flag alongside it.
+        check(unsafe { ffi::ghostty_terminal_mode_set(raw, GRAPHEME_CLUSTERING, true) })?;
         Ok(terminal)
     }
 

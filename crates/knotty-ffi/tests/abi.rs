@@ -412,8 +412,8 @@ fn a_single_codepoint_stays_in_the_cell() {
 
 #[test]
 fn clusters_that_do_not_fit_move_to_the_grapheme_table() {
-    // A combining acute, then a ZWJ sequence. Ghostty gives each emoji of the
-    // sequence its own wide cell, so the first carries man + ZWJ.
+    // A combining acute, then a ZWJ sequence. Grapheme clustering is on, so
+    // the whole sequence is one cell rather than one cell per emoji.
     let (row, text) = first_row_and_text_of("e\u{301}\u{1F468}\u{200D}\u{1F469}".as_bytes());
 
     assert_ne!(
@@ -424,7 +424,7 @@ fn clusters_that_do_not_fit_move_to_the_grapheme_table() {
     assert_eq!(text[0], vec![u32::from('e'), 0x0301]);
 
     assert_ne!(row[1].attributes & Attribute::Overflow as u16, 0, "ZWJ");
-    assert_eq!(text[1], vec![0x1F468, 0x200D]);
+    assert_eq!(text[1], vec![0x1F468, 0x200D, 0x1F469]);
 
     // That cell is wide as well as overflowing: the two are independent, and
     // its spacer is neither.

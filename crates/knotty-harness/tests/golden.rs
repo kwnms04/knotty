@@ -87,10 +87,15 @@ fn htop() {
     check("htop");
 }
 
-/// vim over a file of CJK, combining marks and ZWJ emoji. The three
-/// application recordings above are all ASCII, so without this the wide-cell
-/// flags and the grapheme table — the parts of the snapshot most likely to
-/// move when the engine does — would go unwatched.
+/// vim over a file of CJK, combining marks and emoji. The three application
+/// recordings above are all ASCII, so without this the wide-cell flags and the
+/// grapheme table — the parts of the snapshot most likely to move when the
+/// engine does — would go unwatched.
+///
+/// The file's ZWJ sequences reach the terminal as the literal `<200d>` vim
+/// draws an unprintable character as, so what a joined cluster comes to is not
+/// something a capture of an editor can show. The skin-tone modifier is: it is
+/// printable, so vim prints it, and the cell it lands on carries both.
 #[test]
 fn unicode() {
     check("unicode");

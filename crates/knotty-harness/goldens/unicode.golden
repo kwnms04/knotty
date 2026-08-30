@@ -10,7 +10,7 @@ selection none
 cursor 0 23 visible block
 title ""
 pwd ""
-graphemes 9
+graphemes 12
 row 0 flags dirty selection none
 text "  1 한 글  CJK 전 각  텍 스 트  정 렬  확 인                                               "
 cell 0 0 af5f00 000000 0000 none 0020
@@ -176,7 +176,7 @@ cell 1 77 ffffff 000000 0000 none 0000
 cell 1 78 ffffff 000000 0000 none 0000
 cell 1 79 ffffff 000000 0000 none 0000
 row 2 flags dirty selection none
-text "  3 zwj: 👨 <200d>👩 <200d>👧  family, 👍 🏽  with a modifier                        "
+text "  3 zwj: 👨 <200d>👩 <200d>👧  family, 👍    with a modifier                        "
 cell 2 0 af5f00 000000 0000 none 0020
 cell 2 1 af5f00 000000 0000 none 0020
 cell 2 2 af5f00 000000 0000 none 0033
@@ -213,10 +213,10 @@ cell 2 32 ffffff 000000 0000 none 006C
 cell 2 33 ffffff 000000 0000 none 0079
 cell 2 34 ffffff 000000 0000 none 002C
 cell 2 35 ffffff 000000 0000 none 0020
-cell 2 36 ffffff 000000 0100 none 1F44D
+cell 2 36 ffffff 000000 0500 none 1F44D 1F3FD
 cell 2 37 ffffff 000000 0200 none 0000
-cell 2 38 ffffff 000000 0100 none 1F3FD
-cell 2 39 ffffff 000000 0200 none 0000
+cell 2 38 ffffff 000000 0000 none 0000
+cell 2 39 ffffff 000000 0000 none 0000
 cell 2 40 ffffff 000000 0000 none 0000
 cell 2 41 ffffff 000000 0000 none 0077
 cell 2 42 ffffff 000000 0000 none 0069
