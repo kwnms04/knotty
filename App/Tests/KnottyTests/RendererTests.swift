@@ -1,3 +1,4 @@
+import CoreText
 import Foundation
 import Testing
 
@@ -390,9 +391,8 @@ private func frame(cursorStyle: Int) throws -> Frame {
 /// This face carries `calt` and not `liga`, so everything below is `calt`
 /// being read and honoured — the half of "both features" that
 /// ``theDerivationTellsAFaceWithTheFeaturesFromAFaceWithout()`` cannot show.
-@Test(.enabled(if: ligatureFace() != nil))
-func aLigatureFaceDerivesItsSetWindowAndOverhang() throws {
-    let face = try #require(ligatureFace())
+@Test func aLigatureFaceDerivesItsSetWindowAndOverhang() {
+    let face = ligatureFace()
     let ligatures = face.ligatures
     #expect(ligatures.enabled)
 
@@ -413,9 +413,9 @@ func aLigatureFaceDerivesItsSetWindowAndOverhang() throws {
 /// they were: two quads, one per cell, on the grid the metrics laid out.
 /// That is the whole of why the ligature path can avoid the shaper for
 /// everything else. cf. 04-renderer R3.
-@Test(.enabled(if: ligatureFace() != nil), arguments: ["!=", "=>"])
+@Test(arguments: ["!=", "=>"])
 func aLigatureIsDrawnAcrossItsCells(text: String) throws {
-    let face = try #require(ligatureFace())
+    let face = ligatureFace()
     let session = try Session(cols: cols, rows: rows, scrollback: scrollback)
     try session.feed(Array("a \(text) b".utf8))
     let renderer = Renderer(metrics: metrics, face: face)
@@ -451,12 +451,30 @@ func aLigatureIsDrawnAcrossItsCells(text: String) throws {
     #expect(frame.glyphs.filter { $0.path == .fast }.count == 2)
 }
 
-/// The one face this milestone draws with, when it is installed. Its
-/// ligatures are what makes the path observable at all, and nothing on a bare
-/// macOS draws one — so the two tests that need it are skipped where it is
-/// absent rather than failed, and what a runner without it holds is the
-/// derivation's invariants. cf. adr/0016.
-private func ligatureFace() -> FontFace? {
-    let face = FontFace(metrics: metrics)
-    return face.ligatures.enabled ? face : nil
+/// The one face this milestone draws with, read from the copy committed
+/// beside the goldens.
+///
+/// Registered for this process rather than installed on the machine. Nothing
+/// on a bare macOS carries a ligature feature, so without a copy of its own
+/// the ligature path is a thing no runner can see — and a runner that fetched
+/// one would hold whatever release it fetched, which is the version drift
+/// `adr/0016` names. The goldens are untouched either way: they pin the
+/// system's fixed-pitch face.
+///
+/// A machine with the font already installed resolves the name to that copy
+/// instead, since a duplicate cannot register. What is asserted below is the
+/// shape of the answer rather than its numbers, which is what makes the two
+/// agree anyway.
+/// Registering a face that is registered already answers false and changes
+/// nothing, so the three calls this file makes need nothing to hold them to
+/// one.
+private func ligatureFace() -> FontFace {
+    CTFontManagerRegisterFontsForURL(
+        URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .appending(path: "fonts/JetBrainsMono-Regular.ttf") as CFURL,
+        .process,
+        nil
+    )
+    return FontFace(metrics: metrics)
 }

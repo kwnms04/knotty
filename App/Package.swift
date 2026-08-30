@@ -41,9 +41,10 @@ let package = Package(
             name: "KnottyTests",
             dependencies: ["KnottySession", "KnottyRender"],
             // The renderer goldens are read by path, the way the recordings
-            // they are made from are. SwiftPM would otherwise ask to be told
-            // what they are.
-            exclude: ["goldens"]
+            // they are made from are, and so is the one ligature face the
+            // tests register for themselves. SwiftPM would otherwise ask to be
+            // told what they are.
+            exclude: ["goldens", "fonts"]
         ),
     ]
 )
