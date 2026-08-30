@@ -28,7 +28,7 @@ private let goldensDirectory = URL(fileURLWithPath: #filePath)
 
 /// The format the goldens are written in. Bump it when the encoding changes,
 /// so a stale golden fails loudly rather than diffing line by line.
-private let format = "knotty-render-golden 2"
+private let format = "knotty-render-golden 3"
 
 /// The environment variable that turns a check into a rewrite. Its own, not
 /// the harness's: updating a screen must not quietly update a drawing too.
@@ -41,6 +41,15 @@ private let updateVariable = "KNOTTY_UPDATE_RENDER_GOLDENS"
 /// that chose it. Not by its glyph id, which moves with the font's version and
 /// so would say one thing on a development machine and another on a runner —
 /// the same problem the injected metrics answer. cf. 04-renderer R3.
+///
+/// A cell of the run whose cluster did not fit in one contributes every
+/// codepoint of that cluster, resolved through the grapheme table: the cell
+/// itself holds an index into it, and an index is the packer's answer rather
+/// than a judgement about the screen. The trailing cell of a wide character
+/// contributes nothing, because nothing was shaped for it. Which page a cluster was baked into is
+/// left out for a different reason — it follows from whether the cascade
+/// answered with a colour font, which is the system's property and not this
+/// code's. ``aColorEmojiIsBakedOnItsOwnPage()`` holds that instead.
 ///
 /// Left out for the same reason are the atlas coordinate, which is the
 /// packer's answer rather than a judgement about the screen, and the quad's
@@ -71,8 +80,14 @@ private func describe(_ frame: Frame, at metrics: CellMetrics, of snapshot: Snap
     for glyph in frame.glyphs {
         let row = Int(glyph.y / metrics.height)
         let first = Int(glyph.x / metrics.width - glyph.cellIndex)
-        let run = (first..<(first + Int(glyph.cluster))).map { column in
-            String(format: "%04X", snapshot.cells[row * Int(snapshot.cols) + column].codepoint)
+        let run = (first..<(first + Int(glyph.cluster))).flatMap { column -> [String] in
+            // The trailing cell of a wide character holds no text of its own,
+            // so it contributes none: what a run is named by is the codepoints
+            // that were shaped, and how many cells they were given is already
+            // said beside it.
+            let cell = snapshot.cells[row * Int(snapshot.cols) + column]
+            guard !cell.isWideTail else { return [] }
+            return snapshot.codepoints(of: cell).map { String(format: "%04X", $0) }
         }
         out += "glyph \(glyph.x) \(glyph.y) \(glyph.path.rawValue)"
         out += " \(glyph.cellIndex)/\(glyph.cluster) \(run.joined(separator: "+"))"
@@ -130,9 +145,9 @@ private func check(_ name: String) throws {
 }
 
 /// The four ASCII recordings the Rust harness replays, and the one that is
-/// not: `unicode` pins what this milestone does with what it cannot draw —
-/// a wide character and an overflowed cluster leave their background and
-/// nothing else. That is the boundary M3 moves.
+/// not: `unicode` pins what the slow path draws — Hangul over two cells from
+/// a font the primary is not, emoji in colour, and a combining mark on the
+/// base it belongs to rather than beside it.
 ///
 /// What these cannot pin is the letter under a block cursor: no recording
 /// ends with the cursor on a cell that has one. That judgement is held by
@@ -263,7 +278,7 @@ private func frame(cursorStyle: Int) throws -> Frame {
     // The page is what ties the two together: a quad names the slot it
     // samples, and a slot was filled by exactly one update.
     let coverage = Dictionary(
-        uniqueKeysWithValues: frame.atlasUpdates.map { ([$0.x, $0.y], $0.coverage) }
+        uniqueKeysWithValues: frame.atlasUpdates.map { ([$0.x, $0.y], $0.pixels) }
     )
     let ink = try frame.glyphs.map { try #require(coverage[[$0.atlasX, $0.atlasY]]) }
     #expect(ink.count == 2)
@@ -442,8 +457,8 @@ func aLigatureIsDrawnAcrossItsCells(text: String) throws {
     let outside = (0..<Int(metrics.height)).flatMap { row -> [UInt8] in
         let start = row * Int(slot.width)
         let cell = start + Int(-drawn.offsetX)
-        return Array(slot.coverage[start..<cell])
-            + Array(slot.coverage[(cell + Int(metrics.width))..<(start + Int(slot.width))])
+        return Array(slot.pixels[start..<cell])
+            + Array(slot.pixels[(cell + Int(metrics.width))..<(start + Int(slot.width))])
     }
     #expect(outside.contains { $0 > 0 })
 
@@ -496,4 +511,164 @@ private func ligatureFace() -> FontFace {
         nil
     )
     return FontFace(metrics: metrics)
+}
+
+/// A wide character the primary face has no glyph for is drawn across the two
+/// cells the engine gave it, by whatever font the cascade answered with.
+///
+/// Both halves of the slow path in one screen: the grid is the primary font's
+/// and a fallback does not widen it, so the quad is the two cells and nothing
+/// more — which is also what keeps it out of the cell beside it.
+/// cf. 04-renderer R4.
+@Test func aWideFallbackCharacterFillsTheTwoCellsItWasGiven() throws {
+    let session = try Session(cols: cols, rows: rows, scrollback: scrollback)
+    try session.feed(Array("한A".utf8))
+    let renderer = Renderer(metrics: metrics, face: pinned())
+
+    let frame = try #require(try session.withSnapshot { renderer.frame(for: $0) })
+    // Two cells of Hangul and one of a letter, and the trailing cell of the
+    // Hangul draws nothing of its own.
+    #expect(frame.glyphs.count == 2)
+    let hangul = try #require(frame.glyphs.first)
+    #expect(hangul.path == .slow)
+    #expect((hangul.cellIndex, hangul.cluster) == (0, 2))
+    #expect((hangul.x, hangul.offsetX, hangul.width) == (0, 0, 2 * metrics.width))
+    #expect(frame.glyphs.last?.x == 2 * metrics.width)
+
+    // Fitted rather than dropped: the slot the cascade filled has ink in it.
+    let slot = try #require(
+        frame.atlasUpdates.first { ($0.x, $0.y) == (hangul.atlasX, hangul.atlasY) }
+    )
+    #expect(slot.width == 2 * metrics.width)
+    #expect(slot.pixels.contains { $0 > 0 })
+}
+
+/// A colour emoji is baked on the page of its own that R6 asks for, and the
+/// letters beside it stay on the coverage page. Mixing them would make every
+/// letter on the screen cost four times what it does.
+///
+/// The pass stays one buffer either way: which page a quad samples rides on
+/// the instance rather than splitting the list, which is what keeps a screen
+/// with an emoji on it one draw call. cf. 04-renderer R1, R6.
+@Test func aColorEmojiIsBakedOnItsOwnPage() throws {
+    let session = try Session(cols: cols, rows: rows, scrollback: scrollback)
+    try session.feed(Array("A\u{1F600}B".utf8))
+    let renderer = Renderer(metrics: metrics, face: pinned())
+
+    let frame = try #require(try session.withSnapshot { renderer.frame(for: $0) })
+    #expect(frame.glyphs.map(\.page) == [.coverage, .color, .coverage])
+    // Still one list, in the order the cells run.
+    #expect(frame.glyphs.map(\.x) == [0, metrics.width, 3 * metrics.width])
+
+    // Four bytes a pixel on the colour page and one on the other, which is
+    // the whole of why they are two pages.
+    for update in frame.atlasUpdates {
+        #expect(
+            update.pixels.count
+                == Int(update.width) * Int(metrics.height) * update.page.bytesPerPixel
+        )
+    }
+    let emoji = try #require(frame.atlasUpdates.first { $0.page == .color })
+    #expect(emoji.pixels.contains { $0 > 0 })
+    // Premultiplied, which is the shape the shader divides back out: no
+    // channel can carry more than the alpha beside it.
+    #expect(
+        stride(from: 0, to: emoji.pixels.count, by: 4).allSatisfy { pixel in
+            emoji.pixels[pixel..<(pixel + 3)].allSatisfy { $0 <= emoji.pixels[pixel + 3] }
+        }
+    )
+}
+
+/// A sequence of codepoints the terminal calls one grapheme is drawn as one
+/// glyph, over the cells that one grapheme was given.
+///
+/// The terminal is what decides where a cluster ends, and it says so by
+/// putting the whole run in one cell: mode 2027 is what makes a flag one cell
+/// rather than two regional indicators, and knotty holds it on. The renderer's
+/// half is to draw what arrived in a cell as one thing rather than as its
+/// pieces. cf. 04-renderer R3.
+@Test(arguments: [
+    "\u{1F1F0}\u{1F1F7}",  // a flag: two regional indicators
+    "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}",  // a family: three emoji and two joiners
+    "\u{1F44D}\u{1F3FD}",  // a thumb and the modifier that colours it
+])
+func aJoinedSequenceIsDrawnAsOneGlyph(text: String) throws {
+    let session = try Session(cols: cols, rows: rows, scrollback: scrollback)
+    try session.feed(Array(text.utf8))
+    let renderer = Renderer(metrics: metrics, face: pinned())
+
+    let frame = try #require(try session.withSnapshot { renderer.frame(for: $0) })
+    #expect(frame.glyphs.count == 1)
+    let joined = try #require(frame.glyphs.first)
+    #expect(joined.path == .slow)
+    #expect((joined.cellIndex, joined.cluster) == (0, 2))
+    #expect(joined.page == .color)
+    #expect((joined.x, joined.offsetX, joined.width) == (0, 0, 2 * metrics.width))
+}
+
+/// A combining mark is drawn on the base it belongs to, which is one glyph
+/// over one cell — not two glyphs stacked on the same origin.
+///
+/// The mark and its base cross as one cluster, so Core Text places the mark
+/// and the atlas keeps the pair. What says they are not overlaid is that they
+/// are not two: the cell asks for one quad, and what it holds is not what the
+/// bare base holds.
+@Test func aCombiningMarkIsDrawnOnItsBaseRatherThanOverIt() throws {
+    let session = try Session(cols: cols, rows: rows, scrollback: scrollback)
+    try session.feed(Array("e\u{0301}".utf8))
+    let renderer = Renderer(metrics: metrics, face: pinned())
+
+    let frame = try #require(try session.withSnapshot { renderer.frame(for: $0) })
+    #expect(frame.glyphs.count == 1)
+    let accented = try #require(frame.glyphs.first)
+    #expect(accented.path == .slow)
+    #expect((accented.cellIndex, accented.cluster) == (0, 1))
+    #expect(accented.width == metrics.width)
+
+    // The bare letter, on a renderer of its own so that the page is empty
+    // before it is asked. The mark sits above the base, so the cluster's ink
+    // starts higher than the letter's own — a comparison rather than a row
+    // number, since where a face puts its ink is the face's business.
+    let alone = try Session(cols: cols, rows: rows, scrollback: scrollback)
+    try alone.feed(Array("e".utf8))
+    let baked = try #require(
+        try alone.withSnapshot {
+            Renderer(metrics: metrics, face: pinned()).frame(for: $0).atlasUpdates
+        }
+    )
+    let bare = try #require(baked.first)
+    let cluster = try #require(
+        frame.atlasUpdates.first { ($0.x, $0.y) == (accented.atlasX, accented.atlasY) }
+    )
+    #expect(cluster.pixels != bare.pixels)
+    #expect(highestInk(of: cluster) < highestInk(of: bare))
+}
+
+/// The topmost row of a coverage slot that has any ink in it, counted from the
+/// top of the cell — which is how the rows are stored.
+private func highestInk(of update: AtlasUpdate) -> Int {
+    let width = Int(update.width)
+    return (0..<(update.pixels.count / width)).first { row in
+        update.pixels[(row * width)..<((row + 1) * width)].contains { $0 > 0 }
+    } ?? Int.max
+}
+
+/// The cascade is asked once per cluster, however often the cluster is on the
+/// screen. The atlas keys a slow-path slot by the cluster for this reason: a
+/// fallback lookup and a shaping call are the same call, and neither is worth
+/// making twice. cf. 04-renderer R4.
+@Test func aClusterAskedForTwiceIsShapedOnce() throws {
+    let session = try Session(cols: cols, rows: rows, scrollback: scrollback)
+    try session.feed(Array("한한글".utf8))
+    let renderer = Renderer(metrics: metrics, face: pinned())
+
+    try session.withSnapshot { snapshot in
+        let first = renderer.frame(for: snapshot)
+        // Three syllables on the screen and two of them the same.
+        #expect(first.glyphs.count == 3)
+        #expect(first.atlasUpdates.count == 2)
+
+        // Same screen, same renderer: everything it needed is already baked.
+        #expect(renderer.frame(for: snapshot).atlasUpdates.isEmpty)
+    }
 }

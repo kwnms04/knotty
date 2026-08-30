@@ -11,10 +11,14 @@ struct Instance {
     float4 color;
 };
 
-/// One glyph instance: the quad on the screen, where its coverage was baked,
-/// and the colour to tint it. The quad carries its own size because a
+/// One glyph instance: the quad on the screen, where it was baked and on which
+/// page, and the colour to tint it. The quad carries its own size because a
 /// ligature is drawn by one of the cells it spans and reaches across the
 /// others. cf. adr/0016.
+///
+/// `atlas.z` is the page — 0 for coverage, 1 for colour. Riding on the
+/// instance is what keeps the pass one draw call now that there are two of
+/// them. cf. 04-renderer R6.
 struct GlyphInstance {
     float4 geometry;
     float4 atlas;
@@ -32,6 +36,8 @@ struct Varying {
     float4 position [[position]];
     float4 color;
     float2 texture;
+    /// Which page ``texture`` is on. Flat, and a whole number.
+    uint page [[flat]];
 };
 
 /// A unit quad as a triangle strip, so neither pass needs a vertex buffer.
@@ -56,6 +62,7 @@ vertex Varying knotty_background_vertex(
     );
     out.color = instance.color;
     out.texture = float2(0);
+    out.page = 0;
     return out;
 }
 
@@ -75,17 +82,28 @@ vertex Varying knotty_glyph_vertex(
     out.position = clip(instance.geometry.xy + corner * instance.geometry.zw, uniforms.viewport);
     out.color = instance.color;
     out.texture = (instance.atlas.xy + corner * instance.geometry.zw) / uniforms.atlasSide;
+    out.page = uint(instance.atlas.z);
     return out;
 }
 
 fragment float4 knotty_glyph_fragment(
-    Varying in [[stage_in]], texture2d<float> atlas [[texture(0)]]
+    Varying in [[stage_in]],
+    texture2d<float> coverage [[texture(0)]],
+    texture2d<float> color [[texture(1)]]
 ) {
     // Nearest, because a quad and its slot are the same size: every fetch
     // lands on a texel centre, and there is nothing for a filter to average.
     constexpr sampler texel(filter::nearest, coord::normalized, address::clamp_to_edge);
-    // The page holds coverage, and the colour comes from the cell — which is
-    // what keeps one raster good for every colour it is ever drawn in.
-    // cf. 04-renderer R8.
-    return float4(in.color.rgb, in.color.a * atlas.sample(texel, in.texture).r);
+    if (in.page > 0) {
+        // An emoji brings its own colours, so the cell's foreground does not
+        // reach it. The page holds them premultiplied, which is the only shape
+        // Core Graphics draws into, and the blend state takes them straight —
+        // hence dividing the alpha back out here rather than in the pipeline.
+        const float4 pixel = color.sample(texel, in.texture);
+        return float4(pixel.rgb / max(pixel.a, 1.0 / 255.0), pixel.a);
+    }
+    // The coverage page holds no colour, and the colour comes from the cell —
+    // which is what keeps one raster good for every colour it is ever drawn
+    // in. cf. 04-renderer R8.
+    return float4(in.color.rgb, in.color.a * coverage.sample(texel, in.texture).r);
 }

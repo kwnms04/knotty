@@ -64,6 +64,27 @@ extension Cell {
     public var isOverflow: Bool {
         attributes & UInt16(KT_ATTRIBUTE_OVERFLOW.rawValue) != 0
     }
+
+    /// The leading cell of a character two columns wide. It holds the whole
+    /// character; the cell after it holds none of it.
+    public var isWide: Bool {
+        attributes & UInt16(KT_ATTRIBUTE_WIDE.rawValue) != 0
+    }
+
+    /// The trailing cell of a character two columns wide.
+    public var isWideTail: Bool {
+        attributes & UInt16(KT_ATTRIBUTE_WIDE_TAIL.rawValue) != 0
+    }
+
+    /// Whether a codepoint rasters to nothing at all.
+    ///
+    /// Space is in here with the control characters: it rasters to nothing and
+    /// a terminal screen is mostly spaces. Said once, because both the cell
+    /// that asks whether it has text and the face that asks whether to bake a
+    /// glyph are asking this.
+    public static func drawsNothing(codepoint: UInt32) -> Bool {
+        codepoint <= 0x20 || (0x7F...0x9F).contains(codepoint)
+    }
 }
 
 /// Whether a session has a child and what has become of it.
@@ -105,10 +126,9 @@ public enum SessionState {
 /// experimental flag.
 ///
 /// What a frame also carries and this view does not yet lift out — the
-/// two-level dirty, the grapheme table, whether a selection exists — is what
-/// M2 has no reader for. The renderer redraws whole frames, draws ASCII, and
-/// has no selection to draw; each of those arrives with the reader that needs
-/// it.
+/// two-level dirty, whether a selection exists — is what nothing here has a
+/// reader for. The renderer redraws whole frames and has no selection to
+/// draw; each of those arrives with the reader that needs it.
 public struct Snapshot {
     /// Viewport width in cells.
     public let cols: UInt16
@@ -118,6 +138,10 @@ public struct Snapshot {
     public let cells: UnsafeBufferPointer<Cell>
     /// One entry per row.
     public let rowStates: UnsafeBufferPointer<Row>
+    /// Codepoints for the cells whose cluster did not fit in one. Read
+    /// through ``codepoints(of:)`` rather than indexed directly: a cell holds
+    /// the index of its run's length, and the run follows that length.
+    public let graphemes: UnsafeBufferPointer<UInt32>
     /// Where the cursor is and how it looks.
     public let cursor: Cursor
     /// Window title as UTF-8, control characters already removed.
@@ -134,11 +158,47 @@ public struct Snapshot {
         rows = view.rows
         cells = UnsafeBufferPointer(start: view.cells, count: Int(view.cols) * Int(view.rows))
         rowStates = UnsafeBufferPointer(start: view.row_state, count: Int(view.rows))
+        graphemes = UnsafeBufferPointer(start: view.graphemes, count: view.grapheme_count)
         cursor = view.cursor
         title = UnsafeBufferPointer(start: view.title.bytes, count: view.title.len)
         pwd = UnsafeBufferPointer(start: view.pwd.bytes, count: view.pwd.len)
         childState = ChildState(view.child_state, exitCode: view.child_exit_code)
         sessionState = SessionState(view.session_state)
+    }
+}
+
+extension Snapshot {
+    /// What one cell holds, in codepoints: its own, or the run the grapheme
+    /// table keeps for it.
+    ///
+    /// Empty where the table does not say — a cell claiming a run the table
+    /// is too short for is a boundary that broke its own contract, and the
+    /// answer to one is a cell that draws nothing rather than a read past the
+    /// end of the frame.
+    public func codepoints(of cell: Cell) -> [UInt32] {
+        guard cell.isOverflow else { return [cell.codepoint] }
+        let index = Int(cell.codepoint)
+        guard index < graphemes.count else { return [] }
+        let length = Int(graphemes[index])
+        guard index + 1 + length <= graphemes.count else { return [] }
+        return Array(graphemes[(index + 1)..<(index + 1 + length)])
+    }
+
+    /// What one cell draws as text, or nil where it has nothing to draw.
+    ///
+    /// A blank, a control character and the trailing half of a wide character
+    /// all come back nil: the first two raster to nothing, and the third
+    /// holds no text of its own — the cell before it drew across both.
+    public func text(of cell: Cell) -> String? {
+        guard !cell.isWideTail else { return nil }
+        var text = ""
+        for codepoint in codepoints(of: cell) {
+            guard let scalar = Unicode.Scalar(codepoint) else { return nil }
+            text.unicodeScalars.append(scalar)
+        }
+        guard let first = text.unicodeScalars.first, !Cell.drawsNothing(codepoint: first.value)
+        else { return nil }
+        return text
     }
 }
 

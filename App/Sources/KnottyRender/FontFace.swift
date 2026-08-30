@@ -2,6 +2,8 @@ import CoreGraphics
 import CoreText
 import Foundation
 
+import KnottySession
+
 /// What a face's GSUB says its ligatures need, and whether they are used.
 ///
 /// Every number here is derived at load rather than written down, because the
@@ -73,8 +75,8 @@ public final class FontFace {
 
     let font: CTFont
     public let ligatures: Ligatures
-    /// One glyph per codepoint, looked up once. The cascade the misses need
-    /// is the slow path's, which is not here yet.
+    /// One glyph per codepoint, looked up once. A miss is a cell the slow
+    /// path takes, where ``line(for:)`` lets the cascade answer instead.
     private var glyphs: [UInt32: CGGlyph] = [:]
 
     /// Load a face at this size, with ``features`` on and what they cover
@@ -158,11 +160,8 @@ public final class FontFace {
 
     /// The glyph this codepoint draws as on its own, or nil when there is
     /// nothing to draw: a blank, or a codepoint this font has no glyph for.
-    ///
-    /// Space is left out along with the control characters — it rasters to
-    /// nothing and a terminal screen is mostly spaces.
     public func glyph(for codepoint: UInt32) -> CGGlyph? {
-        guard codepoint > 0x20, !(0x7F...0x9F).contains(codepoint) else { return nil }
+        guard !Cell.drawsNothing(codepoint: codepoint) else { return nil }
         if let glyph = glyphs[codepoint] { return glyph == 0 ? nil : glyph }
 
         var glyph = CGGlyph(0)
@@ -199,6 +198,45 @@ public final class FontFace {
     /// is a window the ligature path cannot place on cells, and the caller's
     /// cue to leave those cells the glyphs they already had.
     func shape(_ text: String) -> [CGGlyph]? { Self.shape(text, with: font) }
+
+    /// One cluster laid out by Core Text, with the cascade left free to step
+    /// in.
+    ///
+    /// This face is the base attribute and nothing more. What Core Text puts
+    /// in its place for a character this face has no glyph for is the
+    /// fallback, and asking for it is the whole of what the slow path does
+    /// about fonts — one lookup per cluster, and the cluster is what the atlas
+    /// keys a slot by. cf. 04-renderer R4.
+    ///
+    /// The ink takes the colour the context is holding, because what a
+    /// coverage page wants drawn is white and Core Text's own default is
+    /// black. A colour glyph brings its own colours and ignores both.
+    func line(for text: String) -> CTLine {
+        CTLineCreateWithAttributedString(
+            NSAttributedString(
+                string: text,
+                attributes: [
+                    kCTFontAttributeName as NSAttributedString.Key: font,
+                    kCTForegroundColorFromContextAttributeName as NSAttributedString.Key: true,
+                ]
+            )
+        )
+    }
+
+    /// Whether any run of a line draws in colour, which is what decides the
+    /// page it is baked into. cf. 04-renderer R6.
+    static func drawsInColor(_ line: CTLine) -> Bool {
+        for run in CTLineGetGlyphRuns(line) as? [CTRun] ?? [] {
+            // The dictionary is untyped and a bridged cast to a Core
+            // Foundation type always succeeds, so the type is asked for
+            // outright rather than assumed — as in ``shape(_:with:)``.
+            guard let drew = (CTRunGetAttributes(run) as? [CFString: Any])?[kCTFontAttributeName]
+                as CFTypeRef?, CFGetTypeID(drew) == CTFontGetTypeID()
+            else { continue }
+            if CTFontGetSymbolicTraits(drew as! CTFont).contains(.traitColorGlyphs) { return true }
+        }
+        return false
+    }
 
     private static func shape(_ text: String, with font: CTFont) -> [CGGlyph]? {
         let units = text.utf16.count

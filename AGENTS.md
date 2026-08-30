@@ -119,6 +119,11 @@ A glyph is named by the codepoints of the run that was shaped, which of that
 run's cells it is, and the path that chose it — never by its glyph id, which
 moves with the font's version. cf. `adr/0016`.
 
+The slow path's fallback is left out for the same reason: which font the
+cascade answers a cluster with is the system's property, and so is the page
+that follows from it. What a golden holds about one of those cells is that the
+slow path took it, over which cells, for which codepoints.
+
 ## Fuzzer
 
 `fuzz/` holds one libFuzzer target, `feed`, which rounds a detached session

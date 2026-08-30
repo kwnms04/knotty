@@ -1,4 +1,4 @@
-knotty-render-golden 2
+knotty-render-golden 3
 cell 16 34
 backgrounds 1920
 background 0 0 16 34 000000
@@ -1922,7 +1922,7 @@ background 1232 782 16 34 b5bd68
 background 1248 782 16 34 b5bd68
 background 1264 782 16 34 b5bd68
 cursor 32 476 16 34 ffffff
-glyphs 310
+glyphs 323
 glyph 0 0 fast 0/1 0070 ffffff
 glyph 16 0 fast 0/1 0072 ffffff
 glyph 32 0 fast 0/1 0069 ffffff
@@ -1991,6 +1991,8 @@ glyph 48 34 fast 0/1 006F 8abeb7
 glyph 64 34 fast 0/1 0074 8abeb7
 glyph 80 34 fast 0/1 0074 8abeb7
 glyph 96 34 fast 0/1 0079 8abeb7
+glyph 128 34 slow 0/1 F408 ffffff
+glyph 176 34 slow 0/1 F418 ffffff
 glyph 208 34 fast 0/1 006D ffffff
 glyph 224 34 fast 0/1 0061 ffffff
 glyph 240 34 fast 0/1 0069 ffffff
@@ -2078,12 +2080,15 @@ glyph 176 102 fast 0/1 006C ffffff
 glyph 192 102 fast 0/1 0069 ffffff
 glyph 208 102 fast 0/1 006E ffffff
 glyph 224 102 fast 0/1 0065 ffffff
+glyph 0 136 slow 0/1 E5FF 81a2be
 glyph 32 136 fast 0/1 0062 81a2be
 glyph 48 136 fast 0/1 0069 81a2be
 glyph 64 136 fast 0/1 006E 81a2be
+glyph 0 170 slow 0/1 E5FF 81a2be
 glyph 32 170 fast 0/1 006C 81a2be
 glyph 48 170 fast 0/1 0069 81a2be
 glyph 64 170 fast 0/1 0062 81a2be
+glyph 0 204 slow 0/1 E5FF 81a2be
 glyph 32 204 fast 0/1 006C 81a2be
 glyph 48 204 fast 0/1 0069 81a2be
 glyph 64 204 fast 0/1 0062 81a2be
@@ -2091,20 +2096,24 @@ glyph 80 204 fast 0/1 0065 81a2be
 glyph 96 204 fast 0/1 0078 81a2be
 glyph 112 204 fast 0/1 0065 81a2be
 glyph 128 204 fast 0/1 0063 81a2be
+glyph 0 238 slow 0/1 E5FF 81a2be
 glyph 32 238 fast 0/1 006C 81a2be
 glyph 48 238 fast 0/1 006F 81a2be
 glyph 64 238 fast 0/1 0063 81a2be
 glyph 80 238 fast 0/1 0061 81a2be
 glyph 96 238 fast 0/1 006C 81a2be
+glyph 0 272 slow 0/1 E5FF 81a2be
 glyph 32 272 fast 0/1 0073 81a2be
 glyph 48 272 fast 0/1 0062 81a2be
 glyph 64 272 fast 0/1 0069 81a2be
 glyph 80 272 fast 0/1 006E 81a2be
+glyph 0 306 slow 0/1 E5FF 81a2be
 glyph 32 306 fast 0/1 0073 81a2be
 glyph 48 306 fast 0/1 0068 81a2be
 glyph 64 306 fast 0/1 0061 81a2be
 glyph 80 306 fast 0/1 0072 81a2be
 glyph 96 306 fast 0/1 0065 81a2be
+glyph 0 340 slow 0/1 E5FF 81a2be
 glyph 32 340 fast 0/1 0073 81a2be
 glyph 48 340 fast 0/1 0074 81a2be
 glyph 64 340 fast 0/1 0061 81a2be
@@ -2115,6 +2124,7 @@ glyph 128 340 fast 0/1 006C 81a2be
 glyph 144 340 fast 0/1 006F 81a2be
 glyph 160 340 fast 0/1 006E 81a2be
 glyph 176 340 fast 0/1 0065 81a2be
+glyph 0 374 slow 0/1 F086F 8abeb7
 glyph 32 374 fast 0/1 0058 8abeb7
 glyph 48 374 fast 0/1 0031 8abeb7
 glyph 64 374 fast 0/1 0031 8abeb7
@@ -2145,6 +2155,7 @@ glyph 480 374 fast 0/1 002F cc6666
 glyph 496 374 fast 0/1 0058 cc6666
 glyph 512 374 fast 0/1 0031 cc6666
 glyph 528 374 fast 0/1 0031 cc6666
+glyph 0 408 slow 0/1 F086F 8abeb7
 glyph 32 408 fast 0/1 0058 8abeb7
 glyph 48 408 fast 0/1 0031 8abeb7
 glyph 64 408 fast 0/1 0031 8abeb7
@@ -2183,6 +2194,8 @@ glyph 48 442 fast 0/1 006F 8abeb7
 glyph 64 442 fast 0/1 0074 8abeb7
 glyph 80 442 fast 0/1 0074 8abeb7
 glyph 96 442 fast 0/1 0079 8abeb7
+glyph 128 442 slow 0/1 F408 ffffff
+glyph 176 442 slow 0/1 F418 ffffff
 glyph 208 442 fast 0/1 006D ffffff
 glyph 224 442 fast 0/1 0061 ffffff
 glyph 240 442 fast 0/1 0069 ffffff

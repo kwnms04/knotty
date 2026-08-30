@@ -63,8 +63,11 @@ final class TerminalView: NSView {
     private let queue: MTLCommandQueue
     private let backgroundPipeline: MTLRenderPipelineState
     private let glyphPipeline: MTLRenderPipelineState
-    /// The one A8 page, filled in as the renderer bakes into it.
-    private let atlas: MTLTexture
+    /// The two pages, filled in as the renderer bakes into them: coverage
+    /// first, colour second, in the order ``AtlasPage`` numbers them. Bound
+    /// together and chosen between in the shader, which is what keeps the
+    /// pass one draw call. cf. 04-renderer R6.
+    private let pages: [MTLTexture]
 
     /// What both passes need and neither instance carries. Derived, so that
     /// where the view's size is settled is also the only place it is said.
@@ -114,14 +117,16 @@ final class TerminalView: NSView {
         )
 
         let side = Int(Renderer.atlasSide)
-        let description = MTLTextureDescriptor.texture2DDescriptor(
-            pixelFormat: .r8Unorm, width: side, height: side, mipmapped: false
-        )
-        description.usage = .shaderRead
-        guard let atlas = device.makeTexture(descriptor: description) else {
-            throw MetalMissing("a \(side)x\(side) atlas page")
+        pages = try [MTLPixelFormat.r8Unorm, .rgba8Unorm].map { format in
+            let description = MTLTextureDescriptor.texture2DDescriptor(
+                pixelFormat: format, width: side, height: side, mipmapped: false
+            )
+            description.usage = .shaderRead
+            guard let page = device.makeTexture(descriptor: description) else {
+                throw MetalMissing("a \(side)x\(side) \(format) atlas page")
+            }
+            return page
         }
-        self.atlas = atlas
 
         super.init(frame: .zero)
 
@@ -493,13 +498,13 @@ final class TerminalView: NSView {
         // on the frame it is first drawn in, so no frame still in flight can
         // be reading the region being written.
         for update in frame.atlasUpdates {
-            atlas.replace(
+            pages[update.page.rawValue].replace(
                 region: MTLRegionMake2D(
                     Int(update.x), Int(update.y), Int(update.width), Int(metrics.height)
                 ),
                 mipmapLevel: 0,
-                withBytes: update.coverage,
-                bytesPerRow: Int(update.width)
+                withBytes: update.pixels,
+                bytesPerRow: Int(update.width) * update.page.bytesPerPixel
             )
         }
 
@@ -523,7 +528,7 @@ final class TerminalView: NSView {
         guard let encoder = commands.makeRenderCommandEncoder(descriptor: pass) else { return }
 
         encode(frame.backgrounds.map(Instance.init), with: backgroundPipeline, into: encoder)
-        encoder.setFragmentTexture(atlas, index: 0)
+        encoder.setFragmentTextures(pages, range: 0..<pages.count)
         encode(
             frame.glyphs.map { GlyphInstance($0, height: metrics.height) },
             with: glyphPipeline, into: encoder
@@ -745,7 +750,8 @@ private struct Instance {
 /// One glyph instance, the same way — and named the way `Shaders.metal` names
 /// it, since the two layouts have to agree byte for byte. The quad starts where
 /// the glyph's ink does rather than where its cell does, and both it and the
-/// slot it samples are one cell tall. cf. adr/0016.
+/// slot it samples are one cell tall. The page rides in `atlas.z`, which is
+/// what keeps two of them one draw call. cf. adr/0016, 04-renderer R6.
 private struct GlyphInstance {
     var geometry: SIMD4<Float>
     var atlas: SIMD4<Float>
@@ -756,7 +762,9 @@ private struct GlyphInstance {
             Float(instance.x + instance.offsetX), Float(instance.y),
             Float(instance.width), Float(height)
         )
-        atlas = SIMD4(Float(instance.atlasX), Float(instance.atlasY), 0, 0)
+        atlas = SIMD4(
+            Float(instance.atlasX), Float(instance.atlasY), Float(instance.page.rawValue), 0
+        )
         color = SIMD4(instance.color)
     }
 }

@@ -73,6 +73,10 @@ public enum GlyphPath: String, Sendable {
     /// A run of cells shaped together, so that the glyph a cell draws is one
     /// its neighbours had a say in.
     case ligature
+    /// A cluster Core Text laid out whole, because no arrangement of glyphs
+    /// on cells would have said what it says: a mark on its base, a sequence
+    /// joined into one emoji, a character the primary face does not have.
+    case slow
 }
 
 /// One atlas quad: a cell, and the glyph that cell draws.
@@ -91,8 +95,11 @@ public struct GlyphInstance {
     /// The quad against the cell: where it starts, and how wide it is.
     public let offsetX: Int32
     public let width: Int32
-    /// What the shader tints the coverage with.
+    /// What the shader tints the coverage with. A colour glyph brings its own
+    /// colours and this is not applied to it.
     public let color: Rgb
+    /// Which page the slot is on.
+    public let page: AtlasPage
     /// Which path chose this glyph, and where the cell sits in what that path
     /// looked at: the cell's index into the run that was shaped, and how many
     /// cells that run was. Both are one for the fast path, which looks at a
@@ -102,14 +109,16 @@ public struct GlyphInstance {
     public let cluster: Int32
 }
 
-/// One glyph, newly baked, and where on the page it goes.
+/// One glyph, newly baked, and where on which page it goes.
 public struct AtlasUpdate {
     public let x: Int32
     public let y: Int32
     /// The slot's width in device pixels; its height is one cell.
     public let width: Int32
-    /// The slot's coverage, row-major and tightly packed.
-    public let coverage: [UInt8]
+    /// Which page the bytes belong to, and so how many of them a pixel is.
+    public let page: AtlasPage
+    /// The slot's pixels, row-major and tightly packed.
+    public let pixels: [UInt8]
 }
 
 /// What one snapshot draws as.
@@ -138,8 +147,9 @@ public struct Frame {
 public final class Renderer {
     public let metrics: CellMetrics
     /// The one face this milestone draws with, and what its GSUB said about
-    /// its ligatures. Four of them is ticket 10's; a second one for the
-    /// cascade is 09's.
+    /// its ligatures. Four of them is ticket 10's. The fallback needs no face
+    /// of its own: the cascade is Core Text's, and the slow path asks for it
+    /// by handing this one a cluster it cannot draw. cf. 04-renderer R4.
     private let face: FontFace
     private let atlas: Atlas
     /// How heavy the cursor's stroke is, in device pixels. One number for
@@ -215,13 +225,14 @@ public final class Renderer {
                 )
 
                 guard let placed = placed[col],
-                    let slot = atlas.slot(for: placed.glyph, updates: &atlasUpdates)
+                    let slot = atlas.slot(for: placed.request, updates: &atlasUpdates)
                 else { continue }
                 glyphs.append(
                     GlyphInstance(
                         x: x, y: y, atlasX: slot.x, atlasY: slot.y,
                         offsetX: slot.offsetX, width: slot.width,
                         color: index == hidden ? colors.background : colors.foreground,
+                        page: slot.page,
                         path: placed.path, cellIndex: placed.cellIndex, cluster: placed.cluster
                     )
                 )
@@ -240,19 +251,20 @@ public final class Renderer {
 
     /// What one cell draws, and which path said so.
     private struct Placed {
-        let glyph: CGGlyph
+        let request: Atlas.Request
         let path: GlyphPath
         let cellIndex: Int32
         let cluster: Int32
     }
 
-    /// Choose a glyph for every cell of one row, or nothing where the cell
-    /// has nothing to draw.
+    /// Choose what every cell of one row draws, or nothing where the cell has
+    /// nothing to draw.
     ///
     /// The fast path answers every cell first, because it answers at least
     /// 89% of them in every font that was measured and is a dictionary lookup
-    /// when it does. Then the cells whose glyph the font's own GSUB says a
-    /// rule can replace are shaped in runs, and only those.
+    /// when it does. What it cannot answer goes to the slow path a cell at a
+    /// time. Then the cells whose glyph the font's own GSUB says a rule can
+    /// replace are shaped in runs, and only those.
     /// cf. 04-renderer R3, adr/0016.
     private func place(row: Int, of snapshot: Snapshot) -> [Placed?] {
         let cols = Int(snapshot.cols)
@@ -261,19 +273,29 @@ public final class Renderer {
         let text = read(row: row, of: snapshot)
 
         for col in 0..<cols {
-            // A cell the row does not read as a character is one no path here
-            // can draw: it holds a table index rather than a codepoint, or a
-            // character of two UTF-16 units. Both are the slow path's, which
-            // is 09's, and until then they draw as their background — as a
-            // concealed cell does. What the cell asks of the *font* — bold,
-            // italic — is not read at all: one face, coloured to match.
-            // cf. 04-renderer R3.
+            // What the cell asks of the *font* — bold, italic — is not read at
+            // all: one face, coloured to match. That is ticket 10's.
             let cell = snapshot.cells[row * cols + col]
-            guard text[col] != nil, !cell.isInvisible,
-                let glyph = face.glyph(for: cell.codepoint)
-            else { continue }
-            placed[col] = Placed(glyph: glyph, path: .fast, cellIndex: 0, cluster: 1)
-            participates[col] = face.participates(glyph)
+            guard !cell.isInvisible else { continue }
+
+            // The fast path is the cell that reads as one character the
+            // primary face has a glyph for and that owns one column. Every
+            // other cell that holds text is the slow path's: an overflowed
+            // cluster, a character of two UTF-16 units, a wide one, or one the
+            // cascade has to answer. cf. 04-renderer R3.
+            if let scalar = text[col], let glyph = face.glyph(for: scalar.value) {
+                placed[col] = Placed(request: .glyph(glyph), path: .fast, cellIndex: 0, cluster: 1)
+                participates[col] = face.participates(glyph)
+                continue
+            }
+            guard let cluster = snapshot.text(of: cell) else { continue }
+            // The cells the engine gave it, which is what the quad covers: the
+            // grid is the primary font's and a fallback does not widen it.
+            // cf. 04-renderer R4.
+            let cells: Int32 = cell.isWide ? 2 : 1
+            placed[col] = Placed(
+                request: .cluster(cluster, cells: cells), path: .slow, cellIndex: 0, cluster: cells
+            )
         }
 
         guard face.ligatures.enabled else { return placed }
@@ -296,15 +318,16 @@ public final class Renderer {
     ///
     /// An empty cell reads as the space it draws as, so that a window is the
     /// line as it reads rather than the line with holes in it. An overflowed
-    /// cluster holds a table index rather than a codepoint, and a cell outside
-    /// the basic plane is two UTF-16 units — a window holding either would put
-    /// the cells and the glyphs out of step, so neither reads as anything and
-    /// neither can be in a run.
+    /// cluster holds a table index rather than a codepoint, a cell outside the
+    /// basic plane is two UTF-16 units, and a wide character is one character
+    /// over two cells — a window holding any of them would put the cells and
+    /// the glyphs out of step, so none reads as anything and none can be in a
+    /// run. Which is also what sends them to the slow path.
     private func read(row: Int, of snapshot: Snapshot) -> [Unicode.Scalar?] {
         let cols = Int(snapshot.cols)
         return (0..<cols).map { col in
             let cell = snapshot.cells[row * cols + col]
-            guard !cell.isOverflow else { return nil }
+            guard !cell.isOverflow, !cell.isWide, !cell.isWideTail else { return nil }
             guard cell.codepoint != 0 else { return " " }
             return cell.codepoint <= 0xFFFF ? Unicode.Scalar(cell.codepoint) : nil
         }
@@ -339,7 +362,7 @@ public final class Renderer {
         guard let glyphs = face.shape(shaped), glyphs.count == to - from else { return }
         for col in run {
             placed[col] = Placed(
-                glyph: glyphs[col - from],
+                request: .glyph(glyphs[col - from]),
                 path: .ligature,
                 cellIndex: Int32(col - run.lowerBound),
                 cluster: Int32(run.count)
