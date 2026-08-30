@@ -451,6 +451,25 @@ func aLigatureIsDrawnAcrossItsCells(text: String) throws {
     #expect(frame.glyphs.filter { $0.path == .fast }.count == 2)
 }
 
+/// A row that is nothing but participating cells is one run, and not several.
+///
+/// What ends a run is a cell that does not participate, and nothing else. A
+/// row of rules has no cell to save — every one of them has to be shaped — so
+/// cutting it into windows would buy a shaper call per piece and no work back.
+/// cf. adr/0018.
+@Test func aRowOfNothingButParticipatingCellsIsOneRun() throws {
+    let face = ligatureFace()
+    let session = try Session(cols: cols, rows: rows, scrollback: scrollback)
+    try session.feed(Array(String(repeating: "=", count: Int(cols)).utf8))
+    let renderer = Renderer(metrics: metrics, face: face)
+
+    let frame = try #require(try session.withSnapshot { renderer.frame(for: $0) })
+    let ligature = frame.glyphs.filter { $0.path == .ligature }
+    #expect(ligature.count == Int(cols))
+    #expect(ligature.allSatisfy { $0.cluster == Int32(cols) })
+    #expect(Set(ligature.map(\.cellIndex)) == Set(0..<Int32(cols)))
+}
+
 /// The one face this milestone draws with, read from the copy committed
 /// beside the goldens.
 ///
