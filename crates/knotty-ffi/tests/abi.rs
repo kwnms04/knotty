@@ -284,8 +284,15 @@ fn first_row_of(bytes: &[u8]) -> Vec<Cell> {
 
 /// The same, plus each cell's text resolved through the grapheme table.
 fn first_row_and_text_of(bytes: &[u8]) -> (Vec<Cell>, Vec<Vec<u32>>) {
+    first_row_and_text_of_each(&[bytes])
+}
+
+/// The same, with the stream arriving in the pieces given rather than whole.
+fn first_row_and_text_of_each(pieces: &[&[u8]]) -> (Vec<Cell>, Vec<Vec<u32>>) {
     let session = detached(12, 1);
-    feed(session, bytes);
+    for bytes in pieces {
+        feed(session, bytes);
+    }
     let snapshot = take(session);
     let view = view(snapshot);
 
@@ -437,6 +444,32 @@ fn clusters_that_do_not_fit_move_to_the_grapheme_table() {
 
     // The index in the cell is an index, not a codepoint that happens to fit.
     assert_ne!(row[0].codepoint, row[1].codepoint);
+}
+
+/// A cluster split between two feeds is still one cluster.
+///
+/// A stream arrives from a pseudoterminal in pieces and nothing lines those
+/// pieces up with anything, so the state that decides where a cluster ends has
+/// to live across a feed. The golden harness cuts every recording into 1KiB
+/// chunks for the same reason — but no cluster in any recording happens to
+/// straddle one of its cuts, so this is what watches it.
+///
+/// A flag is the pair to ask with. Two regional indicators make one cluster by
+/// being counted off against each other, so the second feed's answer depends on
+/// what the first one left behind — where a modifier only has to look at the
+/// character before it.
+#[test]
+fn a_cluster_split_between_two_feeds_is_still_one_cluster() {
+    let (row, text) = first_row_and_text_of_each(&["\u{1F1F0}".as_bytes(), "\u{1F1F7}".as_bytes()]);
+
+    assert_ne!(row[0].attributes & Attribute::Overflow as u16, 0, "flag");
+    assert_eq!(text[0], vec![0x1F1F0, 0x1F1F7]);
+    assert_ne!(row[0].attributes & Attribute::Wide as u16, 0);
+    assert_eq!(row[1].attributes, Attribute::WideTail as u16);
+
+    // Two cells and not four: the pair did not come apart at the seam.
+    assert_eq!(row[2].codepoint, 0);
+    assert_eq!(row[2].attributes, 0);
 }
 
 #[test]
