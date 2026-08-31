@@ -43,15 +43,37 @@ import KnottySession
     #expect(queued == Array("\u{1b}[200~a [201~rm -rf /\u{1b}[201~".utf8))
 }
 
-/// What the sheet is decided on, before there is anything to paste into —
+/// What the engine judges, asked before there is anything to paste into —
 /// which is why it takes no session.
-@Test func theCheckSaysWhichPastesAreWorthAWarning() {
+@Test func theEngineJudgesARunWithoutASessionBehindIt() {
     #expect(Session.pasteIsSafe(Array("a plain command".utf8)))
     // A newline is what a shell runs the moment it arrives.
     #expect(!Session.pasteIsSafe(Array("one\ntwo".utf8)))
     // And the end sequence is what would let the rest out of the wrapping.
     #expect(!Session.pasteIsSafe(Array("a\u{1b}[201~b".utf8)))
     #expect(Session.pasteIsSafe([]))
+}
+
+/// The policy on top of it, which is this side's to own: the sheet is shown
+/// for what the engine calls unsafe, and for a carriage return besides.
+/// cf. adr/0007, 05-swift-app 8.
+@Test func thePolicyWarnsAboutEveryLineEndingAndNotAboutPlainText() {
+    #expect(!Paste.warns(about: "a plain command"))
+    #expect(!Paste.warns(about: ""))
+    // The two the engine sees.
+    #expect(Paste.warns(about: "one\ntwo"))
+    #expect(Paste.warns(about: "a\u{1b}[201~b"))
+}
+
+/// The one the engine's check does not see. A lone carriage return is a line
+/// ending, and a shell runs one exactly as it runs a newline — so a clipboard
+/// of old-Mac line endings must not go in unasked.
+@Test func aLoneCarriageReturnIsWarnedAboutThoughTheEngineCallsItSafe() {
+    #expect(Session.pasteIsSafe(Array("one\rtwo".utf8)))
+    #expect(Paste.warns(about: "one\rtwo"))
+    // And in a run carrying both, where CR and LF are one grapheme — which is
+    // why the policy reads bytes and not characters.
+    #expect(Paste.warns(about: "one\r\ntwo"))
 }
 
 /// The one judgement about a paste this side makes: how much of a clipboard

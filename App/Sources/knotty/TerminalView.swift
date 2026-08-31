@@ -575,7 +575,7 @@ final class TerminalView: NSView {
         else {
             return
         }
-        if !Self.warnsBeforeAnUnsafePaste || host.pasteIsSafe(text) {
+        if !Self.warnsBeforeAnUnsafePaste || !host.warnsBeforePasting(text) {
             host.paste(text)
             return
         }
@@ -607,9 +607,9 @@ final class TerminalView: NSView {
         }
     }
 
-    /// Whether an unsafe paste is warned about, which is the default
-    /// 05-swift-app 8 calls "multiline only": the engine calls a run unsafe
-    /// for a newline or the terminator, and those are what a sheet is worth.
+    /// Whether the sheet is shown at all, which is 05-swift-app 8's setting
+    /// with its two other values — "always" and "off" — still to come. Which
+    /// runs it is shown *for* is ``Paste/warns(about:)``.
     ///
     /// A constant because the settings pipeline that would give it somewhere
     /// to come from is M4, and this is the seam it arrives at. The only thing

@@ -249,13 +249,14 @@ final class SessionHost {
         }
     }
 
-    /// Whether a clipboard can go in without asking the user first.
+    /// Whether a clipboard is worth asking the user about first.
     ///
-    /// The judgement is the engine's and needs no session, but it comes
-    /// through here all the same: the view passes intent and never reaches
-    /// the boundary itself. cf. 05-swift-app 4.
-    func pasteIsSafe(_ text: String) -> Bool {
-        Session.pasteIsSafe(Array(text.utf8))
+    /// The engine's judgement with the policy's own condition on top, which
+    /// is ``Paste/warns(about:)``. It comes through here rather than being
+    /// asked directly: the view passes intent and never reaches the boundary
+    /// itself. cf. 05-swift-app 4, 8.
+    func warnsBeforePasting(_ text: String) -> Bool {
+        Paste.warns(about: text)
     }
 
     /// Put a clipboard in the terminal.

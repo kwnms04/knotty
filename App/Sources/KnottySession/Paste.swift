@@ -1,12 +1,35 @@
-/// The half of a paste that is the app's: what a warning sheet shows of what
-/// is about to go in.
+/// The half of a paste that is the app's: which runs are worth a sheet, and
+/// what that sheet shows of one.
 ///
-/// Which runs are worth warning about is not here — that is the engine's, and
-/// ``Session/pasteIsSafe(_:)`` is the way to ask. Nor is any of the
-/// sanitizing, which is inside ``Session/paste(_:)`` and cannot be reached
-/// past. All this decides is how much of a clipboard fits in a sheet. cf.
-/// adr/0007.
+/// **Not the sanitizing**, which is the engine's, is inside
+/// ``Session/paste(_:)``, and happens whichever way anything here answered.
+/// The policy is the half adr/0007 puts on this side: it says when to ask,
+/// never what to strip.
 public enum Paste {
+    /// Whether `text` is worth a warning sheet under the default policy.
+    ///
+    /// 05-swift-app 8's "multiline only", which counts three things. Two are
+    /// the engine's — a newline, and the bracketed terminator that would end
+    /// the wrapping early — and ``Session/pasteIsSafe(_:)`` is how they are
+    /// asked for.
+    ///
+    /// The third is a lone carriage return, which the engine's check does not
+    /// look for. It is a line ending all the same, and a shell runs one the
+    /// moment it arrives exactly as it runs a newline — so a clipboard of
+    /// old-Mac line endings would otherwise go in unasked. Counting a
+    /// condition the engine does not is what the split in adr/0007 allows:
+    /// the policy is this side's, and only the policy.
+    ///
+    /// The "control characters" half of §8's condition belongs to the
+    /// "always" setting, which arrives with the config pipeline in M4.
+    public static func warns(about text: String) -> Bool {
+        let bytes = Array(text.utf8)
+        // Read off the bytes rather than the characters: CR and LF together
+        // are one grapheme, so a search over characters would miss the return
+        // in a run that has both.
+        return !Session.pasteIsSafe(bytes) || bytes.contains(0x0D)
+    }
+
     /// What a warning shows of `text`, cut down to something a sheet can hold.
     ///
     /// Two ceilings because a clipboard can be long either way: a thousand
