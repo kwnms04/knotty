@@ -1,0 +1,12 @@
+# Focus reporting off, which is where every window starts: coming and going
+# says nothing to the child.
+focus lost
+focus gained
+# And on, which is the mode vim sets so that autoread can notice the file
+# changed while the window was away.
+out "\x1b[?1004h"
+focus lost
+focus gained
+# Off again, and the window is on its own once more.
+out "\x1b[?1004l"
+focus lost

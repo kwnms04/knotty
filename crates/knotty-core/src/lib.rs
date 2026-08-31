@@ -19,6 +19,7 @@ pub mod io;
 pub mod key;
 mod listener;
 pub mod mailbox;
+pub mod mouse;
 pub mod queue;
 pub mod session;
 pub mod snapshot;
@@ -27,6 +28,7 @@ mod wake;
 mod writer;
 
 pub use key::{Key, KeyAction, KeyEvent, Modifier};
+pub use mouse::{MouseAction, MouseButton, MouseEvent};
 pub use queue::{ClipboardTarget, Event};
 pub use session::{ChildState, PtySession, SelectionRange, Session};
 pub use snapshot::{

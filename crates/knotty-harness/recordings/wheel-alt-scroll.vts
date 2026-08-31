@@ -1,0 +1,16 @@
+# The alternate screen with alternate scroll left on, which is where a pager
+# starts: it never asked about the mouse, and what it gets is the arrows it
+# already reads. One arrow per line, since nothing here carries a count
+# either.
+out "\x1b[?1049h"
+wheel 0 2 3 1
+wheel 0 -1 3 1
+# The same wheel once the child asks for cursor key application mode, which a
+# full-screen program is likely to have left on. It is the keyboard's own
+# arrow that goes down, so it moves with the mode.
+out "\x1b[?1h"
+wheel 0 1 3 1
+# With alternate scroll turned off there is nothing left for the wheel to be:
+# the alternate screen keeps no scrollback for the viewport to walk into.
+out "\x1b[?1007l"
+wheel 0 3 3 1

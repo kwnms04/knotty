@@ -16,9 +16,10 @@ use std::ptr;
 use knotty_ffi::{
     Attribute, Cell, ClipboardTarget, CursorShape, Dirty, Key, KeyAction, KtBytes, KtChildState,
     KtEvent, KtEventKind, KtEvents, KtKeyEvent, KtSessionState, KtSnapshotView, KtStatus, KtText,
-    Modifier, RowFlag, Underline, kt_session_feed, kt_session_free, kt_session_key,
-    kt_session_new_detached, kt_session_resize, kt_session_set_wake, kt_session_take_events,
-    kt_session_take_snapshot, kt_session_take_writes, kt_snapshot_free, kt_snapshot_view,
+    Modifier, MouseAction, MouseButton, RowFlag, Underline, kt_session_feed, kt_session_focus,
+    kt_session_free, kt_session_key, kt_session_mouse, kt_session_new_detached, kt_session_resize,
+    kt_session_set_wake, kt_session_take_events, kt_session_take_snapshot, kt_session_take_writes,
+    kt_session_wheel, kt_snapshot_free, kt_snapshot_view,
 };
 
 /// The format the goldens are written in. Bump it when the encoding changes,
@@ -52,6 +53,24 @@ enum Step {
     Out(Vec<u8>),
     /// A key event from the app.
     Key(KeyStep),
+    /// A mouse event from the app, over one cell.
+    Mouse {
+        action: MouseAction,
+        button: MouseButton,
+        mods: u16,
+        x: u16,
+        y: u16,
+    },
+    /// A wheel turn from the app, in lines, over one cell.
+    Wheel {
+        delta_x: i32,
+        delta_y: i32,
+        x: u16,
+        y: u16,
+        mods: u16,
+    },
+    /// The window gaining or losing focus.
+    Focus { gained: bool },
     /// A resize from the app: the new grid, and how big one cell now is.
     Resize {
         cols: u16,
@@ -99,6 +118,9 @@ impl KeyStep {
 /// key A alt consumed=alt "å"
 /// key Enter composing
 /// resize 10 4 8 16
+/// mouse press left 3 1
+/// wheel 0 -2 3 1
+/// focus gained
 /// ```
 ///
 /// `out` takes a quoted run of bytes, written the way the golden writes one.
@@ -107,6 +129,11 @@ impl KeyStep {
 /// quoted run for what the layout made of the key. A key is a press with
 /// nothing held unless a word says otherwise. `resize` takes the new grid in
 /// cells and then one cell in pixels, in that order.
+///
+/// `mouse` takes an action — `press`, `release` or `motion` — then a button
+/// — `left`, `right`, `middle` or `none` — then the cell, then any modifiers.
+/// `wheel` takes the two deltas in lines, up and right positive, then the
+/// cell, then any modifiers. `focus` takes `gained` or `lost`.
 fn parse(script: &str) -> Result<Vec<Step>, String> {
     script
         .lines()
@@ -142,6 +169,16 @@ fn step(line: &str) -> Result<Step, String> {
             }
             resize_step(words)
         }
+        Some("mouse") => mouse_step(words),
+        Some("wheel") => wheel_step(words),
+        Some("focus") => match words.next() {
+            Some("gained") => Ok(Step::Focus { gained: true }),
+            Some("lost") => Ok(Step::Focus { gained: false }),
+            other => Err(format!(
+                "focus is gained or lost, not {}",
+                other.unwrap_or("nothing")
+            )),
+        },
         Some(other) => Err(format!("{other} is not a directive this format knows")),
         None => Err("a line with only a quoted run says nothing to do with it".to_owned()),
     }
@@ -166,6 +203,68 @@ fn resize_step<'a>(words: impl Iterator<Item = &'a str>) -> Result<Step, String>
         cell_width: number(cell_width)?,
         cell_height: number(cell_height)?,
     })
+}
+
+/// A mouse event: what happened to which button, over which cell, under
+/// whatever was held.
+fn mouse_step<'a>(mut words: impl Iterator<Item = &'a str>) -> Result<Step, String> {
+    let action = match words.next() {
+        Some("press") => MouseAction::Press,
+        Some("release") => MouseAction::Release,
+        Some("motion") => MouseAction::Motion,
+        other => {
+            return Err(format!(
+                "a mouse action is press, release or motion, not {}",
+                other.unwrap_or("nothing")
+            ));
+        }
+    };
+    let button = match words.next() {
+        Some("none") => MouseButton::None,
+        Some("left") => MouseButton::Left,
+        Some("right") => MouseButton::Right,
+        Some("middle") => MouseButton::Middle,
+        other => {
+            return Err(format!(
+                "a mouse button is none, left, right or middle, not {}",
+                other.unwrap_or("nothing")
+            ));
+        }
+    };
+    let x = number(words.next().ok_or("mouse names no column")?)?;
+    let y = number(words.next().ok_or("mouse names no row")?)?;
+    Ok(Step::Mouse {
+        action,
+        button,
+        mods: held(words)?,
+        x,
+        y,
+    })
+}
+
+/// A wheel turn: both deltas in lines, then the cell it happened over.
+///
+/// Both are named even where one is zero. A wheel that only ever turns one
+/// way in a script is a script that says which way the other one would be.
+fn wheel_step<'a>(mut words: impl Iterator<Item = &'a str>) -> Result<Step, String> {
+    let delta_x = number(words.next().ok_or("wheel names no sideways delta")?)?;
+    let delta_y = number(words.next().ok_or("wheel names no delta")?)?;
+    let x = number(words.next().ok_or("wheel names no column")?)?;
+    let y = number(words.next().ok_or("wheel names no row")?)?;
+    Ok(Step::Wheel {
+        delta_x,
+        delta_y,
+        x,
+        y,
+        mods: held(words)?,
+    })
+}
+
+/// Whatever modifier words are left, OR-ed together.
+fn held<'a>(words: impl Iterator<Item = &'a str>) -> Result<u16, String> {
+    words
+        .map(modifiers)
+        .try_fold(0, |held, bits| Ok(held | bits?))
 }
 
 fn number<T: std::str::FromStr>(word: &str) -> Result<T, String> {
@@ -324,6 +423,27 @@ fn run(steps: &[Step], cols: u16, rows: u16, scrollback: usize) -> Result<String
                     cell_height,
                 } => check("kt_session_resize", unsafe {
                     kt_session_resize(session, *cols, *rows, *cell_width, *cell_height)
+                })?,
+                Step::Mouse {
+                    action,
+                    button,
+                    mods,
+                    x,
+                    y,
+                } => check("kt_session_mouse", unsafe {
+                    kt_session_mouse(session, *action, *button, *mods, *x, *y)
+                })?,
+                Step::Wheel {
+                    delta_x,
+                    delta_y,
+                    x,
+                    y,
+                    mods,
+                } => check("kt_session_wheel", unsafe {
+                    kt_session_wheel(session, *delta_x, *delta_y, *x, *y, *mods)
+                })?,
+                Step::Focus { gained } => check("kt_session_focus", unsafe {
+                    kt_session_focus(session, *gained)
                 })?,
             }
         }

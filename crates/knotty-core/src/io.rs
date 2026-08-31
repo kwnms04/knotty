@@ -441,6 +441,15 @@ pub(crate) fn run(
             let _ = match request {
                 Request::Select(range) => session.set_selection(range),
                 Request::Key(event) => session.key(&event),
+                Request::Mouse(event) => session.mouse(&event),
+                Request::Wheel {
+                    delta_x,
+                    delta_y,
+                    x,
+                    y,
+                    mods,
+                } => session.wheel(delta_x, delta_y, x, y, mods),
+                Request::Focus { gained } => session.focus(gained),
                 // The engine first: what the child draws when it hears of the
                 // new size arrives back here, and it has to meet a grid that
                 // is already that size.

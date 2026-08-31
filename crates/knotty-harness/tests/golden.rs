@@ -152,3 +152,42 @@ fn reflow() {
 fn unfold() {
     check_script("unfold");
 }
+
+/// Clicks on either side of the sequence that asks to hear about them. The
+/// one right behind it is the point: the mode that decides arrives as output,
+/// so a branch taken anywhere but beside the terminal would still be reading
+/// the old one.
+#[test]
+fn mouse() {
+    check_script("mouse");
+}
+
+/// The wheel with nobody having asked for it, which is the viewport walking
+/// back into the scrollback. The screen is what this pins, since that branch
+/// says nothing to the child at all.
+#[test]
+fn wheel_scrollback() {
+    check_script("wheel-scrollback");
+}
+
+/// The wheel with mouse reporting on, which is what an editor turns on: it
+/// becomes a mouse code like any other button.
+#[test]
+fn wheel_report() {
+    check_script("wheel-report");
+}
+
+/// The wheel on the alternate screen with alternate scroll left on, which is
+/// where a pager starts: it becomes the cursor keys the program already
+/// reads.
+#[test]
+fn wheel_alt_scroll() {
+    check_script("wheel-alt-scroll");
+}
+
+/// The window coming and going, on either side of the mode that decides
+/// whether the child hears about it. vim's `autoread` lives down this path.
+#[test]
+fn focus() {
+    check_script("focus");
+}

@@ -23,6 +23,7 @@
 
 mod capture;
 mod key;
+mod mouse;
 
 use std::ffi::c_void;
 use std::mem::MaybeUninit;
@@ -30,8 +31,9 @@ use std::ptr;
 
 use libghostty_vt_sys as ffi;
 
-use crate::key::KeyEvent;
+use crate::key::{Key, KeyAction, KeyEvent};
 use crate::listener::{ClipboardRefusal, Listener, Representation};
+use crate::mouse::MouseEvent;
 use crate::queue::ClipboardTarget;
 use crate::session::SelectionRange;
 use crate::{Error, Result};
@@ -56,6 +58,20 @@ const SYNC_OUTPUT: ffi::Mode = 2026;
 /// name, and it is the one ghostty's own app takes by default. cf.
 /// `docs/adr/0019-grapheme-clustering-on.md`.
 const GRAPHEME_CLUSTERING: ffi::Mode = 2027;
+
+/// DEC mode 1004, focus reporting.
+///
+/// The gate on whether the window gaining or losing focus is told to the
+/// child at all. The engine encodes the report but holds no opinion about
+/// when one is wanted, so the mode is read here.
+const FOCUS_REPORTING: ffi::Mode = 1004;
+
+/// DEC mode 1007, alternate scroll.
+///
+/// On by default, and what makes the wheel a cursor key on the alternate
+/// screen: a pager that never asked for mouse reporting still scrolls,
+/// because what it gets is the arrows it already reads.
+const ALTERNATE_SCROLL: ffi::Mode = 1007;
 
 /// What knotty answers a device attributes query with.
 ///
@@ -97,6 +113,8 @@ pub struct Terminal {
     /// The key encoder and its event, which are read against the terminal
     /// above every time a key arrives.
     keys: key::Keys,
+    /// The same for the mouse, which has an encoder of its own.
+    mouse: mouse::Mouse,
     /// Owned outright rather than held in a `Box`, so that the pointer the
     /// engine keeps stays valid while the terminal around it is borrowed.
     listener: *mut Listener,
@@ -109,6 +127,7 @@ impl Terminal {
         // Made before the terminal, so that a failure here releases itself
         // and leaves nothing else to release.
         let keys = key::Keys::new()?;
+        let mouse = mouse::Mouse::new()?;
         let options = ffi::TerminalOptions {
             cols,
             rows,
@@ -128,6 +147,7 @@ impl Terminal {
             rows: ptr::null_mut(),
             cells: ptr::null_mut(),
             keys,
+            mouse,
             listener: Box::into_raw(Box::new(listener)),
         };
         // SAFETY: as above, for each of the three handles a capture needs.
@@ -197,6 +217,9 @@ impl Terminal {
     pub fn feed(&mut self, bytes: &[u8]) {
         // SAFETY: the engine reads `len` bytes and keeps none of them.
         unsafe { ffi::ghostty_terminal_vt_write(self.raw, bytes.as_ptr(), bytes.len()) }
+        // What a feed can have set is the mouse reporting mode and, by way of
+        // DECCOLM, the width a position is read against.
+        self.mouse.invalidate();
     }
 
     /// Resize the grid, and say how big one cell now is in pixels.
@@ -224,7 +247,9 @@ impl Terminal {
         // numbers alongside it.
         check(unsafe {
             ffi::ghostty_terminal_resize(self.raw, cols, rows, cell_width, cell_height)
-        })
+        })?;
+        self.mouse.invalidate();
+        Ok(())
     }
 
     /// Encode a key event as the modes this terminal holds make of it.
@@ -236,12 +261,175 @@ impl Terminal {
         self.keys.encode(self.raw, event)
     }
 
+    /// Encode a mouse event as the modes this terminal holds make of it.
+    ///
+    /// Empty for everything the terminal is meant to stay quiet about, which
+    /// with reporting off is every mouse event there is — a click that goes
+    /// nowhere is the mode working, not a failure.
+    pub fn encode_mouse(&mut self, event: &MouseEvent) -> Result<Vec<u8>> {
+        let grid = self.grid()?;
+        self.mouse.encode(self.raw, event, grid)
+    }
+
+    /// Turn a wheel over the cell at `x`, `y` and answer what the child is to
+    /// hear of it.
+    ///
+    /// Three things it can be, and the terminal is what says which. With
+    /// reporting on it is a mouse code, because a program that asked to hear
+    /// about the mouse asked about this too. On the alternate screen with
+    /// alternate scroll left on it is cursor keys, which is how a pager that
+    /// never asked for the mouse still scrolls. Otherwise it is nobody's but
+    /// ours: the viewport moves, which is the scrollback being read.
+    ///
+    /// Both deltas are in lines, and up and right are positive. Coalescing
+    /// pixels into lines belongs to whoever knows how tall a line is drawn,
+    /// which is not this side. cf. `docs/adr/0017-semantic-input-events.md`
+    pub fn wheel(
+        &mut self,
+        delta_x: i32,
+        delta_y: i32,
+        x: u16,
+        y: u16,
+        mods: u16,
+    ) -> Result<Vec<u8>> {
+        if self.mouse_tracking()? {
+            let grid = self.grid()?;
+            let mut encoded = Vec::new();
+            // One report per line, which is what a wheel is: the protocol has
+            // no count, so three lines are three turns of it.
+            for (delta, buttons) in [
+                (delta_y, (ffi::MouseButton::FOUR, ffi::MouseButton::FIVE)),
+                (delta_x, (ffi::MouseButton::SIX, ffi::MouseButton::SEVEN)),
+            ] {
+                let button = if delta > 0 { buttons.0 } else { buttons.1 };
+                for _ in 0..delta.unsigned_abs() {
+                    encoded.extend(self.mouse.encode_wheel(
+                        self.raw,
+                        button,
+                        mods,
+                        (x, y),
+                        grid,
+                    )?);
+                }
+            }
+            return Ok(encoded);
+        }
+
+        if delta_y == 0 {
+            // Nothing below this reads a sideways turn: the alternate screen
+            // has no cursor key for one and the viewport does not move that
+            // way.
+            return Ok(Vec::new());
+        }
+
+        if self.alternate_screen()? && self.mode(ALTERNATE_SCROLL)? {
+            // Encoded rather than written out, so that the arrow is the same
+            // arrow the keyboard sends — cursor key application mode included,
+            // which is the mode a full-screen program most likely left on.
+            let key = if delta_y > 0 {
+                Key::ArrowUp
+            } else {
+                Key::ArrowDown
+            };
+            let event = KeyEvent {
+                action: KeyAction::Press,
+                key,
+                ..KeyEvent::default()
+            };
+            let one = self.keys.encode(self.raw, &event)?;
+            return Ok(one.repeat(delta_y.unsigned_abs() as usize));
+        }
+
+        // The viewport counts down where the wheel counts up.
+        self.scroll_viewport(-isize::try_from(delta_y).map_err(|_| Error::OutOfRange)?);
+        Ok(Vec::new())
+    }
+
+    /// Encode the window gaining or losing focus, or nothing when the child
+    /// has not asked to hear about it.
+    ///
+    /// The gate is here rather than above the boundary because the mode is
+    /// the terminal's: vim's `autoread` lives down this path, and whether it
+    /// is listening is something only the last feed knows.
+    pub fn encode_focus(&self, gained: bool) -> Result<Vec<u8>> {
+        if !self.mode(FOCUS_REPORTING)? {
+            return Ok(Vec::new());
+        }
+
+        let event = if gained {
+            ffi::FocusEvent::GAINED
+        } else {
+            ffi::FocusEvent::LOST
+        };
+        // `CSI I` and `CSI O` are three bytes; the room is there so that an
+        // engine that ever answers with more is a refusal rather than a
+        // truncation.
+        let mut buffer = [0; 8];
+        let mut written = 0;
+        // SAFETY: the buffer is ours and its length is told truthfully, and
+        // `written` is the out parameter the call documents.
+        check(unsafe {
+            ffi::ghostty_focus_encode(
+                event,
+                buffer.as_mut_ptr().cast(),
+                buffer.len(),
+                &raw mut written,
+            )
+        })?;
+        Ok(buffer[..written].to_vec())
+    }
+
+    /// Move the viewport by `delta` lines, negative towards the scrollback.
+    ///
+    /// Clamped by the engine at either end, so scrolling past the top of the
+    /// history or the bottom of the active area does nothing.
+    fn scroll_viewport(&mut self, delta: isize) {
+        let behavior = ffi::TerminalScrollViewport {
+            tag: ffi::TerminalScrollViewportTag::DELTA,
+            value: ffi::TerminalScrollViewportValue { delta },
+        };
+        // SAFETY: the terminal is ours, and the tagged union is filled in for
+        // the tag it carries.
+        unsafe { ffi::ghostty_terminal_scroll_viewport(self.raw, behavior) };
+    }
+
+    /// Whether any of the mouse tracking modes is on.
+    fn mouse_tracking(&self) -> Result<bool> {
+        // SAFETY: the tag's documented output type.
+        unsafe { self.get(ffi::TerminalData::MOUSE_TRACKING) }
+    }
+
+    /// Whether the alternate screen is the active one.
+    fn alternate_screen(&self) -> Result<bool> {
+        // SAFETY: the tag's documented output type.
+        let screen: ffi::TerminalScreen::Type =
+            unsafe { self.get(ffi::TerminalData::ACTIVE_SCREEN) }?;
+        Ok(screen == ffi::TerminalScreen::ALTERNATE)
+    }
+
+    /// How many cells the grid is, which is the geometry a mouse position is
+    /// read against.
+    fn grid(&self) -> Result<(u16, u16)> {
+        // SAFETY: each tag's documented output type.
+        Ok(unsafe {
+            (
+                self.get(ffi::TerminalData::COLS)?,
+                self.get(ffi::TerminalData::ROWS)?,
+            )
+        })
+    }
+
     /// Whether a synchronized output block is open as of now.
     pub fn sync_output_open(&self) -> Result<bool> {
-        let mut open = false;
-        // SAFETY: `open` is the `bool` out parameter the call documents.
-        check(unsafe { ffi::ghostty_terminal_mode_get(self.raw, SYNC_OUTPUT, &raw mut open) })?;
-        Ok(open)
+        self.mode(SYNC_OUTPUT)
+    }
+
+    /// Whether a DEC mode is set as of now.
+    fn mode(&self, mode: ffi::Mode) -> Result<bool> {
+        let mut set = false;
+        // SAFETY: `set` is the `bool` out parameter the call documents.
+        check(unsafe { ffi::ghostty_terminal_mode_get(self.raw, mode, &raw mut set) })?;
+        Ok(set)
     }
 
     /// Whether the active screen has a selection.

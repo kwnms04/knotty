@@ -8,7 +8,9 @@ use std::ptr;
 
 mod entry;
 
-use knotty_core::{ChildState, Error, Event, KeyEvent, PtySession, Session, Snapshot, Wake};
+use knotty_core::{
+    ChildState, Error, Event, KeyEvent, MouseEvent, PtySession, Session, Snapshot, Wake,
+};
 
 /// The snapshot's POD types. A C consumer gets these from the header; this
 /// re-export is how a Rust consumer names the same layouts.
@@ -18,7 +20,7 @@ pub use knotty_core::{
 };
 
 /// The input path's POD types, re-exported for the same reason.
-pub use knotty_core::{Key, KeyAction, Modifier};
+pub use knotty_core::{Key, KeyAction, Modifier, MouseAction, MouseButton};
 
 /// Borrowed UTF-8, valid for as long as whatever lent it stays put.
 ///
@@ -359,6 +361,30 @@ impl Driver {
         match self {
             Self::Detached(session) => status(session.key(&event)),
             Self::Pty(session) => status(session.key(event)),
+        }
+    }
+
+    /// Encode a mouse event and queue what it comes to for the child.
+    fn mouse(&mut self, event: MouseEvent) -> KtStatus {
+        match self {
+            Self::Detached(session) => status(session.mouse(&event)),
+            Self::Pty(session) => status(session.mouse(event)),
+        }
+    }
+
+    /// Turn the wheel, which the terminal makes one of three things of.
+    fn wheel(&mut self, delta_x: i32, delta_y: i32, x: u16, y: u16, mods: u16) -> KtStatus {
+        match self {
+            Self::Detached(session) => status(session.wheel(delta_x, delta_y, x, y, mods)),
+            Self::Pty(session) => status(session.wheel(delta_x, delta_y, x, y, mods)),
+        }
+    }
+
+    /// Tell the child the window gained or lost focus, if it asked to hear.
+    fn focus(&mut self, gained: bool) -> KtStatus {
+        match self {
+            Self::Detached(session) => status(session.focus(gained)),
+            Self::Pty(session) => status(session.focus(gained)),
         }
     }
 
@@ -761,6 +787,113 @@ pub unsafe extern "C" fn kt_session_key(
             composing: event.composing,
         };
         Ok(session.drive(|driver| driver.key(event)))
+    })
+}
+
+/// Hand the session a mouse event over the cell at `x`, `y`.
+///
+/// Cells rather than pixels: turning one into the other wants the metrics,
+/// and those belong where the display is. `x` counts from the left of the
+/// viewport and `y` from the top, and a position past the edge is clamped to
+/// it.
+///
+/// **Nothing is queued while the child has not asked to hear about the
+/// mouse**, which is most of the time and answers `KT_STATUS_OK` all the
+/// same: a click at a shell prompt is the terminal's, and the mode saying so
+/// is read here rather than above — the sequence that turns reporting on is
+/// output, and a click arriving right behind it has to be read against what
+/// that left. cf. `docs/adr/0017-semantic-input-events.md`
+///
+/// Which of the five reporting formats a click that does report is written in
+/// is the terminal's too, as is whether a motion reports at all.
+///
+/// `mods` is `KtModifier` bits. `button` may be `KT_MOUSE_BUTTON_NONE` only
+/// for a motion, which is what a pointer moving with nothing held is.
+///
+/// # Safety
+///
+/// `session` must be a live handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kt_session_mouse(
+    session: *mut KtSession,
+    action: MouseAction,
+    button: MouseButton,
+    mods: u16,
+    x: u16,
+    y: u16,
+) -> KtStatus {
+    entry::answer(|| {
+        let session = unsafe { entry::at_mut(session) }?;
+
+        let event = MouseEvent {
+            action,
+            button,
+            mods,
+            x,
+            y,
+        };
+        Ok(session.drive(|driver| driver.mouse(event)))
+    })
+}
+
+/// Turn the wheel over the cell at `x`, `y`.
+///
+/// **Both deltas are in lines**, and up and right are positive. A trackpad
+/// reports its inertia in pixels and reports a great many of them; dividing
+/// those by the height a line is drawn at belongs to whoever knows that
+/// height, and calling here only when the count of lines changed is what
+/// keeps a flick off this path a hundred times over.
+///
+/// What the child hears is one of three things, and the terminal is what says
+/// which. With mouse reporting on it is a mouse code, one per line, because a
+/// program that asked to hear about the mouse asked about this too. On the
+/// alternate screen with alternate scroll left on it is cursor keys, which is
+/// how a pager that never asked for the mouse still scrolls — and they are
+/// the same arrows the keyboard sends, application mode included. Otherwise
+/// it is nobody's but the terminal's: the viewport moves into the scrollback
+/// and a snapshot is published, so the app holds no scroll position of its
+/// own.
+///
+/// `mods` is `KtModifier` bits.
+///
+/// # Safety
+///
+/// `session` must be a live handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kt_session_wheel(
+    session: *mut KtSession,
+    delta_x: i32,
+    delta_y: i32,
+    x: u16,
+    y: u16,
+    mods: u16,
+) -> KtStatus {
+    entry::answer(|| {
+        let session = unsafe { entry::at_mut(session) }?;
+
+        Ok(session.drive(|driver| driver.wheel(delta_x, delta_y, x, y, mods)))
+    })
+}
+
+/// Tell the session the window gained or lost focus.
+///
+/// **Nothing is queued while focus reporting is off**, which is the usual
+/// case and answers `KT_STATUS_OK`. The gate is here for the reason
+/// [`kt_session_mouse`]'s is: the mode belongs to the terminal, and reading
+/// it above would read it as of some earlier frame.
+///
+/// vim's `autoread` lives down this path — a file changed by something else
+/// is re-read when the window comes back.
+///
+/// # Safety
+///
+/// `session` must be a live handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kt_session_focus(session: *mut KtSession, gained: bool) -> KtStatus {
+    entry::answer(|| {
+        let session = unsafe { entry::at_mut(session) }?;
+
+        Ok(session.drive(|driver| driver.focus(gained)))
     })
 }
 

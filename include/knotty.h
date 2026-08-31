@@ -298,6 +298,72 @@ typedef uint32_t KtKey;
 #endif // __cplusplus
 
 /**
+ * Which way a mouse moved.
+ */
+enum KtMouseAction
+#if defined(__cplusplus) || __STDC_VERSION__ >= 202311L
+  : uint8_t
+#endif // defined(__cplusplus) || __STDC_VERSION__ >= 202311L
+ {
+  /**
+   * A button went down.
+   */
+  KT_MOUSE_ACTION_PRESS = 0,
+  /**
+   * A button came back up.
+   */
+  KT_MOUSE_ACTION_RELEASE = 1,
+  /**
+   * The pointer moved.
+   */
+  KT_MOUSE_ACTION_MOTION = 2,
+};
+#ifndef __cplusplus
+#if __STDC_VERSION__ >= 202311L
+typedef enum KtMouseAction KtMouseAction;
+#else
+typedef uint8_t KtMouseAction;
+#endif // __STDC_VERSION__ >= 202311L
+#endif // __cplusplus
+
+/**
+ * Which button a mouse event is about.
+ *
+ * The three a terminal has ever been told about, and the absence that a
+ * motion with nothing held is. The engine names eight more; nothing on this
+ * side has a way to press one, so nothing here names them.
+ */
+enum KtMouseButton
+#if defined(__cplusplus) || __STDC_VERSION__ >= 202311L
+  : uint8_t
+#endif // defined(__cplusplus) || __STDC_VERSION__ >= 202311L
+ {
+  /**
+   * No button — which only a motion can be.
+   */
+  KT_MOUSE_BUTTON_NONE = 0,
+  /**
+   * The left button.
+   */
+  KT_MOUSE_BUTTON_LEFT = 1,
+  /**
+   * The right button.
+   */
+  KT_MOUSE_BUTTON_RIGHT = 2,
+  /**
+   * The middle button.
+   */
+  KT_MOUSE_BUTTON_MIDDLE = 3,
+};
+#ifndef __cplusplus
+#if __STDC_VERSION__ >= 202311L
+typedef enum KtMouseButton KtMouseButton;
+#else
+typedef uint8_t KtMouseButton;
+#endif // __STDC_VERSION__ >= 202311L
+#endif // __cplusplus
+
+/**
  * Which kind of event a [`KtEvent`] is, and so which of its fields carry
  * anything.
  */
@@ -1190,6 +1256,87 @@ KtStatus kt_session_write(KtSession *session, const uint8_t *bytes, size_t len);
  * where that length is 0.
  */
 KtStatus kt_session_key(KtSession *session, const KtKeyEvent *event);
+
+/**
+ * Hand the session a mouse event over the cell at `x`, `y`.
+ *
+ * Cells rather than pixels: turning one into the other wants the metrics,
+ * and those belong where the display is. `x` counts from the left of the
+ * viewport and `y` from the top, and a position past the edge is clamped to
+ * it.
+ *
+ * **Nothing is queued while the child has not asked to hear about the
+ * mouse**, which is most of the time and answers `KT_STATUS_OK` all the
+ * same: a click at a shell prompt is the terminal's, and the mode saying so
+ * is read here rather than above — the sequence that turns reporting on is
+ * output, and a click arriving right behind it has to be read against what
+ * that left. cf. `docs/adr/0017-semantic-input-events.md`
+ *
+ * Which of the five reporting formats a click that does report is written in
+ * is the terminal's too, as is whether a motion reports at all.
+ *
+ * `mods` is `KtModifier` bits. `button` may be `KT_MOUSE_BUTTON_NONE` only
+ * for a motion, which is what a pointer moving with nothing held is.
+ *
+ * # Safety
+ *
+ * `session` must be a live handle.
+ */
+KtStatus kt_session_mouse(KtSession *session,
+                          KtMouseAction action,
+                          KtMouseButton button,
+                          uint16_t mods,
+                          uint16_t x,
+                          uint16_t y);
+
+/**
+ * Turn the wheel over the cell at `x`, `y`.
+ *
+ * **Both deltas are in lines**, and up and right are positive. A trackpad
+ * reports its inertia in pixels and reports a great many of them; dividing
+ * those by the height a line is drawn at belongs to whoever knows that
+ * height, and calling here only when the count of lines changed is what
+ * keeps a flick off this path a hundred times over.
+ *
+ * What the child hears is one of three things, and the terminal is what says
+ * which. With mouse reporting on it is a mouse code, one per line, because a
+ * program that asked to hear about the mouse asked about this too. On the
+ * alternate screen with alternate scroll left on it is cursor keys, which is
+ * how a pager that never asked for the mouse still scrolls — and they are
+ * the same arrows the keyboard sends, application mode included. Otherwise
+ * it is nobody's but the terminal's: the viewport moves into the scrollback
+ * and a snapshot is published, so the app holds no scroll position of its
+ * own.
+ *
+ * `mods` is `KtModifier` bits.
+ *
+ * # Safety
+ *
+ * `session` must be a live handle.
+ */
+KtStatus kt_session_wheel(KtSession *session,
+                          int32_t delta_x,
+                          int32_t delta_y,
+                          uint16_t x,
+                          uint16_t y,
+                          uint16_t mods);
+
+/**
+ * Tell the session the window gained or lost focus.
+ *
+ * **Nothing is queued while focus reporting is off**, which is the usual
+ * case and answers `KT_STATUS_OK`. The gate is here for the reason
+ * [`kt_session_mouse`]'s is: the mode belongs to the terminal, and reading
+ * it above would read it as of some earlier frame.
+ *
+ * vim's `autoread` lives down this path — a file changed by something else
+ * is re-read when the window comes back.
+ *
+ * # Safety
+ *
+ * `session` must be a live handle.
+ */
+KtStatus kt_session_focus(KtSession *session, bool gained);
 
 /**
  * Resize the terminal's grid, and say how big one cell now is in pixels.

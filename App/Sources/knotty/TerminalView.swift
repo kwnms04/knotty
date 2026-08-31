@@ -45,8 +45,15 @@ final class TerminalView: NSView {
     private var preeditFont: NSFont
     /// One cell in points, which is what places anything AppKit lays out.
     private var cellSize = NSSize.zero
-    /// What watches for the window to stop being the one typed into.
-    private var resigning: (any NSObjectProtocol)?
+    /// What watches the window becoming, and ceasing to be, the one typed
+    /// into.
+    private var focusWatch: [any NSObjectProtocol] = []
+    /// The fraction of a line the wheel is still holding.
+    ///
+    /// A trackpad's inertia is hundreds of events of a few pixels each, and
+    /// the core is told in lines — so the remainder waits here, and the core
+    /// is called only on the events that completed one. cf. 02-ffi.
+    private var wheel = WheelLines()
 
     /// The face's size in points, which is the one thing about the grid that
     /// a display of another scale does not change. Everything else is
@@ -245,8 +252,8 @@ final class TerminalView: NSView {
         // each other alive. One window makes that invisible; the second one
         // makes it a leak.
         guard let window else {
-            resigning.map(NotificationCenter.default.removeObserver)
-            resigning = nil
+            focusWatch.forEach(NotificationCenter.default.removeObserver)
+            focusWatch = []
             link?.invalidate()
             link = nil
             return
@@ -255,12 +262,28 @@ final class TerminalView: NSView {
         // view and nothing ever takes first responder from it: what really
         // ends a composition here is the window ceasing to be the one being
         // typed into. cf. 07-definition-of-done C.
-        resigning = resigning
-            ?? NotificationCenter.default.addObserver(
-                forName: NSWindow.didResignKeyNotification, object: window, queue: .main
-            ) { [weak self] _ in
-                MainActor.assumeIsolated { self?.endComposition() }
-            }
+        //
+        // The same pair is what the child is told about, when it has asked:
+        // the window is the thing that has focus, and a view inside one that
+        // holds nothing else cannot lose it separately.
+        let center = NotificationCenter.default
+        if focusWatch.isEmpty {
+            focusWatch = [
+                center.addObserver(
+                    forName: NSWindow.didBecomeKeyNotification, object: window, queue: .main
+                ) { [weak self] _ in
+                    MainActor.assumeIsolated { self?.host?.focus(gained: true) }
+                },
+                center.addObserver(
+                    forName: NSWindow.didResignKeyNotification, object: window, queue: .main
+                ) { [weak self] _ in
+                    MainActor.assumeIsolated {
+                        self?.endComposition()
+                        self?.host?.focus(gained: false)
+                    }
+                },
+            ]
+        }
         guard link == nil else { return }
         let link = displayLink(target: self, selector: #selector(tick))
         // Running rather than paused: a wake that arrived before there was a
@@ -271,6 +294,76 @@ final class TerminalView: NSView {
 
     /// What makes a window's keys arrive here at all.
     override var acceptsFirstResponder: Bool { true }
+
+    override func mouseDown(with event: NSEvent) { report(event, .press) }
+    override func mouseUp(with event: NSEvent) { report(event, .release) }
+    override func mouseDragged(with event: NSEvent) { report(event, .motion) }
+    override func rightMouseDown(with event: NSEvent) { report(event, .press) }
+    override func rightMouseUp(with event: NSEvent) { report(event, .release) }
+    override func rightMouseDragged(with event: NSEvent) { report(event, .motion) }
+    override func otherMouseDown(with event: NSEvent) { report(event, .press) }
+    override func otherMouseUp(with event: NSEvent) { report(event, .release) }
+    override func otherMouseDragged(with event: NSEvent) { report(event, .motion) }
+
+    /// One `NSEvent` on its way down as a mouse event: undecided, and over a
+    /// cell rather than a pixel.
+    ///
+    /// Nothing here asks whether the child wants to hear about it. That is a
+    /// mode the terminal holds, and a view reading it would be reading it as
+    /// of the last frame it drew — so a click landing right behind the
+    /// sequence that turns reporting on would be judged by the old rule. cf.
+    /// adr/0017.
+    private func report(_ event: NSEvent, _ action: MouseAction) {
+        // A side button, which no reporting format has a code for. The
+        // terminal never hears about one, so neither does the core.
+        guard let button = MouseButton(buttonNumber: event.buttonNumber) else { return }
+        host?.send(
+            action, button: button, mods: Modifiers(event.modifierFlags), at: cell(of: event)
+        )
+    }
+
+    /// The wheel, in whole lines.
+    ///
+    /// Positive is up and right, which is what AppKit already reports
+    /// whichever way round the user has scrolling set: the sign says which
+    /// content to bring into view, not which way the fingers went.
+    ///
+    /// What the core is told is lines, and a trackpad reports pixels — so the
+    /// call happens only when enough of them made a line. An inertial flick
+    /// is hundreds of events and a handful of lines. cf. 02-ffi.
+    override func scrollWheel(with event: NSEvent) {
+        let lines = wheel.lines(
+            deltaX: event.scrollingDeltaX,
+            deltaY: event.scrollingDeltaY,
+            precise: event.hasPreciseScrollingDeltas,
+            cellSize: (width: cellSize.width, height: cellSize.height)
+        )
+        guard lines != (x: 0, y: 0) else { return }
+        host?.wheel(
+            deltaX: lines.x, deltaY: lines.y,
+            mods: Modifiers(event.modifierFlags), at: cell(of: event)
+        )
+    }
+
+    /// Which cell an event happened over.
+    ///
+    /// The conversion this side owns, and the whole of what the app decides
+    /// about a mouse event: a view counts points from the bottom left and the
+    /// grid counts cells from the top left. Clamped at nothing, since the
+    /// boundary counts cells unsigned; the far edges the core clamps to the
+    /// grid itself.
+    private func cell(of event: NSEvent) -> SessionHost.Cell {
+        guard cellSize.width > 0, cellSize.height > 0 else {
+            return SessionHost.Cell(column: 0, row: 0)
+        }
+        let point = convert(event.locationInWindow, from: nil)
+        return SessionHost.Cell(
+            column: UInt16(clamping: Int((point.x / cellSize.width).rounded(.down))),
+            row: UInt16(
+                clamping: Int(((bounds.height - point.y) / cellSize.height).rounded(.down))
+            )
+        )
+    }
 
     /// What the user typed, on its way to the child — by way of the input
     /// method, which gets the first say. cf. 05-swift-app 7.

@@ -11,6 +11,7 @@ use crate::io::{self, Pty, Waker};
 use crate::key::KeyEvent;
 use crate::listener::Listener;
 use crate::mailbox::Mailbox;
+use crate::mouse::MouseEvent;
 use crate::queue::{Event, EventQueue};
 use crate::snapshot::{ScreenState, Snapshot};
 use crate::vt::Terminal;
@@ -195,6 +196,62 @@ impl Session {
     /// [`write`]: Session::write
     pub fn key(&mut self, event: &KeyEvent) -> Result<()> {
         let encoded = self.terminal.encode_key(event)?;
+        self.write(&encoded)
+    }
+
+    /// Encode a mouse event and queue what it comes to for the child.
+    ///
+    /// Nothing is queued while the child has not asked to hear about the
+    /// mouse, which is most of the time and not a failure: a click nobody
+    /// asked for is a click the terminal keeps. cf.
+    /// `docs/adr/0017-semantic-input-events.md`
+    ///
+    /// # Errors
+    ///
+    /// [`Error::WriteQueueFull`] when the bytes did not fit, as [`write`].
+    ///
+    /// [`write`]: Session::write
+    pub fn mouse(&mut self, event: &MouseEvent) -> Result<()> {
+        let encoded = self.terminal.encode_mouse(event)?;
+        self.write(&encoded)
+    }
+
+    /// Turn the wheel `delta_y` lines over the cell at `x`, `y`.
+    ///
+    /// One of three things, and which one is the terminal's to say: a mouse
+    /// code, a run of cursor keys, or the viewport moving. Both deltas are in
+    /// lines and up and right are positive.
+    ///
+    /// Publishes when the viewport moved, which is the branch that changes
+    /// the screen without the child having said anything.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::WriteQueueFull`] when the bytes did not fit, as [`write`].
+    ///
+    /// [`write`]: Session::write
+    pub fn wheel(&mut self, delta_x: i32, delta_y: i32, x: u16, y: u16, mods: u16) -> Result<()> {
+        let encoded = self.terminal.wheel(delta_x, delta_y, x, y, mods)?;
+        // Nothing to say to the child is the scrollback branch, which moved
+        // the viewport rather than the child. The publish is what draws it.
+        if encoded.is_empty() {
+            return self.publish(false);
+        }
+        self.write(&encoded)
+    }
+
+    /// Tell the child the window gained or lost focus, if it asked to hear.
+    ///
+    /// Nothing is queued while focus reporting is off. vim's `autoread`
+    /// lives down this path.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::WriteQueueFull`] when the bytes did not fit, as [`write`].
+    ///
+    /// [`write`]: Session::write
+    pub fn focus(&mut self, gained: bool) -> Result<()> {
+        let encoded = self.terminal.encode_focus(gained)?;
         self.write(&encoded)
     }
 
@@ -464,6 +521,19 @@ pub(crate) enum Request {
     Select(Option<SelectionRange>),
     /// Encode a key and queue what it comes to for the child.
     Key(KeyEvent),
+    /// Encode a mouse event and queue what it comes to for the child.
+    Mouse(MouseEvent),
+    /// Turn the wheel, which is a mouse code, a run of cursor keys or the
+    /// viewport moving depending on what the terminal holds.
+    Wheel {
+        delta_x: i32,
+        delta_y: i32,
+        x: u16,
+        y: u16,
+        mods: u16,
+    },
+    /// Tell the child the window gained or lost focus, if it asked to hear.
+    Focus { gained: bool },
     /// Resize the grid, with how big one cell now is in pixels.
     Resize {
         cols: u16,
@@ -690,6 +760,36 @@ impl PtySession {
     /// [`write`]: PtySession::write
     pub fn key(&self, event: KeyEvent) -> Result<()> {
         self.request(Request::Key(event))
+    }
+
+    /// Encode a mouse event and queue what it comes to for the child.
+    ///
+    /// The thread's to encode, for the reason [`key`] gives: the modes that
+    /// decide whether the child hears about it at all are the engine's.
+    ///
+    /// [`key`]: PtySession::key
+    pub fn mouse(&self, event: MouseEvent) -> Result<()> {
+        self.request(Request::Mouse(event))
+    }
+
+    /// Turn the wheel `delta_y` lines over the cell at `x`, `y`.
+    ///
+    /// Up and right are positive, and both deltas are in lines: what the
+    /// wheel or the trackpad reported in pixels is the app's to divide by the
+    /// height it draws a line at.
+    pub fn wheel(&self, delta_x: i32, delta_y: i32, x: u16, y: u16, mods: u16) -> Result<()> {
+        self.request(Request::Wheel {
+            delta_x,
+            delta_y,
+            x,
+            y,
+            mods,
+        })
+    }
+
+    /// Tell the child the window gained or lost focus, if it asked to hear.
+    pub fn focus(&self, gained: bool) -> Result<()> {
+        self.request(Request::Focus { gained })
     }
 
     /// Resize the grid and the pseudoterminal both.

@@ -16,6 +16,13 @@ import KnottySession
 /// holds what reads it, and the view never sees a snapshot at all.
 @MainActor
 final class SessionHost {
+    /// One cell of the grid, which is what the pointer's position crosses the
+    /// boundary as.
+    struct Cell {
+        let column: UInt16
+        let row: UInt16
+    }
+
     private let session: Session
     private var renderer: Renderer
     /// What one cell measures, on the display the window is on now.
@@ -127,6 +134,45 @@ final class SessionHost {
     func send(_ key: KeyEvent) {
         do {
             try session.key(key)
+        } catch {
+            report(error)
+        }
+    }
+
+    /// Hand one mouse event to the session, over the cell it happened on.
+    ///
+    /// Whether the child hears about it is the core's answer and not this
+    /// one's: at a shell prompt nothing has asked, and the event stops here
+    /// without anybody above having to know that. cf. adr/0017.
+    func send(_ action: MouseAction, button: MouseButton, mods: Modifiers, at cell: Cell) {
+        do {
+            try session.mouse(action, button: button, mods: mods, x: cell.column, y: cell.row)
+        } catch {
+            report(error)
+        }
+    }
+
+    /// Turn the wheel over a cell, in whole lines.
+    ///
+    /// One of three things comes of it and the terminal is what says which —
+    /// a mouse code, the cursor keys, or the viewport moving. The last is why
+    /// nothing here keeps a scroll position: the core moves the viewport and
+    /// publishes, and the next frame is already scrolled.
+    func wheel(deltaX: Int, deltaY: Int, mods: Modifiers, at cell: Cell) {
+        do {
+            try session.wheel(
+                deltaX: Int32(clamping: deltaX), deltaY: Int32(clamping: deltaY),
+                x: cell.column, y: cell.row, mods: mods
+            )
+        } catch {
+            report(error)
+        }
+    }
+
+    /// Tell the session the window gained or lost focus.
+    func focus(gained: Bool) {
+        do {
+            try session.focus(gained: gained)
         } catch {
             report(error)
         }

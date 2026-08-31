@@ -1,0 +1,25 @@
+# A click with nothing asking to hear about it, which is a click the terminal
+# keeps: at a shell prompt the mouse is nobody else's business.
+mouse press left 3 1
+mouse release left 3 1
+# The sequence that asks, and a click right behind it. That click is already
+# read by the new rule, which is the whole of why the branch is decided beside
+# the terminal rather than above it — a mode carried out to the app would
+# still be saying "off" here. SGR format, because X10 cannot say which button
+# was let go of.
+out "\x1b[?1000h\x1b[?1006h"
+mouse press left 3 1
+mouse release left 3 1
+# What was held goes into the button code, so a modifier is not lost on the
+# way down.
+mouse press right 0 0 ctrl
+mouse release right 0 0 ctrl
+# Normal tracking reports no motion at all, whatever is held.
+mouse motion left 5 1
+# Button-event tracking does. The second motion over the cell the first one
+# already reported says nothing: a trackpad drags in pixels and a terminal is
+# told in cells, so the encoder holds the last one.
+out "\x1b[?1002h"
+mouse motion left 5 1
+mouse motion left 6 1
+mouse motion left 6 1

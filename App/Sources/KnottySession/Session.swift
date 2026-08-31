@@ -148,6 +148,58 @@ public final class Session {
         }
     }
 
+    /// Hand the session a mouse event over the cell at `x`, `y`.
+    ///
+    /// Cells rather than pixels: turning one into the other wants the
+    /// metrics, and those belong on this side. Everything after that is the
+    /// core's — whether the child hears about the event at all, and in which
+    /// of the reporting formats. **A click at a shell prompt reaches nobody**,
+    /// and that is the mode working rather than a failure. cf. adr/0017.
+    public func mouse(
+        _ action: MouseAction,
+        button: MouseButton,
+        mods: Modifiers = [],
+        x: UInt16,
+        y: UInt16
+    ) throws {
+        try check(
+            "kt_session_mouse",
+            kt_session_mouse(handle, action.raw, button.raw, mods.rawValue, x, y)
+        )
+    }
+
+    /// Turn the wheel over the cell at `x`, `y`.
+    ///
+    /// **Both deltas are in lines**, and up and right are positive — see
+    /// ``WheelLines`` for what turns a trackpad's pixels into them, and call
+    /// only when that count changed.
+    ///
+    /// What the child hears is one of three things and the terminal is what
+    /// says which: a mouse code, the cursor keys, or nothing at all because
+    /// the viewport moved instead. The last of those publishes a frame, so
+    /// the scroll position stays the core's rather than being kept here too.
+    public func wheel(
+        deltaX: Int32,
+        deltaY: Int32,
+        x: UInt16,
+        y: UInt16,
+        mods: Modifiers = []
+    ) throws {
+        try check(
+            "kt_session_wheel",
+            kt_session_wheel(handle, deltaX, deltaY, x, y, mods.rawValue)
+        )
+    }
+
+    /// Tell the session the window gained or lost focus.
+    ///
+    /// Nothing reaches the child unless it asked to hear, which is the usual
+    /// case. vim's `autoread` is what asks: a file changed by something else
+    /// is re-read when the window comes back.
+    public func focus(gained: Bool) throws {
+        try check("kt_session_focus", kt_session_focus(handle, gained))
+    }
+
     /// Resize the grid, and say how big one cell now is in pixels.
     ///
     /// The primary screen reflows: a line longer than the new width folds

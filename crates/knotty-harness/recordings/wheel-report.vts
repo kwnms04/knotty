@@ -1,0 +1,10 @@
+# Mouse reporting on, which is what vim turns on: the wheel is a mouse code
+# like any other button, and the protocol has no count — so two lines are two
+# reports.
+out "\x1b[?1000h\x1b[?1006h"
+wheel 0 2 3 1
+wheel 0 -1 3 1
+# Sideways is its own pair of buttons.
+wheel 1 0 3 1
+# And what was held goes into the code, the same as it does for a click.
+wheel 0 1 3 1 shift

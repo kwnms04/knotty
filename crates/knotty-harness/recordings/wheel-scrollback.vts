@@ -1,0 +1,11 @@
+# Nothing has asked about the mouse and the primary screen is the active one,
+# so the wheel is the terminal's own. Four lines onto a grid of two leave two
+# behind, and turning the wheel up is what walks the viewport back into them
+# — the screen below is the proof, and the app holds no scroll position of
+# its own.
+out "one\x0d\x0atwo\x0d\x0athree\x0d\x0afour"
+wheel 0 2 0 0
+# Already at the top of the history. The engine clamps it, so nothing moves —
+# and the wake count is what says that a turn which moved nothing published
+# nothing.
+wheel 0 5 0 0

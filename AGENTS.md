@@ -82,6 +82,9 @@ key A ctrl
 key A alt consumed=alt "å"
 key Enter composing
 resize 10 4 8 16
+mouse press left 3 1
+wheel 0 -2 3 1
+focus gained
 ```
 
 What each word means is `parse`'s to say, in
