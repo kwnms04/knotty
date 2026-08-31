@@ -165,6 +165,23 @@ public final class Session {
         )
     }
 
+    /// Select a range of the viewport, or clear the selection with nil.
+    ///
+    /// Both ends are inclusive and either may come first: the pair records
+    /// which way the selection was made, not which end is topmost. What comes
+    /// back on the snapshot is per row — the flag and the columns — because a
+    /// selection carried inside a cell would empty the renderer's line cache
+    /// on every mouse move. cf. 02-ffi, 04-renderer R2.
+    public func setSelection(_ range: SelectionRange?) throws {
+        guard var range else {
+            return try check("kt_session_set_selection", kt_session_set_selection(handle, nil))
+        }
+        try check(
+            "kt_session_set_selection",
+            withUnsafePointer(to: &range) { kt_session_set_selection(handle, $0) }
+        )
+    }
+
     /// Take the bytes a detached session has queued for its child, emptying
     /// the queue.
     ///

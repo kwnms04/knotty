@@ -105,19 +105,22 @@ cursor, and for every glyph which one it is, where it sits and what tints it.
 writes them. Its own variable and not the harness's, so that rewriting a
 screen cannot quietly rewrite a drawing too.
 
-Cell metrics and the face are injected as constants and atlas coordinates are
-left out of the comparison, which is what lets the files say the same thing on
-a runner and on a development machine: neither a font's raster nor its advance
-is promised across macOS versions, and the ligature path a face takes is
-derived from that face's own GSUB — so a machine with a ligature font
-installed would otherwise draw the same recording by a different set of
-judgements. The face they pin is the system's fixed-pitch one, which carries
-no ligature feature anywhere. What is left is every judgement the renderer
-makes.
+Cell metrics and the four faces are injected as constants and atlas
+coordinates are left out of the comparison, which is what lets the files say
+the same thing on a runner and on a development machine: neither a font's
+raster nor its advance is promised across macOS versions, and the ligature
+path a face takes is derived from that face's own GSUB — so a machine with a
+ligature font installed would otherwise draw the same recording by a different
+set of judgements. The family they pin is the system's fixed-pitch one, which
+carries no ligature feature in any of its four faces. What is left is every
+judgement the renderer makes.
 
 A glyph is named by the codepoints of the run that was shaped, which of that
-run's cells it is, and the path that chose it — never by its glyph id, which
-moves with the font's version. cf. `adr/0016`.
+run's cells it is, the path that chose it, and which of the four faces drew it
+— never by its glyph id, which moves with the font's version. cf. `adr/0016`.
+The face is in there because it is a judgement about the cell's attributes and
+not about the font: which face a bold cell asks for is this code's answer,
+where the glyph that face returns is the font's.
 
 The slow path's fallback is left out for the same reason: which font the
 cascade answers a cluster with is the system's property, and so is the page

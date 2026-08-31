@@ -4,6 +4,49 @@ import Foundation
 
 import KnottySession
 
+/// Which of the four faces a cell is drawn in.
+///
+/// The pair of attributes rather than the pair of booleans, because what
+/// reads it is an index into the faces and a key into the atlas — and both
+/// want one value rather than two.
+public enum FontStyle: Int, Sendable, CaseIterable {
+    case regular
+    case bold
+    case italic
+    case boldItalic
+
+    public init(bold: Bool, italic: Bool) {
+        switch (bold, italic) {
+        case (false, false): self = .regular
+        case (true, false): self = .bold
+        case (false, true): self = .italic
+        case (true, true): self = .boldItalic
+        }
+    }
+
+    /// What a golden calls it. Spelled out rather than reflected, because a
+    /// committed file format is not the place to depend on how an enum
+    /// prints itself.
+    public var name: String {
+        switch self {
+        case .regular: "regular"
+        case .bold: "bold"
+        case .italic: "italic"
+        case .boldItalic: "bolditalic"
+        }
+    }
+
+    /// The traits a copy of the base font is asked for to become this face.
+    var traits: CTFontSymbolicTraits {
+        switch self {
+        case .regular: []
+        case .bold: .traitBold
+        case .italic: .traitItalic
+        case .boldItalic: [.traitBold, .traitItalic]
+        }
+    }
+}
+
 /// What a face's GSUB says its ligatures need, and whether they are used.
 ///
 /// Every number here is derived at load rather than written down, because the
@@ -81,8 +124,11 @@ public final class FontFace {
 
     /// Load a face at this size, with ``features`` on and what they cover
     /// read off the same font's GSUB.
-    public init(metrics: CellMetrics, name: String? = preferredName, probe: String = gridProbe) {
-        font = Self.base(pixelSize: metrics.fontPixelSize, name: name)
+    public init(
+        metrics: CellMetrics, name: String? = preferredName, style: FontStyle = .regular,
+        probe: String = gridProbe
+    ) {
+        font = Self.base(pixelSize: metrics.fontPixelSize, name: name, style: style)
 
         // The probe is shaped whether or not there was a table to read,
         // because what it asks about is the face's grid and not its
@@ -107,23 +153,50 @@ public final class FontFace {
         )
     }
 
+    /// ponytail: one lock over every font-family lookup this process makes.
+    ///
+    /// Finding a family's bold or italic face is a synchronous call into the
+    /// font daemon, and several threads making one at once wedges this
+    /// process's connection to it — every thread then waits on a reply that
+    /// never comes. Faces are loaded when a renderer is made and never
+    /// again, so serializing them costs nothing worth measuring. Per-face
+    /// caching if a face ever has to be loaded on a frame.
+    private static let matching = NSLock()
+
     /// The font itself, before anything is asked of its table.
     ///
     /// A name that names nothing resolves to a font that is not it, so what
     /// came back is checked against what was asked for and the system's own
     /// fixed-pitch face is the answer when they differ.
-    static func base(pixelSize: Double, name: String? = preferredName) -> CTFont {
+    static func base(
+        pixelSize: Double, name: String? = preferredName, style: FontStyle = .regular
+    ) -> CTFont {
+        matching.lock()
+        defer { matching.unlock() }
+
         if let name {
             let font = CTFontCreateWithName(name as CFString, CGFloat(pixelSize), nil)
             if CTFontCopyFamilyName(font) as String == name {
-                return withLigatures(font, pixelSize: pixelSize)
+                return withLigatures(styled(font, style), pixelSize: pixelSize)
             }
         }
         guard let font = CTFontCreateUIFontForLanguage(.userFixedPitch, CGFloat(pixelSize), nil)
         else {
             preconditionFailure("the system has no fixed-pitch font")
         }
-        return withLigatures(font, pixelSize: pixelSize)
+        return withLigatures(styled(font, style), pixelSize: pixelSize)
+    }
+
+    /// The family's face for these traits, or the one asked from when the
+    /// family has no such face.
+    ///
+    /// A family missing its italic is a family that has none, and drawing
+    /// those cells in the regular is what is left — the alternative is a
+    /// column of blanks where a font shipped three faces instead of four.
+    private static func styled(_ font: CTFont, _ style: FontStyle) -> CTFont {
+        guard !style.traits.isEmpty else { return font }
+        // A size of zero keeps the one the font already has.
+        return CTFontCreateCopyWithSymbolicTraits(font, 0, nil, style.traits, style.traits) ?? font
     }
 
     private static func withLigatures(_ font: CTFont, pixelSize: Double) -> CTFont {
@@ -176,6 +249,15 @@ public final class FontFace {
         glyphs[codepoint] = glyph
         return glyph == 0 ? nil : glyph
     }
+
+    /// Which face of the family answered, for a caller that has to tell one
+    /// from another without holding the font itself.
+    public var postScriptName: String { CTFontCopyPostScriptName(font) as String }
+
+    /// What the face the family answered with actually carries, which is not
+    /// always what was asked for: a family with no italic answers with its
+    /// regular. cf. ``styled(_:_:)``.
+    public var traits: CTFontSymbolicTraits { CTFontGetSymbolicTraits(font) }
 
     /// Whether a cell holding this glyph has to be shaped rather than looked
     /// up.
@@ -271,4 +353,26 @@ public final class FontFace {
         }
         return placed.contains(nil) ? nil : placed.map { $0! }
     }
+}
+
+/// The four faces a cell can be drawn in, loaded together.
+///
+/// **Each derives its own ligatures.** A face's participating set is not its
+/// family's: Cascadia Italic's is 34 codepoints where its own Regular's is 85,
+/// and its input length one cell where the Regular's is four. Measuring one
+/// face and calling the other three the same is the kind of assumption
+/// adr/0016 already refused.
+///
+/// The grid is not derived four times. Cell width and height are the primary
+/// face's alone, and the other three are drawn on the grid it settled — a
+/// bold face whose advance is a fraction wider does not widen the column.
+/// cf. 04-renderer R4.
+public final class Faces {
+    private let faces: [FontFace]
+
+    public init(metrics: CellMetrics, name: String? = FontFace.preferredName) {
+        faces = FontStyle.allCases.map { FontFace(metrics: metrics, name: name, style: $0) }
+    }
+
+    public subscript(style: FontStyle) -> FontFace { faces[style.rawValue] }
 }

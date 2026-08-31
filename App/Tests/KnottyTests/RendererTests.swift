@@ -20,7 +20,7 @@ private let metrics = CellMetrics(width: 16, height: 34, fontPixelSize: 26)
 /// recordings by a different set of judgements than a runner without one. The
 /// system's fixed-pitch face carries no ligature feature anywhere, which is
 /// what makes it the one both agree on.
-private func pinned() -> FontFace { FontFace(metrics: metrics, name: nil) }
+private func pinned() -> Faces { Faces(metrics: metrics, name: nil) }
 
 private let goldensDirectory = URL(fileURLWithPath: #filePath)
     .deletingLastPathComponent()
@@ -28,7 +28,7 @@ private let goldensDirectory = URL(fileURLWithPath: #filePath)
 
 /// The format the goldens are written in. Bump it when the encoding changes,
 /// so a stale golden fails loudly rather than diffing line by line.
-private let format = "knotty-render-golden 3"
+private let format = "knotty-render-golden 4"
 
 /// The environment variable that turns a check into a rewrite. Its own, not
 /// the harness's: updating a screen must not quietly update a drawing too.
@@ -89,7 +89,7 @@ private func describe(_ frame: Frame, at metrics: CellMetrics, of snapshot: Snap
             guard !cell.isWideTail else { return [] }
             return snapshot.codepoints(of: cell).map { String(format: "%04X", $0) }
         }
-        out += "glyph \(glyph.x) \(glyph.y) \(glyph.path.rawValue)"
+        out += "glyph \(glyph.x) \(glyph.y) \(glyph.path.rawValue) \(glyph.style.name)"
         out += " \(glyph.cellIndex)/\(glyph.cluster) \(run.joined(separator: "+"))"
         out += " \(hex(glyph.color))\n"
     }
@@ -118,7 +118,7 @@ private func difference(_ golden: String, _ produced: String) -> String? {
 private func check(_ name: String) throws {
     let session = try Session(cols: cols, rows: rows, scrollback: scrollback)
     try session.feed(recording(name))
-    let renderer = Renderer(metrics: metrics, face: pinned())
+    let renderer = Renderer(metrics: metrics, faces: pinned())
 
     let produced = try #require(
         try session.withSnapshot { describe(renderer.frame(for: $0), at: metrics, of: $0) }
@@ -162,7 +162,7 @@ func aRecordingDrawsWhatItsGoldenSays(name: String) throws {
 @Test func aGlyphAskedForTwiceIsRasteredOnce() throws {
     let session = try Session(cols: cols, rows: rows, scrollback: scrollback)
     try session.feed(Array("aa\u{1b}[Hbaa".utf8))
-    let renderer = Renderer(metrics: metrics, face: pinned())
+    let renderer = Renderer(metrics: metrics, faces: pinned())
 
     try session.withSnapshot { snapshot in
         let first = renderer.frame(for: snapshot)
@@ -187,7 +187,7 @@ func aRecordingDrawsWhatItsGoldenSays(name: String) throws {
 
     let session = try Session(cols: cols, rows: rows, scrollback: scrollback)
     try session.feed(recording("vim"))
-    let renderer = Renderer(metrics: measured, face: FontFace(metrics: measured, name: nil))
+    let renderer = Renderer(metrics: measured, faces: Faces(metrics: measured, name: nil))
 
     try session.withSnapshot { snapshot in
         let frame = renderer.frame(for: snapshot)
@@ -210,7 +210,7 @@ private func sessionWithCursor(style: Int) throws -> Session {
 /// A frame of the one-letter screen, with the cursor in the shape asked for.
 private func frame(cursorStyle: Int) throws -> Frame {
     let session = try sessionWithCursor(style: cursorStyle)
-    return try #require(try session.withSnapshot { Renderer(metrics: metrics, face: pinned()).frame(for: $0) })
+    return try #require(try session.withSnapshot { Renderer(metrics: metrics, faces: pinned()).frame(for: $0) })
 }
 
 /// The three shapes are told apart by the rectangle and by nothing else.
@@ -251,7 +251,7 @@ private func frame(cursorStyle: Int) throws -> Frame {
     let asked = Rgb(r: 200, g: 100, b: 50)
 
     try session.withSnapshot { snapshot in
-        let renderer = Renderer(metrics: metrics, face: pinned())
+        let renderer = Renderer(metrics: metrics, faces: pinned())
 
         let themed = renderer.frame(for: snapshot, cursorColor: asked).backgrounds.last
         #expect(themed.map(\.color).map(hex) == "c86432")
@@ -272,7 +272,7 @@ private func frame(cursorStyle: Int) throws -> Frame {
     let measured = CellMetrics.system(pointSize: 13, scale: 2, name: nil)
     let session = try Session(cols: cols, rows: rows, scrollback: scrollback)
     try session.feed(Array("M.".utf8))
-    let renderer = Renderer(metrics: measured, face: FontFace(metrics: measured, name: nil))
+    let renderer = Renderer(metrics: measured, faces: Faces(metrics: measured, name: nil))
 
     let frame = try #require(try session.withSnapshot { renderer.frame(for: $0) })
     // The page is what ties the two together: a quad names the slot it
@@ -305,7 +305,7 @@ private func frame(cursorStyle: Int) throws -> Frame {
     let printable = (0x21...0x7E).map { Character(Unicode.Scalar($0)!) } + ["\u{276F}"]
     let session = try Session(cols: cols, rows: rows, scrollback: scrollback)
     try session.feed(Array(String(printable).utf8))
-    let renderer = Renderer(metrics: metrics, face: pinned())
+    let renderer = Renderer(metrics: metrics, faces: pinned())
 
     let updates = try #require(try session.withSnapshot { renderer.frame(for: $0).atlasUpdates })
     #expect(updates.count == printable.count)
@@ -333,7 +333,7 @@ private func frame(cursorStyle: Int) throws -> Frame {
 @Test func aCodepointOutsideAsciiIsDrawn() throws {
     let session = try Session(cols: cols, rows: rows, scrollback: scrollback)
     try session.feed(Array("\u{276F} ".utf8))
-    let renderer = Renderer(metrics: metrics, face: pinned())
+    let renderer = Renderer(metrics: metrics, faces: pinned())
 
     let frame = try #require(try session.withSnapshot { renderer.frame(for: $0) })
     #expect(frame.glyphs.count == 1)
@@ -348,7 +348,7 @@ private func frame(cursorStyle: Int) throws -> Frame {
 /// derivation answering an empty set means — not that it failed.
 /// cf. adr/0016.
 @Test func aFaceWithoutLigatureFeaturesHasAnEmptyParticipatingSet() {
-    let ligatures = FontFace(metrics: metrics, name: nil).ligatures
+    let ligatures = Faces(metrics: metrics, name: nil)[.regular].ligatures
     #expect(ligatures.participating.isEmpty)
     #expect(!ligatures.enabled)
     // Nothing folded a cell, which is a different fact from there being
@@ -388,11 +388,11 @@ private func frame(cursorStyle: Int) throws -> Frame {
 /// What is checked is the shape of the answer and not its numbers: those are
 /// the font's property, not this code's.
 @Test func theDerivationTellsAFaceWithTheFeaturesFromAFaceWithout() {
-    let with = FontFace(metrics: metrics, name: "Courier New").ligatures
+    let with = Faces(metrics: metrics, name: "Courier New")[.regular].ligatures
     #expect(!with.participating.isEmpty)
     #expect(with.enabled)
 
-    let without = FontFace(metrics: metrics, name: nil).ligatures
+    let without = Faces(metrics: metrics, name: nil)[.regular].ligatures
     #expect(without.participating.isEmpty)
     #expect(!without.enabled)
 }
@@ -407,7 +407,8 @@ private func frame(cursorStyle: Int) throws -> Frame {
 /// being read and honoured — the half of "both features" that
 /// ``theDerivationTellsAFaceWithTheFeaturesFromAFaceWithout()`` cannot show.
 @Test func aLigatureFaceDerivesItsSetWindowAndOverhang() {
-    let face = ligatureFace()
+    let faces = ligatureFaces()
+    let face = faces[.regular]
     let ligatures = face.ligatures
     #expect(ligatures.enabled)
 
@@ -430,10 +431,10 @@ private func frame(cursorStyle: Int) throws -> Frame {
 /// everything else. cf. 04-renderer R3.
 @Test(arguments: ["!=", "=>"])
 func aLigatureIsDrawnAcrossItsCells(text: String) throws {
-    let face = ligatureFace()
+    let faces = ligatureFaces()
     let session = try Session(cols: cols, rows: rows, scrollback: scrollback)
     try session.feed(Array("a \(text) b".utf8))
-    let renderer = Renderer(metrics: metrics, face: face)
+    let renderer = Renderer(metrics: metrics, faces: faces)
 
     let frame = try #require(try session.withSnapshot { renderer.frame(for: $0) })
     let ligature = frame.glyphs.filter { $0.path == .ligature }
@@ -473,10 +474,10 @@ func aLigatureIsDrawnAcrossItsCells(text: String) throws {
 /// cutting it into windows would buy a shaper call per piece and no work back.
 /// cf. adr/0018.
 @Test func aRowOfNothingButParticipatingCellsIsOneRun() throws {
-    let face = ligatureFace()
+    let faces = ligatureFaces()
     let session = try Session(cols: cols, rows: rows, scrollback: scrollback)
     try session.feed(Array(String(repeating: "=", count: Int(cols)).utf8))
-    let renderer = Renderer(metrics: metrics, face: face)
+    let renderer = Renderer(metrics: metrics, faces: faces)
 
     let frame = try #require(try session.withSnapshot { renderer.frame(for: $0) })
     let ligature = frame.glyphs.filter { $0.path == .ligature }
@@ -502,7 +503,7 @@ func aLigatureIsDrawnAcrossItsCells(text: String) throws {
 /// Registering a face that is registered already answers false and changes
 /// nothing, so the three calls this file makes need nothing to hold them to
 /// one.
-private func ligatureFace() -> FontFace {
+private func ligatureFaces() -> Faces {
     CTFontManagerRegisterFontsForURL(
         URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
@@ -510,7 +511,7 @@ private func ligatureFace() -> FontFace {
         .process,
         nil
     )
-    return FontFace(metrics: metrics)
+    return Faces(metrics: metrics)
 }
 
 /// A wide character the primary face has no glyph for is drawn across the two
@@ -523,7 +524,7 @@ private func ligatureFace() -> FontFace {
 @Test func aWideFallbackCharacterFillsTheTwoCellsItWasGiven() throws {
     let session = try Session(cols: cols, rows: rows, scrollback: scrollback)
     try session.feed(Array("한A".utf8))
-    let renderer = Renderer(metrics: metrics, face: pinned())
+    let renderer = Renderer(metrics: metrics, faces: pinned())
 
     let frame = try #require(try session.withSnapshot { renderer.frame(for: $0) })
     // Two cells of Hangul and one of a letter, and the trailing cell of the
@@ -553,7 +554,7 @@ private func ligatureFace() -> FontFace {
 @Test func aColorEmojiIsBakedOnItsOwnPage() throws {
     let session = try Session(cols: cols, rows: rows, scrollback: scrollback)
     try session.feed(Array("A\u{1F600}B".utf8))
-    let renderer = Renderer(metrics: metrics, face: pinned())
+    let renderer = Renderer(metrics: metrics, faces: pinned())
 
     let frame = try #require(try session.withSnapshot { renderer.frame(for: $0) })
     #expect(frame.glyphs.map(\.page) == [.coverage, .color, .coverage])
@@ -595,7 +596,7 @@ private func ligatureFace() -> FontFace {
 func aJoinedSequenceIsDrawnAsOneGlyph(text: String) throws {
     let session = try Session(cols: cols, rows: rows, scrollback: scrollback)
     try session.feed(Array(text.utf8))
-    let renderer = Renderer(metrics: metrics, face: pinned())
+    let renderer = Renderer(metrics: metrics, faces: pinned())
 
     let frame = try #require(try session.withSnapshot { renderer.frame(for: $0) })
     #expect(frame.glyphs.count == 1)
@@ -616,7 +617,7 @@ func aJoinedSequenceIsDrawnAsOneGlyph(text: String) throws {
 @Test func aCombiningMarkIsDrawnOnItsBaseRatherThanOverIt() throws {
     let session = try Session(cols: cols, rows: rows, scrollback: scrollback)
     try session.feed(Array("e\u{0301}".utf8))
-    let renderer = Renderer(metrics: metrics, face: pinned())
+    let renderer = Renderer(metrics: metrics, faces: pinned())
 
     let frame = try #require(try session.withSnapshot { renderer.frame(for: $0) })
     #expect(frame.glyphs.count == 1)
@@ -633,7 +634,7 @@ func aJoinedSequenceIsDrawnAsOneGlyph(text: String) throws {
     try alone.feed(Array("e".utf8))
     let baked = try #require(
         try alone.withSnapshot {
-            Renderer(metrics: metrics, face: pinned()).frame(for: $0).atlasUpdates
+            Renderer(metrics: metrics, faces: pinned()).frame(for: $0).atlasUpdates
         }
     )
     let bare = try #require(baked.first)
@@ -660,7 +661,7 @@ private func highestInk(of update: AtlasUpdate) -> Int {
 @Test func aClusterAskedForTwiceIsShapedOnce() throws {
     let session = try Session(cols: cols, rows: rows, scrollback: scrollback)
     try session.feed(Array("한한글".utf8))
-    let renderer = Renderer(metrics: metrics, face: pinned())
+    let renderer = Renderer(metrics: metrics, faces: pinned())
 
     try session.withSnapshot { snapshot in
         let first = renderer.frame(for: snapshot)
@@ -671,4 +672,191 @@ private func highestInk(of update: AtlasUpdate) -> Int {
         // Same screen, same renderer: everything it needed is already baked.
         #expect(renderer.frame(for: snapshot).atlasUpdates.isEmpty)
     }
+}
+
+/// The four attribute combinations draw in the four faces, and each is a
+/// raster of its own on the pages.
+///
+/// This is the axis M2 deferred. A bold cell drawn in the regular face and
+/// coloured to match is what daily use did not survive: a prompt and a search
+/// highlight are mostly bold. cf. 04-renderer R3.
+@Test func theFourAttributeCombinationsDrawInTheirOwnFaces() throws {
+    let session = try Session(cols: cols, rows: rows, scrollback: scrollback)
+    // SGR 1 is bold and SGR 3 italic; 0 puts both down again.
+    try session.feed(Array("A\u{1b}[1mA\u{1b}[0;3mA\u{1b}[1;3mA".utf8))
+    let renderer = Renderer(metrics: metrics, faces: pinned())
+
+    let frame = try #require(try session.withSnapshot { renderer.frame(for: $0) })
+    #expect(frame.glyphs.map(\.style) == [.regular, .bold, .italic, .boldItalic])
+
+    // One letter, four slots: the atlas key has a style axis, so the same
+    // codepoint in another face is another entry rather than the same one.
+    #expect(frame.atlasUpdates.count == 4)
+    #expect(Set(frame.glyphs.map { [$0.atlasX, $0.atlasY] }).count == 4)
+}
+
+/// And the four rasters are four different pictures of the letter — which is
+/// what "bold looks bold" comes to once the face has been chosen.
+///
+/// Bold carries more ink than regular, which holds whether the family shipped
+/// a bold face or the system emboldened one for it. Italic is held to being
+/// different rather than to leaning a measured amount: how far a face slants
+/// is the face's business and not this code's. cf. adr/0016.
+@Test func aBoldCellIsHeavierThanTheSameLetterInRegular() throws {
+    let session = try Session(cols: cols, rows: rows, scrollback: scrollback)
+    try session.feed(Array("A\u{1b}[1mA\u{1b}[0;3mA".utf8))
+    let renderer = Renderer(metrics: metrics, faces: pinned())
+
+    let frame = try #require(try session.withSnapshot { renderer.frame(for: $0) })
+    let baked = Dictionary(
+        uniqueKeysWithValues: frame.atlasUpdates.map { ([$0.x, $0.y], $0.pixels) }
+    )
+    let ink = try frame.glyphs.map { try #require(baked[[$0.atlasX, $0.atlasY]]) }
+    #expect(ink.count == 3)
+
+    let coverage = ink.map { $0.reduce(0) { $0 + Int($1) } }
+    #expect(coverage[1] > coverage[0])
+    #expect(ink[2] != ink[0])
+}
+
+/// Each face is the face its style names, where the family has one.
+///
+/// A family that shipped three faces answers the fourth with what it has, and
+/// drawing those cells in the regular is what is left — so this asks what came
+/// back rather than assuming the ask was met.
+@Test func eachFaceCarriesTheTraitsItsStyleNames() {
+    let faces = Faces(metrics: metrics, name: nil)
+    #expect(!faces[.regular].traits.contains(.traitBold))
+    #expect(!faces[.regular].traits.contains(.traitItalic))
+    #expect(faces[.bold].traits.contains(.traitBold))
+    #expect(faces[.italic].traits.contains(.traitItalic))
+    #expect(faces[.boldItalic].traits.isSuperset(of: [.traitBold, .traitItalic]))
+}
+
+/// The GSUB walk runs once per face, and the four answers are the four faces'
+/// own rather than the regular's copied across.
+///
+/// Courier New is the family that shows it on a bare macOS: its roman faces
+/// carry a substitution table and its italics do not, so a derivation shared
+/// from the regular would give the italic a participating set it has no rules
+/// for. That is the Cascadia Italic case — a set of 34 where its own Regular's
+/// is 85 — in the form every runner has. The numbers themselves are the font's
+/// property and are not asserted. cf. adr/0016.
+@Test func everyFaceDerivesItsOwnLigaturesRatherThanTheRegularsAgain() {
+    let faces = Faces(metrics: metrics, name: "Courier New")
+
+    // Four faces and not one asked four times.
+    let names = FontStyle.allCases.map { faces[$0].postScriptName }
+    #expect(Set(names).count == 4)
+
+    #expect(faces[.regular].ligatures.participating != faces[.italic].ligatures.participating)
+}
+
+/// A run is shaped by one face, so a style boundary ends it.
+///
+/// Two faces have two sets of rules and two numbering of glyphs; a window
+/// spanning both would let one face's rules decide on the other's characters.
+/// cf. 04-renderer R3.
+@Test func aRunStopsWhereTheFaceChanges() throws {
+    let faces = ligatureFaces()
+    let session = try Session(cols: cols, rows: rows, scrollback: scrollback)
+    // `!=` with the `=` in bold: two participating cells, two faces.
+    try session.feed(Array("!\u{1b}[1m=".utf8))
+    let renderer = Renderer(metrics: metrics, faces: faces)
+
+    let frame = try #require(try session.withSnapshot { renderer.frame(for: $0) })
+    #expect(frame.glyphs.map(\.style) == [.regular, .bold])
+    // Each cell is a run of its own, so neither joined the other.
+    #expect(frame.glyphs.allSatisfy { $0.cluster == 1 })
+}
+
+/// A screen of rows the renderer has already placed is placed again for free.
+///
+/// The first frame of a fresh screen is two rows and not twenty-four: every
+/// blank row holds what every other blank row holds, and the cache is keyed on
+/// that rather than on where the row sits. cf. 04-renderer R2.
+@Test func aRowThatDidNotChangeIsNotPlacedAgain() throws {
+    let session = try Session(cols: cols, rows: rows, scrollback: scrollback)
+    let renderer = Renderer(metrics: metrics, faces: pinned())
+
+    try session.feed(Array("hello".utf8))
+    try session.withSnapshot { _ = renderer.frame(for: $0) }
+    // One row of letters and one blank row, asked for twenty-four times.
+    #expect(renderer.lineCache.misses == 2)
+    #expect(renderer.lineCache.hits == Int(rows) - 2)
+
+    // One row changes. The other twenty-three are the rows they were, and the
+    // shaping that placed them is not done again.
+    try session.feed(Array("\u{1b}[2;1Hworld".utf8))
+    try session.withSnapshot { _ = renderer.frame(for: $0) }
+    #expect(renderer.lineCache.misses == 3)
+    #expect(renderer.lineCache.hits == Int(rows) - 2 + Int(rows) - 1)
+}
+
+/// A row that scrolled is the row it was. The cache is keyed on what the row
+/// holds and not on where it sits, so moving every line up by one costs the
+/// one line that is new. cf. 04-renderer R2.
+@Test func aRowThatScrolledIsFoundByWhatItHolds() throws {
+    let session = try Session(cols: cols, rows: rows, scrollback: scrollback)
+    let renderer = Renderer(metrics: metrics, faces: pinned())
+
+    // A full screen of rows that are all different, so that nothing below can
+    // hit by being blank.
+    let screen = (0..<Int(rows)).map { "row \($0)" }.joined(separator: "\r\n")
+    try session.feed(Array(screen.utf8))
+    try session.withSnapshot { _ = renderer.frame(for: $0) }
+    let before = renderer.lineCache
+    #expect(before.misses == Int(rows))
+    #expect(before.hits == 0)
+
+    // One more line scrolls the screen: every row is at a new coordinate and
+    // only the last of them holds anything new.
+    try session.feed(Array("\r\nrow \(rows)".utf8))
+    try session.withSnapshot { _ = renderer.frame(for: $0) }
+    #expect(renderer.lineCache.misses == before.misses + 1)
+    #expect(renderer.lineCache.hits == Int(rows) - 1)
+}
+
+/// Selecting text does not empty the cache.
+///
+/// This is what the boundary carries a selection on the row for rather than in
+/// the cell: a drag is a new selection every mouse move, and a selection the
+/// key could see would throw away every row of the screen on each one.
+/// cf. 02-ffi, 04-renderer R2.
+@Test func aSelectionDoesNotEmptyTheLineCache() throws {
+    let session = try Session(cols: cols, rows: rows, scrollback: scrollback)
+    let renderer = Renderer(metrics: metrics, faces: pinned())
+
+    let screen = (0..<Int(rows)).map { "row \($0)" }.joined(separator: "\r\n")
+    try session.feed(Array(screen.utf8))
+    try session.withSnapshot { _ = renderer.frame(for: $0) }
+    let before = renderer.lineCache
+
+    try session.setSelection(
+        SelectionRange(start_x: 0, start_y: 0, end_x: 4, end_y: 2, rectangle: false)
+    )
+    let selected = try #require(
+        try session.withSnapshot { snapshot -> Bool in
+            _ = renderer.frame(for: snapshot)
+            return snapshot.rowStates.contains { $0.isSelected }
+        }
+    )
+
+    // The selection really arrived, and not one row was placed again for it.
+    #expect(selected)
+    #expect(renderer.lineCache.misses == before.misses)
+    #expect(renderer.lineCache.hits == before.hits + Int(rows))
+}
+
+/// The hit rate B3 is measured against is read off the counter, not counted by
+/// the caller. Measuring it is M5's; carrying it is M3's. cf. 04-renderer R3.
+@Test func theHitRateIsReadableAndStartsAtOne() throws {
+    let renderer = Renderer(metrics: metrics, faces: pinned())
+    #expect((renderer.lineCache.hits, renderer.lineCache.misses) == (0, 0))
+    #expect(renderer.lineCache.hitRate == 1)
+
+    let session = try Session(cols: cols, rows: rows, scrollback: scrollback)
+    try session.feed(Array("hello".utf8))
+    try session.withSnapshot { _ = renderer.frame(for: $0) }
+    #expect(renderer.lineCache.hitRate == Double(Int(rows) - 2) / Double(rows))
 }

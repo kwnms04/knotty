@@ -45,11 +45,19 @@ final class Atlas {
     static let side: Int32 = 1024
 
     /// What a cell asks the pages for.
+    ///
+    /// The style is part of every key. A glyph id means nothing without the
+    /// face it came from — two faces of a family number their glyphs
+    /// differently — and a cluster the cascade laid out in the bold face is
+    /// not the raster the regular one would have given. This is the axis M2
+    /// deferred, and the shaping cache is keyed the same way for the same
+    /// reason. cf. 04-renderer R3.
     enum Request: Hashable {
-        /// One glyph the fast or ligature path already chose.
-        case glyph(CGGlyph)
+        /// One glyph the fast or ligature path already chose, in the face it
+        /// chose it from.
+        case glyph(CGGlyph, FontStyle)
         /// A whole cluster, laid out by Core Text across the cells it owns.
-        case cluster(String, cells: Int32)
+        case cluster(String, cells: Int32, FontStyle)
     }
 
     /// Where a glyph sits on the pages and how the quad that shows it stands
@@ -74,7 +82,7 @@ final class Atlas {
     }
 
     private let metrics: CellMetrics
-    private let face: FontFace
+    private let faces: Faces
     /// The baseline, measured up from the bottom of the cell as Core Graphics
     /// measures everything.
     private let baseline: CGFloat
@@ -88,21 +96,27 @@ final class Atlas {
     /// One shelf per page, in the order ``AtlasPage`` numbers them.
     private var shelves = [Shelf(), Shelf()]
 
-    init(metrics: CellMetrics, face: FontFace) {
+    init(metrics: CellMetrics, faces: Faces) {
         self.metrics = metrics
-        self.face = face
-        baseline = CTFontGetDescent(face.font).rounded(.up)
+        self.faces = faces
+        // The primary face's, for every face: a slot is one cell tall and the
+        // rows of a screen share one baseline, so a bold face with a deeper
+        // descent draws on the grid the regular one settled rather than on a
+        // grid of its own. cf. 04-renderer R4.
+        baseline = CTFontGetDescent(faces[.regular].font).rounded(.up)
 
-        // The face's own two hints, whichever is larger: how far its ink
-        // leaves a cell, and how many cells one of its rules can fold into a
-        // mark. Neither is a bound — a glyph past both makes the scratch
-        // again. cf. adr/0016.
-        let ligatures = face.ligatures
-        let hint = max(
-            1 + Int32(ligatures.leftOverhang.rounded(.up))
-                + Int32(ligatures.rightOverhang.rounded(.up)),
-            Int32(ligatures.input)
-        )
+        // Each face's own two hints, whichever of the eight is largest: how
+        // far its ink leaves a cell, and how many cells one of its rules can
+        // fold into a mark. Neither is a bound — a glyph past both makes the
+        // scratch again. cf. adr/0016.
+        let hint = FontStyle.allCases.map { style -> Int32 in
+            let ligatures = faces[style].ligatures
+            return max(
+                1 + Int32(ligatures.leftOverhang.rounded(.up))
+                    + Int32(ligatures.rightOverhang.rounded(.up)),
+                Int32(ligatures.input)
+            )
+        }.max() ?? 1
         scratch = Self.context(width: metrics.width * hint, height: metrics.height, page: .coverage)
     }
 
@@ -155,15 +169,15 @@ final class Atlas {
         // glyph's ink from its own bounds, a cluster's page from which fonts
         // the cascade answered its line with.
         switch request {
-        case .glyph(let glyph):
-            let (offsetX, width) = span(of: glyph)
+        case .glyph(let glyph, let style):
+            let (offsetX, width) = span(of: glyph, in: style)
             guard let slot = place(width: width, offsetX: offsetX, page: .coverage) else {
                 return nil
             }
-            let pixels = bake(glyph, width: width, offsetX: offsetX)
+            let pixels = bake(glyph, width: width, offsetX: offsetX, in: style)
             return keep(slot, for: request, pixels: pixels, into: &updates)
-        case .cluster(let text, let cells):
-            let line = face.line(for: text)
+        case .cluster(let text, let cells, let style):
+            let line = faces[style].line(for: text)
             let page: AtlasPage = FontFace.drawsInColor(line) ? .color : .coverage
             let width = cells * metrics.width
             guard let slot = place(width: width, offsetX: 0, page: page) else { return nil }
@@ -205,10 +219,10 @@ final class Atlas {
 
     /// The whole cells a glyph's ink needs: where they start against its own
     /// cell, and how wide they are.
-    private func span(of glyph: CGGlyph) -> (offsetX: Int32, width: Int32) {
+    private func span(of glyph: CGGlyph, in style: FontStyle) -> (offsetX: Int32, width: Int32) {
         var one = glyph
         var box = CGRect.zero
-        CTFontGetBoundingRectsForGlyphs(face.font, .horizontal, &one, &box, 1)
+        CTFontGetBoundingRectsForGlyphs(faces[style].font, .horizontal, &one, &box, 1)
         guard !box.isNull, !box.isEmpty else { return (0, metrics.width) }
 
         let cell = CGFloat(metrics.width)
@@ -223,7 +237,9 @@ final class Atlas {
     /// far right as the glyph's ink reaches left of its own cell: a slot holds
     /// the whole mark, and a face that draws its ligature on the last cell
     /// reaches back over the ones before it. cf. adr/0016.
-    private func bake(_ glyph: CGGlyph, width: Int32, offsetX: Int32) -> [UInt8] {
+    private func bake(
+        _ glyph: CGGlyph, width: Int32, offsetX: Int32, in style: FontStyle
+    ) -> [UInt8] {
         if scratch.width < Int(width) {
             scratch = Self.context(width: width, height: metrics.height, page: .coverage)
         }
@@ -231,7 +247,7 @@ final class Atlas {
 
         var one = glyph
         var origin = CGPoint(x: CGFloat(-offsetX), y: baseline)
-        CTFontDrawGlyphs(face.font, &one, &origin, 1, scratch)
+        CTFontDrawGlyphs(faces[style].font, &one, &origin, 1, scratch)
         return copy(scratch, width: Int(width))
     }
 

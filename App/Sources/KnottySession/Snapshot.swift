@@ -14,6 +14,11 @@ public typealias Row = KtRow
 /// Where the cursor is and how it looks.
 public typealias Cursor = KtCursor
 
+/// A selection's two endpoints, in viewport coordinates. Both ends are
+/// inclusive and either may come first: the pair records which way the
+/// selection was made, not which end is topmost.
+public typealias SelectionRange = KtSelectionRange
+
 /// A colour, already resolved out of the palette.
 public typealias Rgb = KtRgb
 
@@ -48,6 +53,17 @@ extension Cursor {
 // here because this is the only target that may see what the header numbers
 // them — and named one at a time because a drawer asks about one at a time.
 extension Cell {
+    /// SGR 1: the cell's text is drawn in the family's bold face rather than
+    /// coloured brighter. cf. 04-renderer R3.
+    public var isBold: Bool {
+        attributes & UInt16(KT_ATTRIBUTE_BOLD.rawValue) != 0
+    }
+
+    /// SGR 3: the cell's text is drawn in the family's italic face.
+    public var isItalic: Bool {
+        attributes & UInt16(KT_ATTRIBUTE_ITALIC.rawValue) != 0
+    }
+
     /// SGR 7: the cell asked for its colours the other way round. The
     /// palette is resolved by the time a cell crosses, but this is not.
     public var isInverse: Bool {
@@ -84,6 +100,17 @@ extension Cell {
     /// glyph are asking this.
     public static func drawsNothing(codepoint: UInt32) -> Bool {
         codepoint <= 0x20 || (0x7F...0x9F).contains(codepoint)
+    }
+}
+
+// What a drawer reads off a row. Selection lives here rather than in a cell
+// so that the renderer's line cache, which is keyed on cell contents, is not
+// emptied by every mouse move. cf. 02-ffi, 04-renderer R2.
+extension Row {
+    /// Part of the row is selected, and ``selection_start`` and
+    /// ``selection_end`` say which part.
+    public var isSelected: Bool {
+        flags & UInt8(KT_ROW_FLAG_SELECTED.rawValue) != 0
     }
 }
 
