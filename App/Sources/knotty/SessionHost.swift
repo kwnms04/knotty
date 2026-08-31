@@ -169,6 +169,63 @@ final class SessionHost {
         }
     }
 
+    /// Select from the cell a gesture began on out to the cell it is over
+    /// now.
+    ///
+    /// The view hands over both ends because both travel: a word or a line is
+    /// widened from each. What falls between them is the engine's, and no
+    /// boundary is counted on this side. cf. 05-swift-app 4.
+    func select(
+        anchor: (column: UInt16, row: UInt16),
+        to cell: (column: UInt16, row: UInt16),
+        unit: SelectionUnit,
+        rectangle: Bool
+    ) {
+        do {
+            try session.select(
+                anchor: (x: anchor.column, y: anchor.row),
+                to: (x: cell.column, y: cell.row),
+                unit: unit,
+                rectangle: rectangle
+            )
+        } catch {
+            report(error)
+        }
+    }
+
+    /// Let go of the selection.
+    func clearSelection() {
+        do {
+            try session.setSelection(nil)
+        } catch {
+            report(error)
+        }
+    }
+
+    /// The selection as plain text, or nil when there is nothing selected or
+    /// the session refused.
+    func selectedText() -> String? {
+        do {
+            return try session.copySelection()
+        } catch {
+            report(error)
+            return nil
+        }
+    }
+
+    /// Move the viewport into the scrollback, up positive.
+    ///
+    /// What the autoscroll timer calls while a drag is held outside the
+    /// window. The core moves the viewport and publishes, so no scroll
+    /// position is kept here.
+    func scrollViewport(lines: Int) {
+        do {
+            try session.scrollViewport(lines: Int32(clamping: lines))
+        } catch {
+            report(error)
+        }
+    }
+
     /// Tell the session the window gained or lost focus.
     func focus(gained: Bool) {
         do {

@@ -1,6 +1,7 @@
-knotty-golden 3
+knotty-golden 4
 wakes 2
 writes "\x1b]l\x1b\\knotty\x1bP!|00000000\x1b\\"
+copies 0
 events 2 dropped 0
 event 0 bell
 event 1 clipboard-write standard "hi there"

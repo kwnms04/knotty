@@ -16,15 +16,16 @@ use std::ptr;
 use knotty_ffi::{
     Attribute, Cell, ClipboardTarget, CursorShape, Dirty, Key, KeyAction, KtBytes, KtChildState,
     KtEvent, KtEventKind, KtEvents, KtKeyEvent, KtSessionState, KtSnapshotView, KtStatus, KtText,
-    Modifier, MouseAction, MouseButton, RowFlag, Underline, kt_session_feed, kt_session_focus,
-    kt_session_free, kt_session_key, kt_session_mouse, kt_session_new_detached, kt_session_resize,
-    kt_session_set_wake, kt_session_take_events, kt_session_take_snapshot, kt_session_take_writes,
-    kt_session_wheel, kt_snapshot_free, kt_snapshot_view,
+    Modifier, MouseAction, MouseButton, RowFlag, SelectionUnit, Underline,
+    kt_session_copy_selection, kt_session_feed, kt_session_focus, kt_session_free, kt_session_key,
+    kt_session_mouse, kt_session_new_detached, kt_session_resize, kt_session_scroll_viewport,
+    kt_session_select, kt_session_set_wake, kt_session_take_events, kt_session_take_snapshot,
+    kt_session_take_writes, kt_session_wheel, kt_snapshot_free, kt_snapshot_view,
 };
 
 /// The format the goldens are written in. Bump it when the encoding changes,
 /// so a stale golden fails loudly rather than diffing line by line.
-const FORMAT: &str = "knotty-golden 3";
+const FORMAT: &str = "knotty-golden 4";
 
 /// A recorded stream arrives from a PTY in pieces, not all at once, and an
 /// escape sequence can straddle two of them. Replaying in chunks keeps the
@@ -78,6 +79,19 @@ enum Step {
         cell_width: u32,
         cell_height: u32,
     },
+    /// A selection gesture: where it began, where the pointer is now, and
+    /// what it measures in.
+    Select {
+        anchor: (u16, u16),
+        cell: (u16, u16),
+        unit: SelectionUnit,
+        rectangle: bool,
+    },
+    /// Take the selection as plain text, which the description carries.
+    Copy,
+    /// The viewport moving of the app's own accord, which is what a drag out
+    /// of the window asks for. Up positive.
+    Scroll { lines: i32 },
 }
 
 /// A key event and the text it carries, which the event borrows.
@@ -121,6 +135,9 @@ impl KeyStep {
 /// mouse press left 3 1
 /// wheel 0 -2 3 1
 /// focus gained
+/// select 0 0 5 0 word
+/// scroll -2
+/// copy
 /// ```
 ///
 /// `out` takes a quoted run of bytes, written the way the golden writes one.
@@ -134,6 +151,11 @@ impl KeyStep {
 /// — `left`, `right`, `middle` or `none` — then the cell, then any modifiers.
 /// `wheel` takes the two deltas in lines, up and right positive, then the
 /// cell, then any modifiers. `focus` takes `gained` or `lost`.
+///
+/// `select` takes the anchor cell, then the cell the pointer is over, then a
+/// unit — `cell`, `word` or `line` — and then `rectangle` if the two ends are
+/// opposite corners of a block. `scroll` takes a count of lines, up positive.
+/// `copy` takes nothing: what it took comes out in the description.
 fn parse(script: &str) -> Result<Vec<Step>, String> {
     script
         .lines()
@@ -171,6 +193,14 @@ fn step(line: &str) -> Result<Step, String> {
         }
         Some("mouse") => mouse_step(words),
         Some("wheel") => wheel_step(words),
+        Some("select") => select_step(words),
+        Some("copy") => match words.next() {
+            None => Ok(Step::Copy),
+            Some(word) => Err(format!("copy takes nothing, not {word}")),
+        },
+        Some("scroll") => Ok(Step::Scroll {
+            lines: number(words.next().ok_or("scroll names no count of lines")?)?,
+        }),
         Some("focus") => match words.next() {
             Some("gained") => Ok(Step::Focus { gained: true }),
             Some("lost") => Ok(Step::Focus { gained: false }),
@@ -257,6 +287,41 @@ fn wheel_step<'a>(mut words: impl Iterator<Item = &'a str>) -> Result<Step, Stri
         x,
         y,
         mods: held(words)?,
+    })
+}
+
+/// A selection gesture: the anchor cell, the cell the pointer is over, the
+/// unit, and whether the two ends are corners of a block.
+///
+/// Both cells are named because both travel: a word or a line is widened from
+/// each end, and a script naming one would be describing a call the boundary
+/// does not have.
+fn select_step<'a>(mut words: impl Iterator<Item = &'a str>) -> Result<Step, String> {
+    let anchor_x = number(words.next().ok_or("select names no anchor column")?)?;
+    let anchor_y = number(words.next().ok_or("select names no anchor row")?)?;
+    let x = number(words.next().ok_or("select names no column")?)?;
+    let y = number(words.next().ok_or("select names no row")?)?;
+    let unit = match words.next() {
+        Some("cell") => SelectionUnit::Cell,
+        Some("word") => SelectionUnit::Word,
+        Some("line") => SelectionUnit::Line,
+        other => {
+            return Err(format!(
+                "a selection unit is cell, word or line, not {}",
+                other.unwrap_or("nothing")
+            ));
+        }
+    };
+    let rectangle = match words.next() {
+        None => false,
+        Some("rectangle") => true,
+        Some(word) => return Err(format!("{word} is not a word select knows")),
+    };
+    Ok(Step::Select {
+        anchor: (anchor_x, anchor_y),
+        cell: (x, y),
+        unit,
+        rectangle,
     })
 }
 
@@ -386,6 +451,9 @@ pub fn replay_script(
 }
 
 fn run(steps: &[Step], cols: u16, rows: u16, scrollback: usize) -> Result<String, String> {
+    // What every copy in the script took, in order, so that a golden holds
+    // the text and not only the fact that a copy happened.
+    let mut copies: Vec<Option<Vec<u8>>> = Vec::new();
     let mut session = ptr::null_mut();
     check("kt_session_new_detached", unsafe {
         kt_session_new_detached(cols, rows, scrollback, &mut session)
@@ -445,6 +513,36 @@ fn run(steps: &[Step], cols: u16, rows: u16, scrollback: usize) -> Result<String
                 Step::Focus { gained } => check("kt_session_focus", unsafe {
                     kt_session_focus(session, *gained)
                 })?,
+                Step::Select {
+                    anchor,
+                    cell,
+                    unit,
+                    rectangle,
+                } => check("kt_session_select", unsafe {
+                    kt_session_select(
+                        session, anchor.0, anchor.1, cell.0, cell.1, *unit, *rectangle,
+                    )
+                })?,
+                Step::Copy => {
+                    let mut text = std::mem::MaybeUninit::<KtBytes>::uninit();
+                    // Copied out rather than kept: the run is the session's
+                    // until the next copy, and a script may make more than one.
+                    match unsafe { kt_session_copy_selection(session, text.as_mut_ptr()) } {
+                        KtStatus::Ok => {
+                            let text = unsafe { text.assume_init() };
+                            copies.push(Some(unsafe { borrowed(&text) }.to_vec()));
+                        }
+                        // Nothing was selected, which is an answer and not a
+                        // failure — and one the golden says out loud.
+                        KtStatus::NoValue => copies.push(None),
+                        other => {
+                            return Err(format!("kt_session_copy_selection returned {other:?}"));
+                        }
+                    }
+                }
+                Step::Scroll { lines } => check("kt_session_scroll_viewport", unsafe {
+                    kt_session_scroll_viewport(session, *lines)
+                })?,
             }
         }
 
@@ -473,6 +571,7 @@ fn run(steps: &[Step], cols: u16, rows: u16, scrollback: usize) -> Result<String
             describe(
                 &unsafe { view.assume_init() },
                 &writes,
+                &copies,
                 &events,
                 wakes.get(),
             )
@@ -486,6 +585,21 @@ fn run(steps: &[Step], cols: u16, rows: u16, scrollback: usize) -> Result<String
     described
 }
 
+/// The run a `KtBytes` lends.
+///
+/// # Safety
+///
+/// The bytes must be ones the boundary lends for at least `'a`, which is
+/// until the call that lent them is made again.
+unsafe fn borrowed<'a>(bytes: &KtBytes) -> &'a [u8] {
+    if bytes.len == 0 {
+        // A null run is not a slice at any length, empty included, and an
+        // empty answer is spelled with one.
+        return &[];
+    }
+    unsafe { std::slice::from_raw_parts(bytes.bytes, bytes.len) }
+}
+
 fn check(call: &str, status: KtStatus) -> Result<(), String> {
     match status {
         KtStatus::Ok => Ok(()),
@@ -494,11 +608,17 @@ fn check(call: &str, status: KtStatus) -> Result<(), String> {
 }
 
 /// Write out everything the session handed back.
-fn describe(view: &KtSnapshotView, writes: &KtBytes, events: &KtEvents, wakes: u32) -> String {
+fn describe(
+    view: &KtSnapshotView,
+    writes: &KtBytes,
+    copies: &[Option<Vec<u8>>],
+    events: &KtEvents,
+    wakes: u32,
+) -> String {
     let mut out = String::new();
 
     let _ = writeln!(out, "{FORMAT}");
-    describe_outbound(&mut out, writes, events, wakes);
+    describe_outbound(&mut out, writes, copies, events, wakes);
     let _ = writeln!(out, "size {} {}", view.cols, view.rows);
     // Constant for every recording — a detached session has no child and no
     // thread to lose. Written down anyway: what a replay must never say is
@@ -545,15 +665,27 @@ fn describe(view: &KtSnapshotView, writes: &KtBytes, events: &KtEvents, wakes: u
 /// Everything that left the session by a route other than the screen: what
 /// was queued for the child, what was queued for the app, and how many times
 /// the session said there was something to take.
-fn describe_outbound(out: &mut String, writes: &KtBytes, events: &KtEvents, wakes: u32) {
+fn describe_outbound(
+    out: &mut String,
+    writes: &KtBytes,
+    copies: &[Option<Vec<u8>>],
+    events: &KtEvents,
+    wakes: u32,
+) {
     let _ = writeln!(out, "wakes {wakes}");
 
-    let queued = if writes.len == 0 {
-        &[][..]
-    } else {
-        unsafe { std::slice::from_raw_parts(writes.bytes, writes.len) }
-    };
+    let queued = unsafe { borrowed(writes) };
     let _ = writeln!(out, "writes {}", quoted_bytes(queued));
+
+    // The clipboard the app would have written, in the order the script asked
+    // for it. `none` is a copy with nothing selected, which is an answer.
+    let _ = writeln!(out, "copies {}", copies.len());
+    for (index, copied) in copies.iter().enumerate() {
+        let _ = match copied {
+            Some(text) => writeln!(out, "copy {index} {}", quoted_bytes(text)),
+            None => writeln!(out, "copy {index} none"),
+        };
+    }
 
     let _ = writeln!(out, "events {} dropped {}", events.len, events.dropped);
     for index in 0..events.len {

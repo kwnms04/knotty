@@ -1,0 +1,21 @@
+# A drag over cells, which is what a single click and a pull across the screen
+# comes to. Both ends travel on every call: the anchor is the app's to keep,
+# and nothing here is a range the app computed.
+out "hello world\x0d\x0agoodbye"
+select 0 0 4 0 cell
+# Pulled on to the second row, so the golden holds a selection over two rows
+# and not only a run inside one.
+select 0 0 3 1 cell
+copy
+# The same two corners as a block, which takes the columns and not the run of
+# text between them. ⌥ is what asks for it.
+select 0 0 3 1 cell rectangle
+copy
+# And a drag once the child has asked to hear about the mouse, which selects
+# nothing at all: that drag is the program's. The block above is still what
+# the screen shows, and the wake count is what says no frame went out for the
+# gesture that was kept.
+out "\x1b[?1000h"
+select 0 0 8 0 cell
+select 0 0 8 1 cell
+copy

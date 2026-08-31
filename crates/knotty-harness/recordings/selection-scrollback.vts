@@ -1,0 +1,14 @@
+# A selection the output pushed out from under. The engine tracks it, so the
+# copy afterwards is over the same text it was over before — which is the
+# whole of why the app holds no coordinates of its own.
+out "keep me\x0d\x0a"
+select 0 0 6 0 cell
+copy
+# Four more lines onto a grid of two, so what was selected is now well back
+# in the history and no row of the viewport meets it.
+out "one\x0d\x0atwo\x0d\x0athree\x0d\x0afour"
+copy
+# And the viewport walked back to it, which is what a drag out of the top of
+# the window asks for on the app's own timer.
+scroll 5
+copy

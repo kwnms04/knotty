@@ -55,6 +55,45 @@ final class TerminalView: NSView {
     /// is called only on the events that completed one. cf. 02-ffi.
     private var wheel = WheelLines()
 
+    /// The cell a selection gesture began on, or nil when none is under way.
+    ///
+    /// The first of the three things this view keeps about a gesture, and
+    /// between them they are the whole of it: **what gets selected is the
+    /// core's**, and no word or line boundary is ever counted here. cf.
+    /// 05-swift-app 4, adr/0017.
+    ///
+    /// The row is signed and unclamped, because the viewport it counts in
+    /// moves under it: a screen autoscrolled far enough leaves the anchor
+    /// above the top, and a number that had been clamped to the edge on the
+    /// way out could not come back when the drag turned round. It is brought
+    /// inside the grid where it crosses, and nowhere else.
+    ///
+    /// ponytail: past a screen of autoscroll the core clamps it to the edge
+    /// and the selection starts from there rather than from the cell that was
+    /// clicked. What that costs is the anchor of a drag longer than the
+    /// window; what it saves is the tracked pin the engine's own gesture
+    /// object would have to hold, which is the state 05-swift-app 4 keeps out
+    /// of the view.
+    private var anchor: (column: UInt16, row: Int)?
+    /// How many clicks that gesture is, which is what says whether it
+    /// measures in cells, words or lines. The second.
+    private var clicks = 0
+    /// Where the drag last reached, in the view's own coordinates, or nil
+    /// while none has moved — which is the third: a gesture with one of these
+    /// is a drag.
+    ///
+    /// A point rather than a cell, because the clock below reads the
+    /// direction off it: how far outside the window the pointer is says which
+    /// way the screen has to keep coming, and a cell that was clamped to the
+    /// edge no longer says.
+    private var dragged: NSPoint?
+    /// What keeps the screen coming while a drag is held outside the window.
+    ///
+    /// Not gesture state and not an event either: the pointer can stop dead
+    /// just past the edge and the screen still has to move, so there is
+    /// nothing left to hang it on but a clock of the app's own. cf. 02-ffi.
+    private var autoscrolling: Timer?
+
     /// The face's size in points, which is the one thing about the grid that
     /// a display of another scale does not change. Everything else is
     /// measured from it again when one does.
@@ -256,6 +295,9 @@ final class TerminalView: NSView {
             focusWatch = []
             link?.invalidate()
             link = nil
+            // A view that left its window is one no drag can end on, and the
+            // run loop holds a timer until it is invalidated.
+            stopAutoscrolling()
             return
         }
         // The window and not the responder chain, because this window has one
@@ -295,9 +337,23 @@ final class TerminalView: NSView {
     /// What makes a window's keys arrive here at all.
     override var acceptsFirstResponder: Bool { true }
 
-    override func mouseDown(with event: NSEvent) { report(event, .press) }
-    override func mouseUp(with event: NSEvent) { report(event, .release) }
-    override func mouseDragged(with event: NSEvent) { report(event, .motion) }
+    override func mouseDown(with event: NSEvent) {
+        report(event, .press)
+        beginSelecting(event)
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        report(event, .release)
+        anchor = nil
+        dragged = nil
+        stopAutoscrolling()
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        report(event, .motion)
+        keepSelecting(event)
+    }
+
     override func rightMouseDown(with event: NSEvent) { report(event, .press) }
     override func rightMouseUp(with event: NSEvent) { report(event, .release) }
     override func rightMouseDragged(with event: NSEvent) { report(event, .motion) }
@@ -345,6 +401,159 @@ final class TerminalView: NSView {
         )
     }
 
+    /// Start a selection gesture: where it began, and how many clicks it is.
+    ///
+    /// A single click selects nothing and lets go of what was selected. A
+    /// click in a terminal is a place to start a drag from, and one cell
+    /// picked out by a stray click is not something anybody asked for — while
+    /// a double or a triple has already said what it wants, so that one goes
+    /// down at once.
+    ///
+    /// Only the left button gestures. The others are the child's business, or
+    /// nobody's.
+    private func beginSelecting(_ event: NSEvent) {
+        guard event.buttonNumber == 0 else { return }
+        let cell = cell(at: convert(event.locationInWindow, from: nil))
+        anchor = (column: cell.column, row: Int(cell.row))
+        clicks = event.clickCount
+        dragged = nil
+
+        guard SelectionUnit(clickCount: event.clickCount) != .cell else {
+            host?.clearSelection()
+            return
+        }
+        carry(to: cell, rectangle: Self.rectangular(event))
+    }
+
+    /// Carry the selection out to where the pointer is now.
+    ///
+    /// **Both ends every time.** The anchor travels with the far end because
+    /// a word or a line is widened from each: a call naming only the cell
+    /// under the pointer would have nothing to widen from, and the selection
+    /// would collapse the moment the pointer crossed a space. cf. adr/0017.
+    private func keepSelecting(_ event: NSEvent) {
+        guard anchor != nil else { return }
+        let point = convert(event.locationInWindow, from: nil)
+        dragged = point
+        carry(to: cell(at: point), rectangle: Self.rectangular(event))
+        autoscroll()
+    }
+
+    /// Hand the gesture down as it now stands: from the anchor out to `cell`,
+    /// in the unit the click count named.
+    ///
+    /// The one place any of it is said, because a gesture reaches the core
+    /// from three — the click that begins it, the drag that carries it, and
+    /// the tick that carries it while the pointer holds still.
+    ///
+    /// The anchor is brought inside the grid here and only here: it is kept
+    /// unclamped so that a drag which turned round finds it again, and the
+    /// core clamps the far end of the pair the same way a mouse event's
+    /// position is clamped.
+    private func carry(to cell: (column: UInt16, row: UInt16), rectangle: Bool) {
+        guard let anchor else { return }
+        host?.select(
+            anchor: (column: anchor.column, row: UInt16(clamping: anchor.row)), to: cell,
+            unit: SelectionUnit(clickCount: clicks), rectangle: rectangle
+        )
+    }
+
+    /// Whether the two ends are opposite corners of a block rather than the
+    /// ends of a run of text. ⌥ is what asks, as it does everywhere else on
+    /// this platform.
+    private static func rectangular(_ event: NSEvent) -> Bool {
+        event.modifierFlags.contains(.option)
+    }
+
+    /// How often a drag held outside the window moves the screen.
+    ///
+    /// ponytail: one line a tick, at a rate that reads as continuous. A ramp
+    /// with how far past the edge the pointer is, which is what a long
+    /// scrollback wants, is what to reach for if twenty lines a second ever
+    /// feels slow.
+    private static let autoscrollInterval = 0.05
+
+    /// How many lines the drag is asking the viewport to move right now, and
+    /// none while the pointer is inside the window.
+    private var autoscrollLines: Int {
+        guard let dragged else { return 0 }
+        return Autoscroll.lines(pointerY: dragged.y, viewHeight: bounds.height)
+    }
+
+    /// Start or stop the clock that keeps the screen coming while a drag is
+    /// held outside the window.
+    private func autoscroll() {
+        guard autoscrollLines != 0 else {
+            stopAutoscrolling()
+            return
+        }
+        // Left alone if it is already running. **Restarting it here is what
+        // would stop it working at all**: this arrives on every move the
+        // pointer makes, and a clock put back to zero that often never
+        // reaches its interval — so the screen would come only while the
+        // pointer held perfectly still, which is the opposite of the case
+        // this is for. Which way it goes is read off `dragged` on each tick
+        // instead, so a pointer that crossed from above the window to below
+        // it turns round without any of this running again.
+        guard autoscrolling == nil else { return }
+        let timer = Timer(timeInterval: Self.autoscrollInterval, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.autoscrolled() }
+        }
+        // The common modes and not the default one, for the reason the
+        // display link runs in them: AppKit tracks a drag with the run loop
+        // in its own mode, and a timer that is only in the default mode is a
+        // timer that does not fire for the whole of the gesture it is for.
+        RunLoop.main.add(timer, forMode: .common)
+        autoscrolling = timer
+    }
+
+    private func stopAutoscrolling() {
+        autoscrolling?.invalidate()
+        autoscrolling = nil
+    }
+
+    /// One tick of it: the viewport moves a line, and the gesture moves with
+    /// it.
+    ///
+    /// The direction is read again here rather than kept from when the clock
+    /// was started, so a pointer brought back inside the window stops it and
+    /// one carried across to the other edge turns it round.
+    ///
+    /// The anchor is a viewport cell, so a viewport that moved is one it
+    /// means something else in — a line further down for a line scrolled up.
+    /// It is moved unclamped, which is what lets a drag that turned round
+    /// find it again. The far end is where the pointer still is: outside the
+    /// window its cell is the edge, and what the edge holds is what just
+    /// scrolled under it.
+    private func autoscrolled() {
+        let lines = autoscrollLines
+        guard lines != 0, let anchor, let dragged else {
+            stopAutoscrolling()
+            return
+        }
+        host?.scrollViewport(lines: lines)
+        self.anchor = (column: anchor.column, row: anchor.row + lines)
+        // What is held now, since the event that would have said is one the
+        // pointer stopped sending.
+        carry(to: cell(at: dragged), rectangle: NSEvent.modifierFlags.contains(.option))
+    }
+
+    /// Put the selection on the pasteboard, and do nothing when there is none.
+    ///
+    /// Reached by the Edit menu's ⌘C rather than by ``keyDown(with:)``, which
+    /// is what keeps the key off the child: a menu's key equivalent is
+    /// offered before any view sees the event. ⌃C is the one that interrupts,
+    /// and it goes down the ordinary path.
+    ///
+    /// One representation. The engine can write VT and HTML too; v1's
+    /// clipboard is `text/plain`.
+    @objc func copy(_ sender: Any?) {
+        guard let text = host?.selectedText(), !text.isEmpty else { return }
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(text, forType: .string)
+    }
+
     /// Which cell an event happened over.
     ///
     /// The conversion this side owns, and the whole of what the app decides
@@ -353,8 +562,13 @@ final class TerminalView: NSView {
     /// boundary counts cells unsigned; the far edges the core clamps to the
     /// grid itself.
     private func cell(of event: NSEvent) -> (column: UInt16, row: UInt16) {
+        cell(at: convert(event.locationInWindow, from: nil))
+    }
+
+    /// The same for a point already in the view's own coordinates, which is
+    /// what a gesture holds on to between events.
+    private func cell(at point: NSPoint) -> (column: UInt16, row: UInt16) {
         guard cellSize.width > 0, cellSize.height > 0 else { return (column: 0, row: 0) }
-        let point = convert(event.locationInWindow, from: nil)
         return (
             column: UInt16(clamping: Int((point.x / cellSize.width).rounded(.down))),
             row: UInt16(clamping: Int(((bounds.height - point.y) / cellSize.height).rounded(.down)))

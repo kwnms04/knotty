@@ -62,6 +62,63 @@ public enum MouseButton: Sendable {
     }
 }
 
+/// What a selection gesture measures in.
+///
+/// The unit is what a click count comes to, which is the app's to say. Where
+/// one word or one line ends is the engine's, and nothing on this side
+/// derives a boundary. cf. adr/0017.
+public enum SelectionUnit: Sendable {
+    /// From the cell the gesture began on to the one it is over.
+    case cell
+    /// Out to the word boundaries either end falls in.
+    case word
+    /// Out to the whole logical line either end falls in, soft wraps
+    /// included.
+    case line
+
+    /// What a click of `count` selects: one cell, one word, one line — and
+    /// then round again, which is what AppKit's own counting does past three.
+    ///
+    /// A count of none is a drag with no click behind it, which is a cell.
+    public init(clickCount: Int) {
+        switch clickCount % 3 {
+        case 2: self = .word
+        case 0 where clickCount > 0: self = .line
+        default: self = .cell
+        }
+    }
+
+    var raw: UInt8 {
+        let unit =
+            switch self {
+            case .cell: KT_SELECTION_UNIT_CELL
+            case .word: KT_SELECTION_UNIT_WORD
+            case .line: KT_SELECTION_UNIT_LINE
+            }
+        return UInt8(unit.rawValue)
+    }
+}
+
+/// Which way a drag held outside the window asks the screen to keep coming.
+///
+/// A clock's answer and not an event's: the pointer can stop dead just past
+/// the edge and the screen still has to move, so there is nothing left to
+/// hang it on. Which way is the app's to work out too — the core is told a
+/// count of lines and nothing about a pointer. cf. 02-ffi.
+public enum Autoscroll {
+    /// The lines the viewport is asked to move for a pointer at `pointerY` in
+    /// a view `viewHeight` tall, and none while the pointer is inside it.
+    ///
+    /// Counted from the bottom, as a view counts, so up is past the height
+    /// and down is below zero — and up is positive, as everywhere else the
+    /// boundary takes lines. Sideways is not a direction a terminal scrolls.
+    public static func lines(pointerY: Double, viewHeight: Double) -> Int {
+        if pointerY > viewHeight { return 1 }
+        if pointerY < 0 { return -1 }
+        return 0
+    }
+}
+
 /// How many whole lines a wheel has turned, and the fraction of one it is
 /// still holding.
 ///

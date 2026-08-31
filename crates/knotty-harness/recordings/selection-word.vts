@@ -1,0 +1,18 @@
+# A double-click and then a drag, which is the case the two-ended call exists
+# for: the pointer ends up on the space between two words, and a call naming
+# only the cell under it would have no word to widen from.
+out "one two three"
+# The double-click itself: both ends on the same cell, inside "two".
+select 5 0 5 0 word
+copy
+# Dragged on to the space before "three". Nothing under the pointer is a word,
+# and the selection has to hold rather than blink.
+select 5 0 7 0 word
+copy
+# And on into "three".
+select 5 0 10 0 word
+copy
+# Back past the anchor, into "one" — the pair records which way the drag went,
+# so this reverses rather than emptying.
+select 5 0 1 0 word
+copy

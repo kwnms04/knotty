@@ -236,6 +236,60 @@ public final class Session {
         )
     }
 
+    /// Select from the cell a gesture began on out to the cell it is over
+    /// now, measured in `unit`.
+    ///
+    /// **Both ends together.** A word or a line is widened from each end, so
+    /// a call naming only the cell under the pointer has nothing to widen
+    /// from and the selection collapses the moment the pointer crosses a
+    /// space. The anchor, the click count `unit` comes from and whether a
+    /// drag is under way are the view's three pieces of gesture state; where
+    /// the boundaries fall is the engine's, and nothing on this side counts
+    /// one. cf. 05-swift-app 4, adr/0017.
+    ///
+    /// The pair also records which way the drag went, so dragging back past
+    /// the anchor reverses the selection. `rectangle` makes the two ends
+    /// opposite corners of a block, which is what ⌥ asks for.
+    public func select(
+        anchor: (x: UInt16, y: UInt16),
+        to cell: (x: UInt16, y: UInt16),
+        unit: SelectionUnit,
+        rectangle: Bool = false
+    ) throws {
+        try check(
+            "kt_session_select",
+            kt_session_select(handle, anchor.x, anchor.y, cell.x, cell.y, unit.raw, rectangle)
+        )
+    }
+
+    /// The selection as plain text, or nil when nothing is selected.
+    ///
+    /// Folded lines come back as the one line they were typed as, which is
+    /// what makes a copied paragraph paste as the paragraph. Plain text and
+    /// nothing else: v1's clipboard carries `text/plain`.
+    ///
+    /// Copied out rather than lent on: the run the boundary answers with is
+    /// the session's until the next copy, and what this is for is a
+    /// pasteboard that outlives the call.
+    public func copySelection() throws -> String? {
+        var text = KtBytes()
+        let status = kt_session_copy_selection(handle, &text)
+        if status == KT_STATUS_NO_VALUE.rawValue {
+            return nil
+        }
+        try check("kt_session_copy_selection", status)
+        guard let bytes = text.bytes else { return "" }
+        return String(decoding: UnsafeBufferPointer(start: bytes, count: text.len), as: UTF8.self)
+    }
+
+    /// Move the viewport `lines` lines into the scrollback, up positive.
+    ///
+    /// What a selection drag out of the window asks for. The core moves the
+    /// viewport and publishes, so no scroll position is kept on this side.
+    public func scrollViewport(lines: Int32) throws {
+        try check("kt_session_scroll_viewport", kt_session_scroll_viewport(handle, lines))
+    }
+
     /// Take the bytes a detached session has queued for its child, emptying
     /// the queue.
     ///

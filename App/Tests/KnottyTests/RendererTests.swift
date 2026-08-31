@@ -846,6 +846,50 @@ private func highestInk(of update: AtlasUpdate) -> Int {
     #expect(selected)
     #expect(renderer.lineCache.misses == before.misses)
     #expect(renderer.lineCache.hits == before.hits + Int(rows))
+
+    // And the same for the path a drag really takes, which is a gesture and
+    // not a range: three moves of the pointer, and still nothing placed
+    // again. cf. 05-swift-app 4.
+    for row in 0..<3 {
+        try session.select(
+            anchor: (x: 0, y: 0), to: (x: 4, y: UInt16(row)), unit: .cell
+        )
+        try session.withSnapshot { _ = renderer.frame(for: $0) }
+    }
+    #expect(renderer.lineCache.misses == before.misses)
+}
+
+/// A selected cell is drawn the other way round, which is the highlight the
+/// background pass carries. No colour of its own, so nothing waits on a theme
+/// — and a swap is what a terminal's selection has always looked like.
+/// cf. 04-renderer R1.
+@Test func aSelectedCellIsDrawnTheOtherWayRound() throws {
+    let session = try Session(cols: cols, rows: rows, scrollback: scrollback)
+    let renderer = Renderer(metrics: metrics, faces: pinned())
+    try session.feed(Array("hello".utf8))
+    try session.select(anchor: (x: 0, y: 0), to: (x: 2, y: 0), unit: .cell)
+
+    let drawn = try #require(
+        try session.withSnapshot { snapshot -> (
+            selected: BackgroundInstance, beyond: BackgroundInstance, letter: GlyphInstance
+        ) in
+            let frame = renderer.frame(for: snapshot)
+            return (
+                selected: frame.backgrounds[1],
+                // The fourth cell is one past the selection, and its being
+                // untouched is half of what says the highlight is the
+                // selection's and not the row's.
+                beyond: frame.backgrounds[3],
+                letter: frame.glyphs[1]
+            )
+        }
+    )
+
+    // White on black is what the terminal draws, so a selected cell is black
+    // on white and the letter on it is drawn in the background it stands on.
+    #expect(hex(drawn.selected.color) == "ffffff")
+    #expect(hex(drawn.beyond.color) == "000000")
+    #expect(hex(drawn.letter.color) == "000000")
 }
 
 /// The hit rate B3 is measured against is read off the counter, not counted by

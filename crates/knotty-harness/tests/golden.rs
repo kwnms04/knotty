@@ -191,3 +191,34 @@ fn wheel_alt_scroll() {
 fn focus() {
     check_script("focus");
 }
+
+/// A drag over cells and the same two corners as a block, each copied. What
+/// this pins is that both ends of the gesture travel on every call: nothing
+/// above the boundary ever computes a range.
+#[test]
+fn selection_drag() {
+    check_script("selection-drag");
+}
+
+/// A double-click and then a drag, over a space and back past the anchor.
+/// The pointer standing on nothing is the case the two-ended call exists for,
+/// and a golden is what says the selection held rather than blinked.
+#[test]
+fn selection_word() {
+    check_script("selection-word");
+}
+
+/// A triple-click on a line the terminal folded. The copy is the point: the
+/// line comes back as the one line it was typed as.
+#[test]
+fn selection_line() {
+    check_script("selection-line");
+}
+
+/// A selection output pushed into the scrollback. The engine tracks it, so
+/// the copy is over the same text — which is why the app keeps no
+/// coordinates of its own.
+#[test]
+fn selection_scrollback() {
+    check_script("selection-scrollback");
+}

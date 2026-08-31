@@ -1,26 +1,29 @@
 knotty-golden 4
-wakes 1
-writes "\x1b[A\x1b[A\x1b[B\x1bOA"
-copies 0
+wakes 4
+writes ""
+copies 3
+copy 0 "keep me"
+copy 1 "keep me"
+copy 2 "keep me"
 events 0 dropped 0
 size 20 2
 child none
 session ok
 dirty full
-selection none
-cursor 0 0 visible block
+selection present
+cursor 0 0 hidden block
 title ""
 pwd ""
 graphemes 0
-row 0 flags dirty selection none
-text "                    "
-cell 0 0 ffffff 000000 0000 none 0000
-cell 0 1 ffffff 000000 0000 none 0000
-cell 0 2 ffffff 000000 0000 none 0000
-cell 0 3 ffffff 000000 0000 none 0000
-cell 0 4 ffffff 000000 0000 none 0000
-cell 0 5 ffffff 000000 0000 none 0000
-cell 0 6 ffffff 000000 0000 none 0000
+row 0 flags dirty selection 0 6
+text "keep me             "
+cell 0 0 ffffff 000000 0000 none 006B
+cell 0 1 ffffff 000000 0000 none 0065
+cell 0 2 ffffff 000000 0000 none 0065
+cell 0 3 ffffff 000000 0000 none 0070
+cell 0 4 ffffff 000000 0000 none 0020
+cell 0 5 ffffff 000000 0000 none 006D
+cell 0 6 ffffff 000000 0000 none 0065
 cell 0 7 ffffff 000000 0000 none 0000
 cell 0 8 ffffff 000000 0000 none 0000
 cell 0 9 ffffff 000000 0000 none 0000
@@ -35,10 +38,10 @@ cell 0 17 ffffff 000000 0000 none 0000
 cell 0 18 ffffff 000000 0000 none 0000
 cell 0 19 ffffff 000000 0000 none 0000
 row 1 flags dirty selection none
-text "                    "
-cell 1 0 ffffff 000000 0000 none 0000
-cell 1 1 ffffff 000000 0000 none 0000
-cell 1 2 ffffff 000000 0000 none 0000
+text "one                 "
+cell 1 0 ffffff 000000 0000 none 006F
+cell 1 1 ffffff 000000 0000 none 006E
+cell 1 2 ffffff 000000 0000 none 0065
 cell 1 3 ffffff 000000 0000 none 0000
 cell 1 4 ffffff 000000 0000 none 0000
 cell 1 5 ffffff 000000 0000 none 0000

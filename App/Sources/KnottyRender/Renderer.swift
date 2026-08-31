@@ -247,7 +247,15 @@ public final class Renderer {
         let cursorRectangle = cursorCell.map { cell in
             self.cursorRectangle(
                 for: snapshot.cursor,
-                color: cursorColor ?? resolved(snapshot.cells[cell]).foreground
+                // Selected like any other cell: a block cursor takes the
+                // colour of the text under it, and under a highlight that
+                // text is drawn the other way round.
+                color: cursorColor
+                    ?? resolved(
+                        snapshot.cells[cell],
+                        selected: selectedColumns(row: cell / cols, of: snapshot)
+                            .contains(cell % cols)
+                    ).foreground
             )
         }
         let hidden = cursorRectangle.flatMap { rectangle in
@@ -257,10 +265,11 @@ public final class Renderer {
 
         for row in 0..<rows {
             let placed = placement(row: row, of: snapshot)
+            let selected = selectedColumns(row: row, of: snapshot)
             for col in 0..<cols {
                 let index = row * cols + col
                 let cell = snapshot.cells[index]
-                let colors = resolved(cell)
+                let colors = resolved(cell, selected: selected.contains(col))
                 let x = Int32(col) * metrics.width
                 let y = Int32(row) * metrics.height
 
@@ -536,7 +545,37 @@ public final class Renderer {
     /// A cell's colours as they are drawn, which is the pair the snapshot
     /// carries unless the cell asked for them the other way round. The
     /// palette is already resolved; this is the one thing left to apply.
-    private func resolved(_ cell: Cell) -> (foreground: Rgb, background: Rgb) {
-        cell.isInverse ? (cell.background, cell.foreground) : (cell.foreground, cell.background)
+    ///
+    /// A selected cell asks for the same swap, which is what makes the
+    /// highlight the background pass draws — no colour of its own, so nothing
+    /// here waits on a theme, and a cell already inverse comes back the right
+    /// way up. cf. 04-renderer R1.
+    private func resolved(_ cell: Cell, selected: Bool) -> (
+        foreground: Rgb, background: Rgb
+    ) {
+        cell.isInverse != selected
+            ? (cell.background, cell.foreground) : (cell.foreground, cell.background)
+    }
+
+    /// Which of a row's columns the selection covers, and none where it
+    /// covers none.
+    ///
+    /// Read off the row rather than out of the cells, which is the whole
+    /// reason the boundary carries it there: a selection inside a cell would
+    /// be in the line cache's key, and every mouse move would empty the
+    /// cache. cf. 02-ffi, 04-renderer R2.
+    ///
+    /// Half-open, and empty where the row is not selected — a range that
+    /// carries its own emptiness is what keeps the caller from asking twice.
+    /// The columns are inclusive on the boundary, hence the one added here.
+    private func selectedColumns(row: Int, of snapshot: Snapshot) -> Range<Int> {
+        let state = snapshot.rowStates[row]
+        let (first, last) = (Int(state.selection_start), Int(state.selection_end))
+        // The order is checked and not assumed. A row whose columns came back
+        // the wrong way round is a boundary that broke its own contract, and
+        // the answer to one is a row drawn unselected rather than a range that
+        // cannot exist.
+        guard state.isSelected, first <= last else { return 0..<0 }
+        return first..<(last + 1)
     }
 }

@@ -35,7 +35,7 @@ use crate::key::{Key, KeyAction, KeyEvent};
 use crate::listener::{ClipboardRefusal, Listener, Representation};
 use crate::mouse::{MouseEvent, WheelEvent};
 use crate::queue::ClipboardTarget;
-use crate::session::SelectionRange;
+use crate::session::{SelectionRange, SelectionUnit};
 use crate::{Error, Result};
 
 /// DEC mode 2026, synchronized output.
@@ -324,7 +324,7 @@ impl Terminal {
                 ),
             ] {
                 let button = if delta > 0 { buttons.0 } else { buttons.1 };
-                for _ in 0..lines(delta) {
+                for _ in 0..capped_lines(delta) {
                     encoded.extend(
                         self.mouse
                             .encode_wheel(self.raw, button, event.mods, cell, grid)?,
@@ -356,13 +356,15 @@ impl Terminal {
                 ..KeyEvent::default()
             };
             let one = self.keys.encode(self.raw, &pressed)?;
-            return Ok(Wheel::Bytes(one.repeat(lines(event.delta_y) as usize)));
+            return Ok(Wheel::Bytes(
+                one.repeat(capped_lines(event.delta_y) as usize),
+            ));
         }
 
         // The viewport counts down where the wheel counts up, and by the
         // capped count — the engine clamps against the history it has, which
         // is a different question from how big a number arrived.
-        let delta = isize::try_from(lines(event.delta_y)).map_err(|_| Error::OutOfRange)?;
+        let delta = isize::try_from(capped_lines(event.delta_y)).map_err(|_| Error::OutOfRange)?;
         self.scroll(ffi::TerminalScrollViewport {
             tag: ffi::TerminalScrollViewportTag::DELTA,
             value: ffi::TerminalScrollViewportValue {
@@ -525,6 +527,270 @@ impl Terminal {
         )
     }
 
+    /// Select from the cell a gesture began on out to the one it is over now,
+    /// measured in `unit`.
+    ///
+    /// **Both ends, not one.** A drag that named only the cell under the
+    /// pointer would have nothing to widen a word or a line from, and the
+    /// selection would collapse the moment the pointer crossed a space —
+    /// which is where the engine's own between-two-refs search comes in: each
+    /// end asks for the nearest unit looking toward the other, and what is
+    /// installed spans both answers. The pair also records which way the drag
+    /// went, so an endpoint moved back over the anchor reverses rather than
+    /// emptying.
+    ///
+    /// A gesture over content that holds no unit at all — a drag across blank
+    /// screen — falls back to the two cells themselves. Nothing is lost by
+    /// it: there is no word there to have found.
+    ///
+    /// **Nothing is selected while the child has asked to hear about the
+    /// mouse**, which is what the answer says: a drag inside an editor is the
+    /// editor's, and painting a highlight of our own over its own selection
+    /// would be two answers to one drag. The mode is read here for the reason
+    /// a click's is — the sequence that turns reporting on is output, and a
+    /// drag arriving right behind it has to be read against what that left.
+    /// cf. `docs/adr/0017-semantic-input-events.md`
+    ///
+    /// ponytail: no override, so a selection cannot be made over a program
+    /// that took the mouse. Holding shift is what every other terminal makes
+    /// that override, and it is a key to spend and so a setting — which is
+    /// M4's pipeline, not a constant to plant here.
+    ///
+    /// Coordinates are clamped to the grid, as a mouse event's are: a drag
+    /// out of the window is a pointer past the edge, and the edge is what it
+    /// means.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Engine`] when the engine refused a coordinate the grid says
+    /// is inside it.
+    pub fn select(
+        &mut self,
+        anchor: (u16, u16),
+        cell: (u16, u16),
+        unit: SelectionUnit,
+        rectangle: bool,
+    ) -> Result<bool> {
+        if self.mouse_tracking()? {
+            return Ok(false);
+        }
+        let grid = self.grid()?;
+        let anchor = clamped(anchor, grid);
+        let cell = clamped(cell, grid);
+
+        let anchor_ref = self.grid_ref(anchor.0, anchor.1)?;
+        let cell_ref = self.grid_ref(cell.0, cell.1)?;
+        let plain = ffi::Selection {
+            start: anchor_ref,
+            end: cell_ref,
+            rectangle,
+            ..ffi::sized!(ffi::Selection)
+        };
+
+        let selection = match unit {
+            SelectionUnit::Cell => plain,
+            // Each end's unit, asked for from that end looking at the other.
+            // Either coming back empty leaves the cells themselves, which is
+            // what a gesture over blank screen is.
+            _ => match (
+                self.unit_at(unit, anchor_ref, cell_ref)?,
+                self.unit_at(unit, cell_ref, anchor_ref)?,
+            ) {
+                (Some(from_anchor), Some(from_cell)) => {
+                    let from_anchor = self.ordered(&from_anchor)?;
+                    let from_cell = self.ordered(&from_cell)?;
+                    // Ordered top-left first, so which end of each to take is
+                    // the direction of the drag. The anchor's end comes
+                    // first either way: that is what keeps the selection
+                    // hanging off the cell the gesture began on.
+                    let (start, end) = if (anchor.1, anchor.0) <= (cell.1, cell.0) {
+                        (from_anchor.start, from_cell.end)
+                    } else {
+                        (from_anchor.end, from_cell.start)
+                    };
+                    ffi::Selection {
+                        start,
+                        end,
+                        rectangle,
+                        ..ffi::sized!(ffi::Selection)
+                    }
+                }
+                _ => plain,
+            },
+        };
+
+        self.set(
+            ffi::TerminalOption::SELECTION,
+            ptr::from_ref(&selection).cast(),
+        )?;
+        Ok(true)
+    }
+
+    /// The word or the line `at` falls in, searched from there toward
+    /// `toward`, or `None` where there is none to find.
+    ///
+    /// The direction is what makes a drag over a run of spaces hold still:
+    /// the engine walks from one ref to the other and answers with the first
+    /// unit it meets, so a pointer between two words picks up the one on the
+    /// far side rather than nothing at all.
+    fn unit_at(
+        &self,
+        unit: SelectionUnit,
+        at: ffi::GridRef,
+        toward: ffi::GridRef,
+    ) -> Result<Option<ffi::Selection>> {
+        let mut selection = ffi::sized!(ffi::Selection);
+        let code = match unit {
+            // Never asked for: a cell is its own unit and the caller above
+            // takes the refs it already has.
+            SelectionUnit::Cell => return Ok(None),
+            SelectionUnit::Word => {
+                let options = ffi::TerminalSelectWordBetweenOptions {
+                    start: at,
+                    end: toward,
+                    // Null asks for the engine's own word boundaries, which
+                    // are the Unicode rules knotty is here not to re-derive.
+                    boundary_codepoints: ptr::null(),
+                    boundary_codepoints_len: 0,
+                    ..ffi::sized!(ffi::TerminalSelectWordBetweenOptions)
+                };
+                // SAFETY: the terminal is ours, the options are filled in for
+                // their own size, and `selection` is the sized out parameter
+                // the call documents.
+                unsafe {
+                    ffi::ghostty_terminal_select_word_between(
+                        self.raw,
+                        &raw const options,
+                        &raw mut selection,
+                    )
+                }
+            }
+            SelectionUnit::Line => {
+                let options = ffi::TerminalSelectLineOptions {
+                    ref_: at,
+                    whitespace: ptr::null(),
+                    whitespace_len: 0,
+                    // OSC 133 is not in v1, so nothing ever marks a prompt
+                    // for this to bound a line at.
+                    semantic_prompt_boundary: false,
+                    ..ffi::sized!(ffi::TerminalSelectLineOptions)
+                };
+                // SAFETY: as above.
+                unsafe {
+                    ffi::ghostty_terminal_select_line(
+                        self.raw,
+                        &raw const options,
+                        &raw mut selection,
+                    )
+                }
+            }
+        };
+        match code {
+            ffi::Result::SUCCESS => Ok(Some(selection)),
+            // No word under the pointer and none between it and the anchor,
+            // which is a drag across blank screen rather than a failure.
+            ffi::Result::NO_VALUE => Ok(None),
+            _ => Err(Error::Engine),
+        }
+    }
+
+    /// The same selection with its endpoints put in reading order.
+    ///
+    /// Which end of a unit to take depends on which way the drag went, and
+    /// the engine hands one back in whatever order it found it.
+    fn ordered(&self, selection: &ffi::Selection) -> Result<ffi::Selection> {
+        let mut ordered = ffi::sized!(ffi::Selection);
+        // SAFETY: both are ours, and the refs in `selection` came from this
+        // terminal with nothing fed to it since.
+        check(unsafe {
+            ffi::ghostty_terminal_selection_ordered(
+                self.raw,
+                ptr::from_ref(selection),
+                ffi::SelectionOrder::FORWARD,
+                &raw mut ordered,
+            )
+        })?;
+        Ok(ordered)
+    }
+
+    /// The selection as plain text, or `None` when there is none.
+    ///
+    /// Soft wraps are unwrapped and trailing blanks trimmed, which is what
+    /// makes a folded line paste back as the one line it was typed as. The
+    /// engine can write VT and HTML too; the clipboard knotty puts this on
+    /// carries `text/plain` and nothing else.
+    pub fn selection_text(&self) -> Result<Option<Vec<u8>>> {
+        let options = ffi::TerminalSelectionFormatOptions {
+            emit: ffi::FormatterFormat::PLAIN,
+            unwrap: true,
+            trim: true,
+            // Null asks for the terminal's own active selection, which is the
+            // one the gestures installed. Nothing here holds a snapshot of it
+            // that a feed could have staled.
+            selection: ptr::null(),
+            ..ffi::sized!(ffi::TerminalSelectionFormatOptions)
+        };
+
+        let mut needed = 0;
+        // SAFETY: the terminal is ours and the options are sized. A null
+        // buffer is how the call documents the question, and it answers it in
+        // `needed`.
+        let asked = unsafe {
+            ffi::ghostty_terminal_selection_format_buf(
+                self.raw,
+                options,
+                ptr::null_mut(),
+                0,
+                &raw mut needed,
+            )
+        };
+        match asked {
+            // Nothing is selected, which is not a failure — it is the answer
+            // a copy with no selection gets.
+            ffi::Result::NO_VALUE => return Ok(None),
+            // The answer to the question: nothing was written because
+            // nowhere was offered.
+            ffi::Result::OUT_OF_SPACE => {}
+            // A selection that formats to nothing at all, which the call has
+            // room for without a buffer.
+            ffi::Result::SUCCESS => return Ok(Some(Vec::new())),
+            _ => return Err(Error::Engine),
+        }
+
+        let mut text = vec![0; needed];
+        let mut written = 0;
+        // SAFETY: as above, with a buffer of the length just asked for.
+        check(unsafe {
+            ffi::ghostty_terminal_selection_format_buf(
+                self.raw,
+                options,
+                text.as_mut_ptr(),
+                text.len(),
+                &raw mut written,
+            )
+        })?;
+        text.truncate(written);
+        Ok(Some(text))
+    }
+
+    /// Move the viewport `lines` lines, up positive.
+    ///
+    /// What a drag out of the window asks for: the pointer stands still and
+    /// the screen has to keep coming, so the app's own timer is what calls
+    /// this. Clamped by the engine at either end.
+    pub fn scroll_viewport(&mut self, lines: i32) {
+        // Capped the way a wheel turn is, and for the same reason: the count
+        // crosses the boundary as a plain number.
+        let capped = capped_lines(lines) as isize;
+        self.scroll(ffi::TerminalScrollViewport {
+            tag: ffi::TerminalScrollViewportTag::DELTA,
+            value: ffi::TerminalScrollViewportValue {
+                // The viewport counts down where the wheel counts up.
+                delta: if lines > 0 { -capped } else { capped },
+            },
+        });
+    }
+
     /// Resolve a viewport coordinate to a reference the engine can hold on to.
     ///
     /// The result is good until the next thing that moves the grid, which is
@@ -608,8 +874,19 @@ impl Drop for Terminal {
     }
 }
 
+/// A cell brought inside a grid of `cols` by `rows`.
+///
+/// A grid always has a cell, so the subtraction never wraps past what the
+/// saturation leaves.
+fn clamped(cell: (u16, u16), grid: (u16, u16)) -> (u16, u16) {
+    (
+        cell.0.min(grid.0.saturating_sub(1)),
+        cell.1.min(grid.1.saturating_sub(1)),
+    )
+}
+
 /// How many lines a delta is worth, capped at [`MAX_WHEEL_LINES`].
-fn lines(delta: i32) -> u32 {
+fn capped_lines(delta: i32) -> u32 {
     delta.unsigned_abs().min(MAX_WHEEL_LINES)
 }
 

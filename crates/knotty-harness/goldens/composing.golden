@@ -1,6 +1,7 @@
-knotty-golden 3
+knotty-golden 4
 wakes 1
 writes "a\x0d"
+copies 0
 events 0 dropped 0
 size 20 2
 child none

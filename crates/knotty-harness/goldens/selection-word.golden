@@ -1,32 +1,36 @@
 knotty-golden 4
-wakes 1
-writes "\x1b[A\x1b[A\x1b[B\x1bOA"
-copies 0
+wakes 5
+writes ""
+copies 4
+copy 0 "two"
+copy 1 "two"
+copy 2 "two three"
+copy 3 "one two"
 events 0 dropped 0
 size 20 2
 child none
 session ok
 dirty full
-selection none
-cursor 0 0 visible block
+selection present
+cursor 13 0 visible block
 title ""
 pwd ""
 graphemes 0
-row 0 flags dirty selection none
-text "                    "
-cell 0 0 ffffff 000000 0000 none 0000
-cell 0 1 ffffff 000000 0000 none 0000
-cell 0 2 ffffff 000000 0000 none 0000
-cell 0 3 ffffff 000000 0000 none 0000
-cell 0 4 ffffff 000000 0000 none 0000
-cell 0 5 ffffff 000000 0000 none 0000
-cell 0 6 ffffff 000000 0000 none 0000
-cell 0 7 ffffff 000000 0000 none 0000
-cell 0 8 ffffff 000000 0000 none 0000
-cell 0 9 ffffff 000000 0000 none 0000
-cell 0 10 ffffff 000000 0000 none 0000
-cell 0 11 ffffff 000000 0000 none 0000
-cell 0 12 ffffff 000000 0000 none 0000
+row 0 flags dirty selection 0 6
+text "one two three       "
+cell 0 0 ffffff 000000 0000 none 006F
+cell 0 1 ffffff 000000 0000 none 006E
+cell 0 2 ffffff 000000 0000 none 0065
+cell 0 3 ffffff 000000 0000 none 0020
+cell 0 4 ffffff 000000 0000 none 0074
+cell 0 5 ffffff 000000 0000 none 0077
+cell 0 6 ffffff 000000 0000 none 006F
+cell 0 7 ffffff 000000 0000 none 0020
+cell 0 8 ffffff 000000 0000 none 0074
+cell 0 9 ffffff 000000 0000 none 0068
+cell 0 10 ffffff 000000 0000 none 0072
+cell 0 11 ffffff 000000 0000 none 0065
+cell 0 12 ffffff 000000 0000 none 0065
 cell 0 13 ffffff 000000 0000 none 0000
 cell 0 14 ffffff 000000 0000 none 0000
 cell 0 15 ffffff 000000 0000 none 0000

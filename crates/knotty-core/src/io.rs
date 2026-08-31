@@ -435,11 +435,26 @@ pub(crate) fn run(
     let mut arrived = vec![0u8; READ_CHUNK];
 
     loop {
-        // Nothing is left waiting on the answer: the call that asked for this
-        // returned as soon as the request was queued.
+        // The call that asked for one of these returned as soon as it was
+        // queued, and reads its answer off the frame that follows. The one
+        // exception is a copy, whose answer is not the screen and which is
+        // waiting on the channel it came in on.
         while let Ok(request) = requests.try_recv() {
             let _ = match request {
                 Request::Select(range) => session.set_selection(range),
+                Request::Gesture {
+                    anchor,
+                    cell,
+                    unit,
+                    rectangle,
+                } => session.select(anchor, cell, unit, rectangle),
+                // The one request with somebody waiting on it. Nothing is
+                // sent for an engine that refused: the caller reads the
+                // dropped answer as the refusal it is.
+                Request::Copy(answering) => session.copy_selection().map(|text| {
+                    let _ = answering.send(text);
+                }),
+                Request::Scroll { lines } => session.scroll_viewport(lines),
                 Request::Key(event) => session.key(&event),
                 Request::Mouse(event) => session.mouse(&event),
                 Request::Wheel(event) => session.wheel(&event),

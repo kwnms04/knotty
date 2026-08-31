@@ -1,0 +1,6 @@
+# A triple-click on a line longer than the grid, which the terminal folded
+# into two rows. What the line unit takes is the logical line, and what the
+# copy hands back is the one line it was typed as — the fold is not in it.
+out "the quick brown fox jumps"
+select 3 0 3 0 line
+copy

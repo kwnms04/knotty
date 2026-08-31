@@ -39,6 +39,24 @@ pub struct SelectionRange {
     pub rectangle: bool,
 }
 
+/// What a selection gesture measures in.
+///
+/// The unit is the app's to name — a click count is what it comes from — and
+/// the boundary between one and the next is the engine's to find. cf.
+/// `docs/adr/0017-semantic-input-events.md`
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SelectionUnit {
+    /// From the cell the gesture began on to the one it is over.
+    Cell = 0,
+    /// Out to the word boundaries either end falls in, which is what a
+    /// double-click selects and what dragging after one extends by.
+    Word = 1,
+    /// Out to the whole logical line either end falls in, soft wraps
+    /// included. What a triple-click selects.
+    Line = 2,
+}
+
 /// What has become of a session's child.
 ///
 /// Kept apart from whether the session itself still works. The two are
@@ -289,6 +307,50 @@ impl Session {
         self.publish(false)
     }
 
+    /// Select from the cell a gesture began on out to the one it is over now,
+    /// measured in `unit`.
+    ///
+    /// Both ends travel together because a word or a line is widened from
+    /// both: a drag naming only the pointer's cell collapses the moment it
+    /// crosses a space. cf. [`Terminal::select`]
+    ///
+    /// Publishes a snapshot when something was selected: the selection is
+    /// part of what a consumer draws, and the engine's dirty tracking does
+    /// not cover it. A gesture the terminal kept to itself — every one, while
+    /// the child has asked to hear about the mouse — publishes nothing, so a
+    /// drag inside an editor costs no frames of ours.
+    pub fn select(
+        &mut self,
+        anchor: (u16, u16),
+        cell: (u16, u16),
+        unit: SelectionUnit,
+        rectangle: bool,
+    ) -> Result<()> {
+        if !self.terminal.select(anchor, cell, unit, rectangle)? {
+            return Ok(());
+        }
+        self.publish(true)
+    }
+
+    /// The selection as plain text, or `None` when nothing is selected.
+    ///
+    /// Folded lines come back as the one line they were typed as. Nothing is
+    /// published: reading the selection does not move it.
+    pub fn copy_selection(&self) -> Result<Option<Vec<u8>>> {
+        self.terminal.selection_text()
+    }
+
+    /// Move the viewport `lines` lines, up positive.
+    ///
+    /// What a selection drag out of the window asks for, on the app's own
+    /// timer: the pointer has stopped moving and the screen still has to
+    /// come. Publishes, since the viewport moving is the whole of what it
+    /// does.
+    pub fn scroll_viewport(&mut self, lines: i32) -> Result<()> {
+        self.terminal.scroll_viewport(lines);
+        self.publish(false)
+    }
+
     /// Process `bytes` to completion on the calling thread, publishing at most
     /// one snapshot.
     ///
@@ -525,6 +587,18 @@ fn wind_up(broken: &AtomicBool, wake: &Debt, run: impl FnOnce() -> Result<()>) {
 pub(crate) enum Request {
     /// Select a range of the viewport, or clear the selection with `None`.
     Select(Option<SelectionRange>),
+    /// Select from a gesture's anchor cell out to the cell it is over now.
+    Gesture {
+        anchor: (u16, u16),
+        cell: (u16, u16),
+        unit: SelectionUnit,
+        rectangle: bool,
+    },
+    /// Answer with the selection as plain text, or with `None` when there is
+    /// none. The one request whose answer somebody is waiting on.
+    Copy(Sender<Option<Vec<u8>>>),
+    /// Move the viewport, up positive.
+    Scroll { lines: i32 },
     /// Encode a key and queue what it comes to for the child.
     Key(KeyEvent),
     /// Encode a mouse event and queue what it comes to for the child.
@@ -745,6 +819,55 @@ impl PtySession {
     /// thread finds that out, this call has long returned.
     pub fn set_selection(&self, range: Option<SelectionRange>) -> Result<()> {
         self.request(Request::Select(range))
+    }
+
+    /// Select from a gesture's anchor cell out to the cell it is over now.
+    ///
+    /// Where the word and line boundaries fall is not reported: by the time
+    /// the thread finds them, this call has long returned. The frame it
+    /// publishes is where they show up.
+    pub fn select(
+        &self,
+        anchor: (u16, u16),
+        cell: (u16, u16),
+        unit: SelectionUnit,
+        rectangle: bool,
+    ) -> Result<()> {
+        self.request(Request::Gesture {
+            anchor,
+            cell,
+            unit,
+            rectangle,
+        })
+    }
+
+    /// The selection as plain text, or `None` when nothing is selected.
+    ///
+    /// **The one call here that waits for the thread.** Everything else puts
+    /// a request down and returns, because the engine's answer is the screen
+    /// and the screen arrives as a frame; this one has an answer that is not
+    /// the screen and nowhere else to carry it. The wait is one round of the
+    /// I/O loop — the nudge below cuts short whatever it was waiting on — and
+    /// it is a key the user pressed once, not a path anything repeats on.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Io`] when no answer came back — the session's thread has
+    /// gone, or the engine refused and the thread had nothing to send. The
+    /// two are not told apart, because nothing a caller does about one it
+    /// would not do about the other.
+    pub fn copy_selection(&self) -> Result<Option<Vec<u8>>> {
+        let (answering, answer) = mpsc::channel();
+        self.request(Request::Copy(answering))?;
+        // The thread drops the request — and with it the sender — on its way
+        // out, so a thread that has gone comes back as a disconnected
+        // channel rather than as a wait that never ends.
+        answer.recv().map_err(|_| Error::Io)
+    }
+
+    /// Move the viewport, up positive.
+    pub fn scroll_viewport(&self, lines: i32) -> Result<()> {
+        self.request(Request::Scroll { lines })
     }
 
     /// Encode a key event and queue what it comes to for the child.

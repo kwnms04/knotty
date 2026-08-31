@@ -364,6 +364,41 @@ typedef uint8_t KtMouseButton;
 #endif // __cplusplus
 
 /**
+ * What a selection gesture measures in.
+ *
+ * The unit is the app's to name — a click count is what it comes from — and
+ * the boundary between one and the next is the engine's to find. cf.
+ * `docs/adr/0017-semantic-input-events.md`
+ */
+enum KtSelectionUnit
+#if defined(__cplusplus) || __STDC_VERSION__ >= 202311L
+  : uint8_t
+#endif // defined(__cplusplus) || __STDC_VERSION__ >= 202311L
+ {
+  /**
+   * From the cell the gesture began on to the one it is over.
+   */
+  KT_SELECTION_UNIT_CELL = 0,
+  /**
+   * Out to the word boundaries either end falls in, which is what a
+   * double-click selects and what dragging after one extends by.
+   */
+  KT_SELECTION_UNIT_WORD = 1,
+  /**
+   * Out to the whole logical line either end falls in, soft wraps
+   * included. What a triple-click selects.
+   */
+  KT_SELECTION_UNIT_LINE = 2,
+};
+#ifndef __cplusplus
+#if __STDC_VERSION__ >= 202311L
+typedef enum KtSelectionUnit KtSelectionUnit;
+#else
+typedef uint8_t KtSelectionUnit;
+#endif // __STDC_VERSION__ >= 202311L
+#endif // __cplusplus
+
+/**
  * Which kind of event a [`KtEvent`] is, and so which of its fields carry
  * anything.
  */
@@ -1427,6 +1462,104 @@ KtStatus kt_session_set_wake(KtSession *session, KtWake wake, void *userdata);
  * readable `KtSelectionRange`.
  */
 KtStatus kt_session_set_selection(KtSession *session, const KtSelectionRange *range);
+
+/**
+ * Select from the cell a gesture began on out to the cell it is over now,
+ * measured in `unit`.
+ *
+ * **Both ends together, not one.** A word or a line is widened from both, so
+ * a call naming only the cell under the pointer would have nothing to widen
+ * from — and the selection collapses the moment the pointer crosses a space.
+ * The anchor is the app's to keep, along with the click count `unit` comes
+ * from and whether a drag is under way; where the boundaries fall is the
+ * engine's, and the app never counts one itself. cf.
+ * `docs/adr/0017-semantic-input-events.md`
+ *
+ * The pair also records which way the drag went, so dragging back past the
+ * anchor reverses the selection rather than emptying it. `rectangle` makes
+ * the two ends opposite corners of a block instead of the ends of a run of
+ * text.
+ *
+ * The selection the engine installs is tracked, so output scrolling it into
+ * the scrollback leaves it over the same text.
+ *
+ * **Nothing is selected while the child has asked to hear about the mouse**,
+ * which answers `KT_STATUS_OK` all the same: a drag inside an editor is the
+ * editor's, and a highlight of the terminal's own over its selection would
+ * be two answers to one drag. The mode is read beside the terminal for the
+ * reason [`kt_session_mouse`]'s is.
+ *
+ * Coordinates are viewport cells counted from the top left, and one past an
+ * edge is clamped to it — a drag out of the window is a pointer past the
+ * edge, and the edge is what it means.
+ *
+ * Publishes a snapshot when something was selected, since the selection is
+ * part of what a consumer draws. [`kt_session_set_selection`] stays what it
+ * is: the path for a selection nobody gestured — ⌘A and the like — and it is
+ * ungated in both directions. Letting a selection go is never the program's
+ * business, so a click that clears one clears it whether or not the child is
+ * hearing about the mouse.
+ *
+ * A session with a PTY behind it applies this on its own thread, so the call
+ * returns once the request is queued and an endpoint outside the viewport
+ * comes back as a wake with nothing new selected rather than as
+ * `KT_STATUS_OUT_OF_RANGE`.
+ *
+ * # Safety
+ *
+ * `session` must be a live handle.
+ */
+KtStatus kt_session_select(KtSession *session,
+                           uint16_t anchor_x,
+                           uint16_t anchor_y,
+                           uint16_t x,
+                           uint16_t y,
+                           KtSelectionUnit unit,
+                           bool rectangle);
+
+/**
+ * Take the selection as plain text.
+ *
+ * `out` receives a run borrowed from the session, valid until the next call
+ * to this function on it or until the session is freed. Nothing selected is
+ * `KT_STATUS_NO_VALUE` with an empty run, which is not a failure — it is the
+ * answer a copy with no selection gets.
+ *
+ * Plain text and nothing else. Folded lines come back as the one line they
+ * were typed as, and trailing blanks are trimmed, which is what makes a
+ * paste of a copied paragraph the paragraph. The engine can write VT and
+ * HTML too; v1's clipboard carries `text/plain`.
+ *
+ * **A session with a PTY behind it waits for its thread here**, which is the
+ * one call at this boundary that does. Every other one puts a request down
+ * and lets the frame carry the answer; this one has an answer that is not
+ * the screen. The wait is a round of that thread's loop, and the call is a
+ * key the user pressed once.
+ *
+ * # Safety
+ *
+ * `session` must be a live handle and `out` must be a valid, writable
+ * pointer to a `KtBytes`.
+ */
+KtStatus kt_session_copy_selection(KtSession *session, KtBytes *out);
+
+/**
+ * Move the viewport `lines` lines into the scrollback, up positive.
+ *
+ * What a selection drag out of the window asks for. It cannot be an event:
+ * the pointer has stopped moving and the screen still has to keep coming, so
+ * the timer that calls this is the app's — and so is deciding which way, out
+ * of where the pointer left. cf. `docs/05-swift-app.md`
+ *
+ * Clamped by the engine at either end, so asking to go past the top of the
+ * history or the bottom of the active area does nothing and publishes
+ * nothing.
+ *
+ * # Safety
+ *
+ * `session` must be a live handle.
+ */
+KtStatus kt_session_scroll_viewport(KtSession *session, int32_t lines);
 
 /**
  * Take the bytes a detached session has queued for its child, emptying the
