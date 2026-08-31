@@ -14,10 +14,10 @@ use knotty_ffi::{
     Attribute, Cell, ClipboardTarget, Cursor, CursorShape, Dirty, Key, KeyAction, KtBytes,
     KtChildState, KtEventKind, KtEvents, KtKeyEvent, KtSession, KtSessionState, KtSnapshot,
     KtSnapshotView, KtStatus, KtText, Rgb, Row, RowFlag, SelectionRange, Underline, kt_abi_version,
-    kt_session_feed, kt_session_free, kt_session_key, kt_session_new_detached, kt_session_new_pty,
-    kt_session_set_selection, kt_session_set_wake, kt_session_take_events,
-    kt_session_take_snapshot, kt_session_take_writes, kt_session_write, kt_snapshot_free,
-    kt_snapshot_view,
+    kt_paste_is_safe, kt_session_feed, kt_session_free, kt_session_key, kt_session_new_detached,
+    kt_session_new_pty, kt_session_paste, kt_session_set_selection, kt_session_set_wake,
+    kt_session_take_events, kt_session_take_snapshot, kt_session_take_writes, kt_session_write,
+    kt_snapshot_free, kt_snapshot_view,
 };
 
 /// Ghostty's own defaults. A change here is an upstream palette change, not a
@@ -117,6 +117,12 @@ fn set_selection(session: *mut KtSession, range: Option<SelectionRange>) -> KtSt
         Some(range) => unsafe { kt_session_set_selection(session, &range) },
         None => unsafe { kt_session_set_selection(session, ptr::null()) },
     }
+}
+
+/// Paste a run, which is the one call that sanitizes what it is given.
+fn paste(session: *mut KtSession, bytes: &[u8]) {
+    let status = unsafe { kt_session_paste(session, bytes.as_ptr(), bytes.len()) };
+    assert_eq!(status, KtStatus::Ok);
 }
 
 /// Drain the writer queue, copying it out so the next drain cannot move it
@@ -2147,6 +2153,10 @@ fn null_arguments_are_reported_rather_than_dereferenced() {
         KtStatus::NullArgument,
     );
     assert_eq!(
+        unsafe { kt_session_paste(ptr::null_mut(), b"x".as_ptr(), 1) },
+        KtStatus::NullArgument,
+    );
+    assert_eq!(
         unsafe { kt_snapshot_view(ptr::null(), ptr::null_mut()) },
         KtStatus::NullArgument,
     );
@@ -2175,6 +2185,14 @@ fn null_arguments_are_reported_rather_than_dereferenced() {
         KtStatus::NullArgument,
     );
     assert_eq!(
+        unsafe { kt_session_paste(session, ptr::null(), 1) },
+        KtStatus::NullArgument,
+    );
+    // The pre-check takes no session and so has no status to refuse with. It
+    // answers the conservative half instead: a caller whose pointer went
+    // wrong is one that warns.
+    assert!(!unsafe { kt_paste_is_safe(ptr::null(), 1) });
+    assert_eq!(
         unsafe { kt_session_feed(session, ptr::null(), 0) },
         KtStatus::Ok,
     );
@@ -2183,4 +2201,88 @@ fn null_arguments_are_reported_rather_than_dereferenced() {
     // Freeing null is a no-op, not a crash.
     unsafe { kt_session_free(ptr::null_mut()) };
     unsafe { kt_snapshot_free(ptr::null_mut()) };
+}
+
+/// The whole of what a paste is for: the child hears the text wrapped, so it
+/// can tell a clipboard from a person typing. Both sequences are the engine's
+/// and neither is written here.
+#[test]
+fn a_child_that_asked_for_bracketed_paste_hears_one_wrapped() {
+    let session = detached(20, 4);
+    feed(session, b"\x1b[?2004h");
+    let _ = writes(session);
+
+    paste(session, b"hello");
+
+    assert_eq!(writes(session), b"\x1b[200~hello\x1b[201~");
+    unsafe { kt_session_free(session) };
+}
+
+/// A child that never asked has its newlines turned into carriage returns
+/// instead, which is what a terminal with no wrapping to offer can do: the
+/// lines arrive as the returns the person would have typed. The warning is
+/// what stands between the user and that, and it is the app's.
+#[test]
+fn a_child_that_did_not_ask_gets_the_newlines_as_returns() {
+    let session = detached(20, 4);
+
+    paste(session, b"one\ntwo");
+
+    assert_eq!(writes(session), b"one\rtwo");
+    unsafe { kt_session_free(session) };
+}
+
+/// The attack the wrapping alone would not survive: a run carrying the end
+/// sequence would close the brackets early and leave everything after it
+/// being read as commands. The escape is a control byte, so it is gone before
+/// the wrapping goes on, and what is left is text.
+#[test]
+fn the_end_sequence_inside_a_paste_does_not_break_out_of_the_wrapping() {
+    let session = detached(20, 4);
+    feed(session, b"\x1b[?2004h");
+    let _ = writes(session);
+
+    paste(session, b"a\x1b[201~rm -rf /");
+
+    let queued = writes(session);
+    assert_eq!(queued, b"\x1b[200~a [201~rm -rf /\x1b[201~");
+    // Said again as the property it is: one opening and one closing, and the
+    // closing at the end.
+    assert_eq!(
+        queued.windows(6).filter(|run| *run == b"\x1b[201~").count(),
+        1
+    );
+    unsafe { kt_session_free(session) };
+}
+
+/// **The check is not a gate on the sanitizing.** This paste is one the check
+/// calls unsafe, made without asking it — which is what a user who read the
+/// warning and went ahead does — and the control bytes are gone all the same.
+/// There is no argument at this boundary that would have kept them.
+#[test]
+fn a_paste_is_sanitized_whether_or_not_the_check_was_asked_first() {
+    let dangerous = b"a\x00b\x1bc\x7fd";
+    assert!(!unsafe { kt_paste_is_safe(b"a\nb".as_ptr(), 3) });
+
+    let session = detached(20, 4);
+    paste(session, dangerous);
+
+    assert_eq!(writes(session), b"a b c d");
+    unsafe { kt_session_free(session) };
+}
+
+/// What the warning asks before anything is pasted, which is why it takes no
+/// session: there is nothing to paste into yet.
+#[test]
+fn the_paste_check_judges_a_run_without_a_session_behind_it() {
+    let safe = |run: &[u8]| unsafe { kt_paste_is_safe(run.as_ptr(), run.len()) };
+
+    assert!(safe(b"a plain command"));
+    // A newline is what a shell runs the moment it arrives.
+    assert!(!safe(b"one\ntwo"));
+    // And the end sequence is what would let the rest out of the wrapping.
+    assert!(!safe(b"a\x1b[201~b"));
+    // Nothing to paste is nothing to warn about, and the empty run is the one
+    // that may be null.
+    assert!(unsafe { kt_paste_is_safe(ptr::null(), 0) });
 }

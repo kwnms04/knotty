@@ -18,9 +18,10 @@ use knotty_ffi::{
     KtEvent, KtEventKind, KtEvents, KtKeyEvent, KtSessionState, KtSnapshotView, KtStatus, KtText,
     Modifier, MouseAction, MouseButton, RowFlag, SelectionUnit, Underline,
     kt_session_copy_selection, kt_session_feed, kt_session_focus, kt_session_free, kt_session_key,
-    kt_session_mouse, kt_session_new_detached, kt_session_resize, kt_session_scroll_viewport,
-    kt_session_select, kt_session_set_wake, kt_session_take_events, kt_session_take_snapshot,
-    kt_session_take_writes, kt_session_wheel, kt_snapshot_free, kt_snapshot_view,
+    kt_session_mouse, kt_session_new_detached, kt_session_paste, kt_session_resize,
+    kt_session_scroll_viewport, kt_session_select, kt_session_set_wake, kt_session_take_events,
+    kt_session_take_snapshot, kt_session_take_writes, kt_session_wheel, kt_snapshot_free,
+    kt_snapshot_view,
 };
 
 /// The format the goldens are written in. Bump it when the encoding changes,
@@ -89,6 +90,10 @@ enum Step {
     },
     /// Take the selection as plain text, which the description carries.
     Copy,
+    /// A run of bytes off the clipboard, sanitized and wrapped on the way to
+    /// the child. What it came to is in `writes`, which is where the golden
+    /// holds the sanitizing.
+    Paste(Vec<u8>),
     /// The viewport moving of the app's own accord, which is what a drag out
     /// of the window asks for. Up positive.
     Scroll { lines: i32 },
@@ -138,6 +143,7 @@ impl KeyStep {
 /// select 0 0 5 0 word
 /// scroll -2
 /// copy
+/// paste "sudo rm -rf /\x0a"
 /// ```
 ///
 /// `out` takes a quoted run of bytes, written the way the golden writes one.
@@ -156,6 +162,11 @@ impl KeyStep {
 /// unit — `cell`, `word` or `line` — and then `rectangle` if the two ends are
 /// opposite corners of a block. `scroll` takes a count of lines, up positive.
 /// `copy` takes nothing: what it took comes out in the description.
+///
+/// `paste` takes a quoted run the way `out` does, and is the other direction:
+/// what the clipboard held on its way to the child. What reaches the child is
+/// never what was written here — the sanitizing is inside the call — so what
+/// the golden's `writes` holds is the whole of the point.
 fn parse(script: &str) -> Result<Vec<Step>, String> {
     script
         .lines()
@@ -178,12 +189,7 @@ fn step(line: &str) -> Result<Step, String> {
     let mut words = words.split_whitespace();
 
     match words.next() {
-        Some("out") => {
-            if let Some(word) = words.next() {
-                return Err(format!("out takes bytes and nothing else, not {word}"));
-            }
-            Ok(Step::Out(quoted.ok_or("out says nothing to feed")?))
-        }
+        Some("out") => bytes_only("out", words, quoted, "feed").map(Step::Out),
         Some("key") => key_step(words, quoted.unwrap_or_default()).map(Step::Key),
         Some("resize") => {
             if quoted.is_some() {
@@ -194,6 +200,7 @@ fn step(line: &str) -> Result<Step, String> {
         Some("mouse") => mouse_step(words),
         Some("wheel") => wheel_step(words),
         Some("select") => select_step(words),
+        Some("paste") => bytes_only("paste", words, quoted, "paste").map(Step::Paste),
         Some("copy") => match words.next() {
             None => Ok(Step::Copy),
             Some(word) => Err(format!("copy takes nothing, not {word}")),
@@ -212,6 +219,25 @@ fn step(line: &str) -> Result<Step, String> {
         Some(other) => Err(format!("{other} is not a directive this format knows")),
         None => Err("a line with only a quoted run says nothing to do with it".to_owned()),
     }
+}
+
+/// The run a directive that takes nothing but bytes was given.
+///
+/// The two that are shaped this way are the two directions: what the child
+/// sent, and what the app pasted. `verb` is what the run would be done with,
+/// for the message a line that names none gets.
+fn bytes_only<'a>(
+    directive: &str,
+    mut words: impl Iterator<Item = &'a str>,
+    quoted: Option<Vec<u8>>,
+    verb: &str,
+) -> Result<Vec<u8>, String> {
+    if let Some(word) = words.next() {
+        return Err(format!(
+            "{directive} takes bytes and nothing else, not {word}"
+        ));
+    }
+    quoted.ok_or_else(|| format!("{directive} says nothing to {verb}"))
 }
 
 /// A resize: the grid in cells, then one cell in pixels.
@@ -540,6 +566,9 @@ fn run(steps: &[Step], cols: u16, rows: u16, scrollback: usize) -> Result<String
                         }
                     }
                 }
+                Step::Paste(bytes) => check("kt_session_paste", unsafe {
+                    kt_session_paste(session, bytes.as_ptr(), bytes.len())
+                })?,
                 Step::Scroll { lines } => check("kt_session_scroll_viewport", unsafe {
                     kt_session_scroll_viewport(session, *lines)
                 })?,

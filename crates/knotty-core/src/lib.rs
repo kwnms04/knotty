@@ -35,6 +35,10 @@ pub use snapshot::{
     Attribute, Cell, Cursor, CursorShape, Dirty, Rgb, Row, RowFlag, ScreenState, Snapshot,
     Underline,
 };
+/// The paste pre-check, which needs no session: what a warning asks before
+/// anything is pasted. The sanitizing itself is inside
+/// [`Session::paste`](session::Session::paste) and has no such door.
+pub use vt::paste_is_safe;
 pub use wake::Wake;
 
 /// Why a core operation failed.

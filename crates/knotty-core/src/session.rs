@@ -225,6 +225,34 @@ impl Session {
         Ok(())
     }
 
+    /// Sanitize `bytes`, wrap them the way the terminal's modes ask, and
+    /// queue them for the child.
+    ///
+    /// **The only way pasted text reaches a child, and there is no way past
+    /// the sanitizing inside it.** What a caller may skip is the warning it
+    /// asks [`paste_is_safe`] for beforehand; the control bytes are replaced
+    /// and the wrapping added either way. cf.
+    /// `docs/adr/0007-input-security.md`
+    ///
+    /// Brings the viewport back to the active area the way [`key`] does: a
+    /// paste is typing, and typing appears where the cursor is.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::WriteQueueFull`] when the bytes did not fit, as [`write`].
+    ///
+    /// [`paste_is_safe`]: crate::paste_is_safe
+    /// [`key`]: Session::key
+    /// [`write`]: Session::write
+    pub fn paste(&mut self, bytes: &[u8]) -> Result<()> {
+        let encoded = self.terminal.encode_paste(bytes)?;
+        self.write(&encoded)?;
+        if self.terminal.snap_to_active()? {
+            return self.publish(false);
+        }
+        Ok(())
+    }
+
     /// Encode a mouse event and queue what it comes to for the child.
     ///
     /// Nothing is queued while the child has not asked to hear about the
@@ -601,6 +629,9 @@ pub(crate) enum Request {
     Scroll { lines: i32 },
     /// Encode a key and queue what it comes to for the child.
     Key(KeyEvent),
+    /// Sanitize a run of pasted bytes, wrap it as the modes ask, and queue it
+    /// for the child.
+    Paste(Vec<u8>),
     /// Encode a mouse event and queue what it comes to for the child.
     Mouse(MouseEvent),
     /// Turn the wheel, which is a mouse code, a run of cursor keys or the
@@ -883,6 +914,19 @@ impl PtySession {
     /// [`write`]: PtySession::write
     pub fn key(&self, event: KeyEvent) -> Result<()> {
         self.request(Request::Key(event))
+    }
+
+    /// Sanitize `bytes`, wrap them as the terminal's modes ask, and queue
+    /// them for the child.
+    ///
+    /// The thread's to encode, for the reason [`key`] gives: the mode that
+    /// says whether the child wants the wrapping is the engine's. The run is
+    /// taken by value because it outlives this call — it waits in the request
+    /// until the thread comes for it.
+    ///
+    /// [`key`]: PtySession::key
+    pub fn paste(&self, bytes: Vec<u8>) -> Result<()> {
+        self.request(Request::Paste(bytes))
     }
 
     /// Encode a mouse event and queue what it comes to for the child.

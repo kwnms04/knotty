@@ -456,6 +456,7 @@ pub(crate) fn run(
                 }),
                 Request::Scroll { lines } => session.scroll_viewport(lines),
                 Request::Key(event) => session.key(&event),
+                Request::Paste(bytes) => session.paste(&bytes),
                 Request::Mouse(event) => session.mouse(&event),
                 Request::Wheel(event) => session.wheel(&event),
                 Request::Focus { gained } => session.focus(gained),

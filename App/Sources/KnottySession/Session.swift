@@ -130,6 +130,43 @@ public final class Session {
         }
     }
 
+    /// Sanitize `bytes`, wrap them the way the session's modes ask, and queue
+    /// them for the child.
+    ///
+    /// The whole of what makes a clipboard safe to put in the input stream,
+    /// and all of it the engine's: the control bytes that would be read as
+    /// commands become spaces, and what is left is wrapped in the bracketed
+    /// paste sequences when the child asked for them or has its newlines
+    /// turned into carriage returns when it did not. cf. adr/0007.
+    ///
+    /// **Nothing on this side can skip that.** ``pasteIsSafe(_:)`` decides
+    /// whether to warn first; a user who reads the warning and goes ahead
+    /// arrives here all the same. ``write(_:)`` is not the way round it — it
+    /// is for text the app already owns, an input method's finished
+    /// composition — and putting a clipboard through it would be a decision
+    /// somebody made, not an accident this API allows.
+    public func paste(_ bytes: [UInt8]) throws {
+        try bytes.withUnsafeBufferPointer { bytes in
+            try check("kt_session_paste", kt_session_paste(handle, bytes.baseAddress, bytes.count))
+        }
+    }
+
+    /// Whether `bytes` can be pasted without asking the user first.
+    ///
+    /// Unsafe means a newline, which a shell runs the moment it arrives, or
+    /// the bracketed paste terminator, which would end the wrapping early and
+    /// leave the rest being read as commands. The engine's judgement, and a
+    /// conservative one — it looks at no terminal, which is what lets the
+    /// question be asked before anything is pasted.
+    ///
+    /// A static function because it needs no session, and the warning has to
+    /// come before one is used. It gates the warning and never the sanitizing.
+    public static func pasteIsSafe(_ bytes: [UInt8]) -> Bool {
+        bytes.withUnsafeBufferPointer { bytes in
+            kt_paste_is_safe(bytes.baseAddress, bytes.count)
+        }
+    }
+
     /// Encode a key and queue what it comes to for the child.
     ///
     /// Which bytes that is belongs to the core, for the reason ``KeyEvent``

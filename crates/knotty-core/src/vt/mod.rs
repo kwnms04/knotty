@@ -66,6 +66,14 @@ const GRAPHEME_CLUSTERING: ffi::Mode = 2027;
 /// when one is wanted, so the mode is read here.
 const FOCUS_REPORTING: ffi::Mode = 1004;
 
+/// DEC mode 2004, bracketed paste.
+///
+/// What says whether the child asked for pasted text to arrive wrapped, so
+/// that it can tell a paste from typing. The engine's encoder takes the answer
+/// as an argument and holds no opinion about where it comes from, so the mode
+/// is read here.
+const BRACKETED_PASTE: ffi::Mode = 2004;
+
 /// DEC mode 1007, alternate scroll.
 ///
 /// On by default, and what makes the wheel a cursor key on the alternate
@@ -426,6 +434,71 @@ impl Terminal {
             )
         })?;
         Ok(buffer[..written].to_vec())
+    }
+
+    /// Sanitize `bytes` and wrap them the way this terminal's modes ask.
+    ///
+    /// The whole of what makes untrusted text safe to put in the input
+    /// stream, and the engine's: the control bytes that would be read as
+    /// commands become spaces, and what is left is wrapped in the bracketed
+    /// paste sequences when the child asked for them or has its newlines
+    /// turned into carriage returns when it did not. Nothing here decides any
+    /// of it. cf. `docs/adr/0007-input-security.md`
+    ///
+    /// **There is no way past this on the way to the child.** A caller that
+    /// wants a warning first asks [`paste_is_safe`] before calling; a caller
+    /// that skips the warning still arrives here, because the sanitizing is
+    /// inside the paste rather than beside it.
+    pub fn encode_paste(&self, bytes: &[u8]) -> Result<Vec<u8>> {
+        let bracketed = self.mode(BRACKETED_PASTE)?;
+        // The engine sanitizes in place, so what it works over is a copy —
+        // the caller's run is borrowed and is not ours to rewrite.
+        let mut data = bytes.to_vec();
+
+        let mut needed = 0;
+        // SAFETY: the copy is ours and its length is told truthfully. A null
+        // buffer is how the call documents the question, and it answers it in
+        // `needed`.
+        let asked = unsafe {
+            ffi::ghostty_paste_encode(
+                data.as_mut_ptr().cast(),
+                data.len(),
+                bracketed,
+                ptr::null_mut(),
+                0,
+                &raw mut needed,
+            )
+        };
+        match asked {
+            // The answer to the question: nothing was written because nowhere
+            // was offered.
+            ffi::Result::OUT_OF_SPACE => {}
+            // A paste that comes to nothing at all, which the call has room
+            // for without a buffer — an empty run with no wrapping to add.
+            ffi::Result::SUCCESS => return Ok(Vec::new()),
+            _ => return Err(Error::Engine),
+        }
+
+        // The probe rewrote the copy where it found a control byte, and it is
+        // handed on as it stands: what the call puts there is a space, which
+        // is not itself a byte it takes out, and it is one byte for one — so
+        // measuring neither changed what a second pass makes of it nor how
+        // much room that needs.
+        let mut encoded = vec![0; needed];
+        let mut written = 0;
+        // SAFETY: as above, with a buffer of the length just asked for.
+        check(unsafe {
+            ffi::ghostty_paste_encode(
+                data.as_mut_ptr().cast(),
+                data.len(),
+                bracketed,
+                encoded.as_mut_ptr().cast(),
+                encoded.len(),
+                &raw mut written,
+            )
+        })?;
+        encoded.truncate(written);
+        Ok(encoded)
     }
 
     /// Move the viewport the way `behavior` says.
@@ -883,6 +956,25 @@ fn clamped(cell: (u16, u16), grid: (u16, u16)) -> (u16, u16) {
         cell.0.min(grid.0.saturating_sub(1)),
         cell.1.min(grid.1.saturating_sub(1)),
     )
+}
+
+/// Whether `bytes` can go to the child without asking the user first.
+///
+/// Unsafe means a newline, which a shell runs the moment it arrives, or the
+/// bracketed paste terminator `ESC [ 201 ~`, which would end the wrapping
+/// early and leave the rest of the run being read as commands. The engine's
+/// judgement, and a conservative one: it does not look at what modes the
+/// terminal is in.
+///
+/// **A pre-check and nothing more.** It takes no terminal because it needs
+/// none, which is what lets a warning be shown before anything is pasted. It
+/// gates the warning, never the sanitizing — [`Terminal::encode_paste`] does
+/// that whichever way the answer went. cf. `docs/adr/0007-input-security.md`
+pub fn paste_is_safe(bytes: &[u8]) -> bool {
+    // SAFETY: the run is borrowed for the whole call, and its length is told
+    // truthfully. An empty slice lends a dangling but aligned pointer, which
+    // is what a length of 0 says not to read.
+    unsafe { ffi::ghostty_paste_is_safe(bytes.as_ptr().cast(), bytes.len()) }
 }
 
 /// How many lines a delta is worth, capped at [`MAX_WHEEL_LINES`].

@@ -173,6 +173,14 @@ KtStatus kt_consumer_press_ctrl_c(KtSession *session) {
     return kt_session_key(session, &event);
 }
 
+/* Pasting: the check is what a warning is decided on, and the paste is the
+ * same call whichever way the user answered it. There is no argument here for
+ * an unsanitized one — the sanitizing is inside the paste, not beside it. */
+KtStatus kt_consumer_paste(KtSession *session, const char *text, size_t len, int *out_warn) {
+    *out_warn = !kt_paste_is_safe((const uint8_t *)text, len);
+    return kt_session_paste(session, (const uint8_t *)text, len);
+}
+
 /* A wake runs on the core's thread and may do nothing but flag the consumer's
  * own, which is why it takes no lock and reads nothing back. */
 static void kt_consumer_on_wake(void *userdata) { *(int *)userdata = 1; }

@@ -1,0 +1,28 @@
+# What the clipboard held on its way to the child, which is never what the
+# child hears: the sanitizing is inside the paste, and `writes` below is the
+# whole of what came out.
+#
+# A plain run with nobody having asked for the wrapping. Nothing to take out
+# and nothing to put round it, so it arrives as itself.
+paste "echo hello"
+# The same with the child having asked for bracketed paste, which is what a
+# shell with a line editor does. The two sequences round it are the engine's.
+out "\x1b[?2004h"
+paste "echo hello"
+# Newlines, which are the reason for the warning: inside the wrapping they are
+# text, and the shell holds them rather than running them.
+paste "one\x0atwo\x0athree"
+# The dangerous control bytes — NUL, ESC and DEL — which become spaces. This
+# is the paste a user made after reading the warning and going ahead: there is
+# no second call that would have kept them.
+paste "a\x00b\x1bc\x7fd"
+# The end sequence inside the content, which without the sanitizing would
+# close the wrapping early and leave the rest being read as commands. The
+# escape goes first, so what is left is text and the one closing is still at
+# the end.
+paste "a\x1b[201~rm -rf /"
+# And the same run with the wrapping turned off, where the newlines become the
+# carriage returns a person would have typed. Nothing can make that safe, which
+# is what the warning is for.
+out "\x1b[?2004l"
+paste "one\x0atwo"

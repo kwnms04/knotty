@@ -554,6 +554,69 @@ final class TerminalView: NSView {
         pasteboard.setString(text, forType: .string)
     }
 
+    /// Put the clipboard in the terminal, warning first when what it holds
+    /// would run on arrival.
+    ///
+    /// Reached by the Edit menu's ⌘V for the reason ``copy(_:)`` is: a menu's
+    /// key equivalent is offered before any view sees the event, so the key
+    /// never reaches the child as a key.
+    ///
+    /// **The warning is what can be skipped; the sanitizing is not.** Both
+    /// answers to the sheet end at the same ``SessionHost/paste(_:)``, and
+    /// what that call does to the bytes is the engine's and not optional. The
+    /// policy is a constant here — warn on what the engine calls unsafe,
+    /// which is a newline or the bracketed terminator — because the settings
+    /// pipeline that would make it a choice arrives in M4. cf. 05-swift-app 8,
+    /// adr/0007.
+    @objc func paste(_ sender: Any?) {
+        guard let host,
+            let text = NSPasteboard.general.string(forType: .string),
+            !text.isEmpty
+        else {
+            return
+        }
+        if !Self.warnsBeforeAnUnsafePaste || host.pasteIsSafe(text) {
+            host.paste(text)
+            return
+        }
+        // No window is no sheet, and a paste this one would have warned about
+        // is not one to make quietly. ⌘V cannot have arrived that way — the
+        // view is not on screen — so this is a floor rather than a path.
+        guard let window else { return }
+
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "This paste could run as commands"
+        alert.informativeText = """
+            What is on the clipboard carries a newline or an escape a shell \
+            acts on as it arrives.
+
+            \(Paste.preview(of: text))
+            """
+        // Cancel first, which is the button ⏎ presses. A run that gets in by
+        // being pasted onto a prompt is one ⏎ would have run anyway.
+        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: "Paste")
+        // The session is reached again rather than carried in: it is held
+        // weakly here so that quitting can release it while the window is
+        // still up, and a sheet waiting on an answer would otherwise keep it
+        // for as long as the sheet is open.
+        alert.beginSheetModal(for: window) { [weak self] response in
+            guard response == .alertSecondButtonReturn else { return }
+            self?.host?.paste(text)
+        }
+    }
+
+    /// Whether an unsafe paste is warned about, which is the default
+    /// 05-swift-app 8 calls "multiline only": the engine calls a run unsafe
+    /// for a newline or the terminator, and those are what a sheet is worth.
+    ///
+    /// A constant because the settings pipeline that would give it somewhere
+    /// to come from is M4, and this is the seam it arrives at. The only thing
+    /// it gates is the sheet — both answers to one end at the same paste, and
+    /// what that does to the bytes is not a policy.
+    private static let warnsBeforeAnUnsafePaste = true
+
     /// Which cell an event happened over.
     ///
     /// The conversion this side owns, and the whole of what the app decides

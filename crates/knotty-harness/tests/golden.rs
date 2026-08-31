@@ -222,3 +222,14 @@ fn selection_line() {
 fn selection_scrollback() {
     check_script("selection-scrollback");
 }
+
+/// The clipboard on its way to the child, on either side of the mode that
+/// asks for the wrapping. What the golden's `writes` holds is the sanitizing:
+/// the control bytes that would have been read as commands are spaces, the
+/// end sequence in the content did not break out of the wrapping, and the
+/// newlines are text inside it and carriage returns without it. Nothing on
+/// the way in could have skipped any of it.
+#[test]
+fn paste() {
+    check_script("paste");
+}

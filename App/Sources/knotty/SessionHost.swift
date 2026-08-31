@@ -249,6 +249,28 @@ final class SessionHost {
         }
     }
 
+    /// Whether a clipboard can go in without asking the user first.
+    ///
+    /// The judgement is the engine's and needs no session, but it comes
+    /// through here all the same: the view passes intent and never reaches
+    /// the boundary itself. cf. 05-swift-app 4.
+    func pasteIsSafe(_ text: String) -> Bool {
+        Session.pasteIsSafe(Array(text.utf8))
+    }
+
+    /// Put a clipboard in the terminal.
+    ///
+    /// The sanitizing and the wrapping are inside the call, so there is
+    /// nothing here that could be told to skip them: a user who read the
+    /// warning and went ahead reaches the same one. cf. adr/0007.
+    func paste(_ text: String) {
+        do {
+            try session.paste(Array(text.utf8))
+        } catch {
+            report(error)
+        }
+    }
+
     /// Nothing can act on a broken session yet: it keeps its last screen and
     /// M3 has nothing to put in its place. Saying so beats a window that
     /// quietly stops moving. cf. 05-swift-app 8 for the policy that arrives in

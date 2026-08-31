@@ -1544,6 +1544,63 @@ KtStatus kt_session_select(KtSession *session,
 KtStatus kt_session_copy_selection(KtSession *session, KtBytes *out);
 
 /**
+ * Whether a run of bytes can be pasted without asking the user first.
+ *
+ * Unsafe means a newline, which a shell runs the moment it arrives, or the
+ * bracketed paste terminator `ESC [ 201 ~`, which would end the wrapping
+ * early and leave the rest being read as commands. The engine's judgement,
+ * and a conservative one: no terminal is consulted, so the answer does not
+ * depend on what modes one happens to be in.
+ *
+ * **This takes no session because a warning has to come before the paste.**
+ * It gates the warning and nothing else: [`kt_session_paste`] sanitizes
+ * whichever way this answered, and there is no way to reach a child with
+ * pasted bytes that skips it. cf. `docs/adr/0007-input-security.md`
+ *
+ * A null run of any length but 0 answers `false`, which is the conservative
+ * half of the two: a caller whose pointer went wrong gets the warning.
+ *
+ * # Safety
+ *
+ * `bytes` must point at `len` readable bytes, or be null when `len` is 0.
+ */
+bool kt_paste_is_safe(const uint8_t *bytes, size_t len);
+
+/**
+ * Sanitize `bytes`, wrap them the way the session's modes ask, and queue
+ * them for its child.
+ *
+ * The whole of what makes untrusted text safe to put in the input stream:
+ * the control bytes that would be read as commands become spaces, and what
+ * is left is wrapped in the bracketed paste sequences when the child asked
+ * for them or has its newlines turned into carriage returns when it did not.
+ * All of it the engine's; none of it optional. cf.
+ * `docs/adr/0007-input-security.md`
+ *
+ * **There is no unsanitized paste at this boundary.** A caller that wants to
+ * warn first asks [`kt_paste_is_safe`]; a caller that does not, or whose user
+ * went ahead anyway, still arrives here. [`kt_session_write`] is not a way
+ * round it — it is for text that is already the caller's own, an input
+ * method's finished composition, and a caller that puts a clipboard through
+ * it has decided to.
+ *
+ * A paste also brings the viewport back to the active area, the way
+ * [`kt_session_key`] does: it is typing, and typing appears where the cursor
+ * is.
+ *
+ * A detached session encodes on the calling thread and answers
+ * `KT_STATUS_WRITE_QUEUE_FULL` when the bytes did not fit. A session with a
+ * PTY behind it encodes on its own thread and is past answering by the time
+ * it finds out.
+ *
+ * # Safety
+ *
+ * `session` must be a live handle, and `bytes` must point at `len` readable
+ * bytes — null only where that length is 0.
+ */
+KtStatus kt_session_paste(KtSession *session, const uint8_t *bytes, size_t len);
+
+/**
  * Move the viewport `lines` lines into the scrollback, up positive.
  *
  * What a selection drag out of the window asks for. It cannot be an event:
