@@ -9,10 +9,9 @@
 
 /// Which way a mouse moved.
 #[repr(u8)]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MouseAction {
     /// A button went down.
-    #[default]
     Press = 0,
     /// A button came back up.
     Release = 1,
@@ -26,10 +25,9 @@ pub enum MouseAction {
 /// motion with nothing held is. The engine names eight more; nothing on this
 /// side has a way to press one, so nothing here names them.
 #[repr(u8)]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MouseButton {
     /// No button — which only a motion can be.
-    #[default]
     None = 0,
     /// The left button.
     Left = 1,
@@ -47,12 +45,37 @@ pub enum MouseButton {
 /// is the terminal's to say — reading either anywhere but beside the terminal
 /// reads it as of some earlier frame. cf.
 /// `docs/adr/0017-semantic-input-events.md`
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug)]
 pub struct MouseEvent {
     /// Which way the mouse moved.
     pub action: MouseAction,
     /// Which button it was about.
     pub button: MouseButton,
+    /// What was held down, as [`crate::key::Modifier`] bits.
+    pub mods: u16,
+    /// The column the pointer was over, counted from the left of the
+    /// viewport.
+    pub x: u16,
+    /// The row the pointer was over, counted from the top of the viewport.
+    pub y: u16,
+}
+
+/// One turn of the wheel, in lines, over one cell.
+///
+/// Lines rather than pixels: a trackpad reports its inertia a few pixels at
+/// a time and reports a great many of them, and turning those into lines
+/// wants the height a line is drawn at — which is known where the display
+/// is. Up and right are positive.
+///
+/// Undecided like the rest. What a turn comes to is a mouse code, a run of
+/// cursor keys or the viewport moving, and which of the three is a question
+/// only the terminal can answer. cf. `docs/adr/0017-semantic-input-events.md`
+#[derive(Clone, Copy, Debug)]
+pub struct WheelEvent {
+    /// How many lines sideways, right positive.
+    pub delta_x: i32,
+    /// How many lines up or down, up positive.
+    pub delta_y: i32,
     /// What was held down, as [`crate::key::Modifier`] bits.
     pub mods: u16,
     /// The column the pointer was over, counted from the left of the

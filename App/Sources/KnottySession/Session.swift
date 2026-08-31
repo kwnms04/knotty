@@ -155,16 +155,18 @@ public final class Session {
     /// core's — whether the child hears about the event at all, and in which
     /// of the reporting formats. **A click at a shell prompt reaches nobody**,
     /// and that is the mode working rather than a failure. cf. adr/0017.
+    /// `button` is nil for a motion with nothing held, which is the one
+    /// event a button would be wrong for.
     public func mouse(
         _ action: MouseAction,
-        button: MouseButton,
+        button: MouseButton?,
         mods: Modifiers = [],
         x: UInt16,
         y: UInt16
     ) throws {
         try check(
             "kt_session_mouse",
-            kt_session_mouse(handle, action.raw, button.raw, mods.rawValue, x, y)
+            kt_session_mouse(handle, action.raw, MouseButton.raw(button), mods.rawValue, x, y)
         )
     }
 

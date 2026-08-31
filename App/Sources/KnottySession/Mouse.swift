@@ -21,9 +21,11 @@ public enum MouseAction: Sendable {
 }
 
 /// Which button a mouse event is about.
+///
+/// No case for "no button", which only a motion can be: that is what nil is
+/// where one of these is asked for, and a case named `none` beside an
+/// optional of the same type is a trap rather than a spelling.
 public enum MouseButton: Sendable {
-    /// No button, which only a motion can be.
-    case none
     /// The left button.
     case left
     /// The right button.
@@ -47,9 +49,10 @@ public enum MouseButton: Sendable {
         }
     }
 
-    var raw: UInt8 {
+    /// What the boundary takes, with nil for the motion that had no button.
+    static func raw(_ button: Self?) -> UInt8 {
         let button =
-            switch self {
+            switch button {
             case .none: KT_MOUSE_BUTTON_NONE
             case .left: KT_MOUSE_BUTTON_LEFT
             case .right: KT_MOUSE_BUTTON_RIGHT
@@ -90,7 +93,10 @@ public struct WheelLines: Sendable {
         cellSize: (width: Double, height: Double)
     ) -> (x: Int, y: Int) {
         guard precise else {
-            return (x: detents(deltaX), y: detents(deltaY))
+            // Sideways is rounded and nothing more. The ramp below is macOS's
+            // answer to a vertical wheel being spun slowly, and applying it
+            // sideways turns a thumb resting on the wheel into a scroll.
+            return (x: Int(deltaX.rounded()), y: detents(deltaY))
         }
         pending.x += deltaX
         pending.y += deltaY
@@ -113,7 +119,8 @@ public struct WheelLines: Sendable {
         return Int(lines)
     }
 
-    /// What a wheel with detents turned, which is a count of lines already.
+    /// What a vertical wheel with detents turned, which is a count of lines
+    /// already.
     private func detents(_ delta: Double) -> Int {
         guard delta != 0 else { return 0 }
         let whole = Int(delta.rounded(.towardZero))

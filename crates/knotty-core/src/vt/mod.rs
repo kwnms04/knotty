@@ -33,7 +33,7 @@ use libghostty_vt_sys as ffi;
 
 use crate::key::{Key, KeyAction, KeyEvent};
 use crate::listener::{ClipboardRefusal, Listener, Representation};
-use crate::mouse::MouseEvent;
+use crate::mouse::{MouseEvent, WheelEvent};
 use crate::queue::ClipboardTarget;
 use crate::session::SelectionRange;
 use crate::{Error, Result};
@@ -73,6 +73,14 @@ const FOCUS_REPORTING: ffi::Mode = 1004;
 /// because what it gets is the arrows it already reads.
 const ALTERNATE_SCROLL: ffi::Mode = 1007;
 
+/// The most lines one turn of the wheel is told to the child as.
+///
+/// A turn becomes one report or one arrow per line, and how many lines it was
+/// crosses the boundary as a plain number — so this is what stands between a
+/// caller whose arithmetic went wrong and an allocation of gigabytes. Far
+/// more lines than the tallest screen anyone flicks across.
+const MAX_WHEEL_LINES: u32 = 1024;
+
 /// What knotty answers a device attributes query with.
 ///
 /// A VT220 with color, which is what the engine implements. DA2's firmware
@@ -99,6 +107,19 @@ const DEVICE_ATTRIBUTES: ffi::DeviceAttributes = ffi::DeviceAttributes {
     },
     tertiary: ffi::DeviceAttributesTertiary { unit_id: 0 },
 };
+
+/// What one turn of the wheel came to.
+///
+/// The three branches come to two answers: something for the child, or a
+/// screen that moved. Told apart here rather than inferred from an empty run
+/// of bytes, since a turn the modes had nothing to say about is empty too.
+pub enum Wheel {
+    /// Bytes for the child — a mouse code, or the cursor keys.
+    Bytes(Vec<u8>),
+    /// The viewport moved into the scrollback, which is a frame to publish
+    /// rather than anything to send.
+    Scrolled,
+}
 
 /// A terminal, its render state, and the iterators a capture walks it with.
 ///
@@ -284,65 +305,91 @@ impl Terminal {
     /// Both deltas are in lines, and up and right are positive. Coalescing
     /// pixels into lines belongs to whoever knows how tall a line is drawn,
     /// which is not this side. cf. `docs/adr/0017-semantic-input-events.md`
-    pub fn wheel(
-        &mut self,
-        delta_x: i32,
-        delta_y: i32,
-        x: u16,
-        y: u16,
-        mods: u16,
-    ) -> Result<Vec<u8>> {
+    pub fn wheel(&mut self, event: &WheelEvent) -> Result<Wheel> {
+        let cell = (event.x, event.y);
         if self.mouse_tracking()? {
             let grid = self.grid()?;
             let mut encoded = Vec::new();
             // One report per line, which is what a wheel is: the protocol has
-            // no count, so three lines are three turns of it.
+            // no count, so three lines are three turns of it. Which is also
+            // what the cap on the count is for.
             for (delta, buttons) in [
-                (delta_y, (ffi::MouseButton::FOUR, ffi::MouseButton::FIVE)),
-                (delta_x, (ffi::MouseButton::SIX, ffi::MouseButton::SEVEN)),
+                (
+                    event.delta_y,
+                    (ffi::MouseButton::FOUR, ffi::MouseButton::FIVE),
+                ),
+                (
+                    event.delta_x,
+                    (ffi::MouseButton::SIX, ffi::MouseButton::SEVEN),
+                ),
             ] {
                 let button = if delta > 0 { buttons.0 } else { buttons.1 };
-                for _ in 0..delta.unsigned_abs() {
-                    encoded.extend(self.mouse.encode_wheel(
-                        self.raw,
-                        button,
-                        mods,
-                        (x, y),
-                        grid,
-                    )?);
+                for _ in 0..lines(delta) {
+                    encoded.extend(
+                        self.mouse
+                            .encode_wheel(self.raw, button, event.mods, cell, grid)?,
+                    );
                 }
             }
-            return Ok(encoded);
+            return Ok(Wheel::Bytes(encoded));
         }
 
-        if delta_y == 0 {
+        if event.delta_y == 0 {
             // Nothing below this reads a sideways turn: the alternate screen
             // has no cursor key for one and the viewport does not move that
             // way.
-            return Ok(Vec::new());
+            return Ok(Wheel::Bytes(Vec::new()));
         }
 
         if self.alternate_screen()? && self.mode(ALTERNATE_SCROLL)? {
             // Encoded rather than written out, so that the arrow is the same
             // arrow the keyboard sends — cursor key application mode included,
             // which is the mode a full-screen program most likely left on.
-            let key = if delta_y > 0 {
+            let key = if event.delta_y > 0 {
                 Key::ArrowUp
             } else {
                 Key::ArrowDown
             };
-            let event = KeyEvent {
+            let pressed = KeyEvent {
                 action: KeyAction::Press,
                 key,
                 ..KeyEvent::default()
             };
-            let one = self.keys.encode(self.raw, &event)?;
-            return Ok(one.repeat(delta_y.unsigned_abs() as usize));
+            let one = self.keys.encode(self.raw, &pressed)?;
+            return Ok(Wheel::Bytes(one.repeat(lines(event.delta_y) as usize)));
         }
 
-        // The viewport counts down where the wheel counts up.
-        self.scroll_viewport(-isize::try_from(delta_y).map_err(|_| Error::OutOfRange)?);
-        Ok(Vec::new())
+        // The viewport counts down where the wheel counts up, and by the
+        // capped count — the engine clamps against the history it has, which
+        // is a different question from how big a number arrived.
+        let delta = isize::try_from(lines(event.delta_y)).map_err(|_| Error::OutOfRange)?;
+        self.scroll(ffi::TerminalScrollViewport {
+            tag: ffi::TerminalScrollViewportTag::DELTA,
+            value: ffi::TerminalScrollViewportValue {
+                delta: if event.delta_y > 0 { -delta } else { delta },
+            },
+        });
+        Ok(Wheel::Scrolled)
+    }
+
+    /// Bring the viewport back to the active area, and say whether it had to
+    /// move.
+    ///
+    /// What typing does in every terminal: a screen left up in the history is
+    /// one the next command would run off the bottom of. The answer is what
+    /// says whether a frame has to be published for it, and asking costs a
+    /// flag rather than a capture.
+    pub fn snap_to_active(&mut self) -> Result<bool> {
+        // SAFETY: the tag's documented output type.
+        let active: bool = unsafe { self.get(ffi::TerminalData::VIEWPORT_ACTIVE) }?;
+        if active {
+            return Ok(false);
+        }
+        self.scroll(ffi::TerminalScrollViewport {
+            tag: ffi::TerminalScrollViewportTag::BOTTOM,
+            value: ffi::TerminalScrollViewportValue::default(),
+        });
+        Ok(true)
     }
 
     /// Encode the window gaining or losing focus, or nothing when the child
@@ -379,15 +426,11 @@ impl Terminal {
         Ok(buffer[..written].to_vec())
     }
 
-    /// Move the viewport by `delta` lines, negative towards the scrollback.
+    /// Move the viewport the way `behavior` says.
     ///
-    /// Clamped by the engine at either end, so scrolling past the top of the
-    /// history or the bottom of the active area does nothing.
-    fn scroll_viewport(&mut self, delta: isize) {
-        let behavior = ffi::TerminalScrollViewport {
-            tag: ffi::TerminalScrollViewportTag::DELTA,
-            value: ffi::TerminalScrollViewportValue { delta },
-        };
+    /// Clamped by the engine at either end, so asking to go past the top of
+    /// the history or the bottom of the active area does nothing.
+    fn scroll(&mut self, behavior: ffi::TerminalScrollViewport) {
         // SAFETY: the terminal is ours, and the tagged union is filled in for
         // the tag it carries.
         unsafe { ffi::ghostty_terminal_scroll_viewport(self.raw, behavior) };
@@ -563,6 +606,11 @@ impl Drop for Terminal {
             drop(Box::from_raw(self.listener));
         }
     }
+}
+
+/// How many lines a delta is worth, capped at [`MAX_WHEEL_LINES`].
+fn lines(delta: i32) -> u32 {
+    delta.unsigned_abs().min(MAX_WHEEL_LINES)
 }
 
 /// Turn a checked result code into knotty's.

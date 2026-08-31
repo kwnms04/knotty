@@ -9,7 +9,7 @@ use std::ptr;
 mod entry;
 
 use knotty_core::{
-    ChildState, Error, Event, KeyEvent, MouseEvent, PtySession, Session, Snapshot, Wake,
+    ChildState, Error, Event, KeyEvent, MouseEvent, PtySession, Session, Snapshot, Wake, WheelEvent,
 };
 
 /// The snapshot's POD types. A C consumer gets these from the header; this
@@ -373,10 +373,10 @@ impl Driver {
     }
 
     /// Turn the wheel, which the terminal makes one of three things of.
-    fn wheel(&mut self, delta_x: i32, delta_y: i32, x: u16, y: u16, mods: u16) -> KtStatus {
+    fn wheel(&mut self, event: WheelEvent) -> KtStatus {
         match self {
-            Self::Detached(session) => status(session.wheel(delta_x, delta_y, x, y, mods)),
-            Self::Pty(session) => status(session.wheel(delta_x, delta_y, x, y, mods)),
+            Self::Detached(session) => status(session.wheel(&event)),
+            Self::Pty(session) => status(session.wheel(event)),
         }
     }
 
@@ -746,6 +746,11 @@ pub unsafe extern "C" fn kt_session_write(
 /// caller is heard about where it happens rather than found later in a key
 /// that quietly does nothing.
 ///
+/// A key also brings the viewport back to the active area, the way every
+/// terminal does: a screen scrolled back into the history is one the next
+/// command would run off the bottom of, and output arriving does not bring it
+/// down — that is what having scrolled back is for.
+///
 /// A detached session encodes on the calling thread, so it answers
 /// `KT_STATUS_WRITE_QUEUE_FULL` when the bytes did not fit, as
 /// [`kt_session_write`] does. A session with a PTY behind it encodes on its
@@ -871,7 +876,14 @@ pub unsafe extern "C" fn kt_session_wheel(
     entry::answer(|| {
         let session = unsafe { entry::at_mut(session) }?;
 
-        Ok(session.drive(|driver| driver.wheel(delta_x, delta_y, x, y, mods)))
+        let event = WheelEvent {
+            delta_x,
+            delta_y,
+            mods,
+            x,
+            y,
+        };
+        Ok(session.drive(|driver| driver.wheel(event)))
     })
 }
 

@@ -9,3 +9,7 @@ wheel 0 2 0 0
 # and the wake count is what says that a turn which moved nothing published
 # nothing.
 wheel 0 5 0 0
+# And typing brings it back. Nothing else would: output arriving leaves the
+# viewport where it was, which is the whole point of having scrolled back, so
+# without this the next command would run off the bottom of the screen.
+key A "A"

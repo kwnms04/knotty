@@ -442,13 +442,7 @@ pub(crate) fn run(
                 Request::Select(range) => session.set_selection(range),
                 Request::Key(event) => session.key(&event),
                 Request::Mouse(event) => session.mouse(&event),
-                Request::Wheel {
-                    delta_x,
-                    delta_y,
-                    x,
-                    y,
-                    mods,
-                } => session.wheel(delta_x, delta_y, x, y, mods),
+                Request::Wheel(event) => session.wheel(&event),
                 Request::Focus { gained } => session.focus(gained),
                 // The engine first: what the child draws when it hears of the
                 // new size arrives back here, and it has to meet a grid that

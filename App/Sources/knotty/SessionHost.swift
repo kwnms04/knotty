@@ -16,13 +16,6 @@ import KnottySession
 /// holds what reads it, and the view never sees a snapshot at all.
 @MainActor
 final class SessionHost {
-    /// One cell of the grid, which is what the pointer's position crosses the
-    /// boundary as.
-    struct Cell {
-        let column: UInt16
-        let row: UInt16
-    }
-
     private let session: Session
     private var renderer: Renderer
     /// What one cell measures, on the display the window is on now.
@@ -144,7 +137,12 @@ final class SessionHost {
     /// Whether the child hears about it is the core's answer and not this
     /// one's: at a shell prompt nothing has asked, and the event stops here
     /// without anybody above having to know that. cf. adr/0017.
-    func send(_ action: MouseAction, button: MouseButton, mods: Modifiers, at cell: Cell) {
+    func send(
+        _ action: MouseAction,
+        button: MouseButton?,
+        mods: Modifiers,
+        at cell: (column: UInt16, row: UInt16)
+    ) {
         do {
             try session.mouse(action, button: button, mods: mods, x: cell.column, y: cell.row)
         } catch {
@@ -158,7 +156,9 @@ final class SessionHost {
     /// a mouse code, the cursor keys, or the viewport moving. The last is why
     /// nothing here keeps a scroll position: the core moves the viewport and
     /// publishes, and the next frame is already scrolled.
-    func wheel(deltaX: Int, deltaY: Int, mods: Modifiers, at cell: Cell) {
+    func wheel(
+        deltaX: Int, deltaY: Int, mods: Modifiers, at cell: (column: UInt16, row: UInt16)
+    ) {
         do {
             try session.wheel(
                 deltaX: Int32(clamping: deltaX), deltaY: Int32(clamping: deltaY),

@@ -11,10 +11,10 @@ use crate::io::{self, Pty, Waker};
 use crate::key::KeyEvent;
 use crate::listener::Listener;
 use crate::mailbox::Mailbox;
-use crate::mouse::MouseEvent;
+use crate::mouse::{MouseEvent, WheelEvent};
 use crate::queue::{Event, EventQueue};
 use crate::snapshot::{ScreenState, Snapshot};
-use crate::vt::Terminal;
+use crate::vt::{Terminal, Wheel};
 use crate::wake::{Debt, Wake};
 use crate::writer::WriteQueue;
 use crate::{Error, Result};
@@ -196,7 +196,15 @@ impl Session {
     /// [`write`]: Session::write
     pub fn key(&mut self, event: &KeyEvent) -> Result<()> {
         let encoded = self.terminal.encode_key(event)?;
-        self.write(&encoded)
+        self.write(&encoded)?;
+        // Typing brings the screen back to where the typing will appear. A
+        // viewport left up in the scrollback is one the next command runs off
+        // the bottom of, and nothing else would bring it down — output does
+        // not, which is the whole point of having scrolled back.
+        if self.terminal.snap_to_active()? {
+            return self.publish(false);
+        }
+        Ok(())
     }
 
     /// Encode a mouse event and queue what it comes to for the child.
@@ -216,11 +224,10 @@ impl Session {
         self.write(&encoded)
     }
 
-    /// Turn the wheel `delta_y` lines over the cell at `x`, `y`.
+    /// Turn the wheel over the cell the event names.
     ///
     /// One of three things, and which one is the terminal's to say: a mouse
-    /// code, a run of cursor keys, or the viewport moving. Both deltas are in
-    /// lines and up and right are positive.
+    /// code, a run of cursor keys, or the viewport moving.
     ///
     /// Publishes when the viewport moved, which is the branch that changes
     /// the screen without the child having said anything.
@@ -230,14 +237,13 @@ impl Session {
     /// [`Error::WriteQueueFull`] when the bytes did not fit, as [`write`].
     ///
     /// [`write`]: Session::write
-    pub fn wheel(&mut self, delta_x: i32, delta_y: i32, x: u16, y: u16, mods: u16) -> Result<()> {
-        let encoded = self.terminal.wheel(delta_x, delta_y, x, y, mods)?;
-        // Nothing to say to the child is the scrollback branch, which moved
-        // the viewport rather than the child. The publish is what draws it.
-        if encoded.is_empty() {
-            return self.publish(false);
+    pub fn wheel(&mut self, event: &WheelEvent) -> Result<()> {
+        match self.terminal.wheel(event)? {
+            Wheel::Bytes(encoded) => self.write(&encoded),
+            // The viewport moved rather than the child hearing anything, so
+            // the publish is the whole of what came of it.
+            Wheel::Scrolled => self.publish(false),
         }
-        self.write(&encoded)
     }
 
     /// Tell the child the window gained or lost focus, if it asked to hear.
@@ -525,13 +531,7 @@ pub(crate) enum Request {
     Mouse(MouseEvent),
     /// Turn the wheel, which is a mouse code, a run of cursor keys or the
     /// viewport moving depending on what the terminal holds.
-    Wheel {
-        delta_x: i32,
-        delta_y: i32,
-        x: u16,
-        y: u16,
-        mods: u16,
-    },
+    Wheel(WheelEvent),
     /// Tell the child the window gained or lost focus, if it asked to hear.
     Focus { gained: bool },
     /// Resize the grid, with how big one cell now is in pixels.
@@ -772,19 +772,13 @@ impl PtySession {
         self.request(Request::Mouse(event))
     }
 
-    /// Turn the wheel `delta_y` lines over the cell at `x`, `y`.
+    /// Turn the wheel over the cell the event names.
     ///
     /// Up and right are positive, and both deltas are in lines: what the
     /// wheel or the trackpad reported in pixels is the app's to divide by the
     /// height it draws a line at.
-    pub fn wheel(&self, delta_x: i32, delta_y: i32, x: u16, y: u16, mods: u16) -> Result<()> {
-        self.request(Request::Wheel {
-            delta_x,
-            delta_y,
-            x,
-            y,
-            mods,
-        })
+    pub fn wheel(&self, event: WheelEvent) -> Result<()> {
+        self.request(Request::Wheel(event))
     }
 
     /// Tell the child the window gained or lost focus, if it asked to hear.

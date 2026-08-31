@@ -352,16 +352,12 @@ final class TerminalView: NSView {
     /// grid counts cells from the top left. Clamped at nothing, since the
     /// boundary counts cells unsigned; the far edges the core clamps to the
     /// grid itself.
-    private func cell(of event: NSEvent) -> SessionHost.Cell {
-        guard cellSize.width > 0, cellSize.height > 0 else {
-            return SessionHost.Cell(column: 0, row: 0)
-        }
+    private func cell(of event: NSEvent) -> (column: UInt16, row: UInt16) {
+        guard cellSize.width > 0, cellSize.height > 0 else { return (column: 0, row: 0) }
         let point = convert(event.locationInWindow, from: nil)
-        return SessionHost.Cell(
+        return (
             column: UInt16(clamping: Int((point.x / cellSize.width).rounded(.down))),
-            row: UInt16(
-                clamping: Int(((bounds.height - point.y) / cellSize.height).rounded(.down))
-            )
+            row: UInt16(clamping: Int(((bounds.height - point.y) / cellSize.height).rounded(.down)))
         )
     }
 

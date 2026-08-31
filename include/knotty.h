@@ -1242,6 +1242,11 @@ KtStatus kt_session_write(KtSession *session, const uint8_t *bytes, size_t len);
  * caller is heard about where it happens rather than found later in a key
  * that quietly does nothing.
  *
+ * A key also brings the viewport back to the active area, the way every
+ * terminal does: a screen scrolled back into the history is one the next
+ * command would run off the bottom of, and output arriving does not bring it
+ * down — that is what having scrolled back is for.
+ *
  * A detached session encodes on the calling thread, so it answers
  * `KT_STATUS_WRITE_QUEUE_FULL` when the bytes did not fit, as
  * [`kt_session_write`] does. A session with a PTY behind it encodes on its

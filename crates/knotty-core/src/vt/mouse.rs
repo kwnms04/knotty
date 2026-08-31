@@ -18,22 +18,26 @@ use super::check;
 /// The engine's mouse encoder and the event handle it reads one out of.
 ///
 /// Kept rather than made per event for the reason the key encoder's are: the
-/// encoder is where the options an event is read against live, and it also
-/// holds the last cell a motion was reported over, which is what keeps a
-/// pointer crossing one cell from reporting a hundred times.
+/// encoder is where the options an event is read against live.
 pub(super) struct Mouse {
     encoder: ffi::MouseEncoder,
     event: ffi::MouseEvent,
     /// Whether the encoder's options are behind the terminal's.
     ///
-    /// Applying them is not free of consequence: every one of the setters
-    /// forgets the last cell a motion was reported over, which is the state
-    /// that keeps a drag across one cell from reporting a hundred times. So
-    /// they are applied when something that could have moved them has
-    /// happened rather than per event — which is a feed, since the modes are
-    /// what a feed sets, and a resize, since the grid is what a position is
-    /// read against.
+    /// Applied when something that could have moved them has happened rather
+    /// than per event: a feed, since the modes are what a feed sets, and a
+    /// resize, since the grid is what a position is read against.
     stale: bool,
+    /// The cell the last reported event was over, or `None` where the
+    /// options have moved since.
+    ///
+    /// A drag arrives in pixels and is reported in cells, so without this a
+    /// pointer wandering inside one cell reports a hundred times. The engine
+    /// has the same state and it cannot be used through this API: every one
+    /// of its option setters clears it, and the modes have to be re-read on
+    /// every feed — so a child that redraws in answer to a drag would reset
+    /// the deduplication with each frame it drew. cf. `docs/adr/0012`
+    last_cell: Option<(u16, u16)>,
 }
 
 impl Mouse {
@@ -42,24 +46,24 @@ impl Mouse {
             encoder: ptr::null_mut(),
             event: ptr::null_mut(),
             stale: true,
+            last_cell: None,
         };
         // SAFETY: a null allocator asks for the engine's own, and each out
         // parameter is handle-sized. Built into a value that already owns its
         // own `Drop`, so a failure on the second releases the first.
         check(unsafe { ffi::ghostty_mouse_encoder_new(ptr::null(), &raw mut mouse.encoder) })?;
         check(unsafe { ffi::ghostty_mouse_event_new(ptr::null(), &raw mut mouse.event) })?;
-
-        // Motion deduplication by cell, which is what the encoder holds state
-        // for. A trackpad reports a drag in pixels and a terminal is told
-        // about it in cells, so without this every pixel of one cell is a
-        // report.
-        mouse.setopt(ffi::MouseEncoderOption::TRACK_LAST_CELL, &true);
         Ok(mouse)
     }
 
     /// Say that something happened which the encoder's options may be behind.
+    ///
+    /// The cell a motion was last reported over goes with them, which is the
+    /// engine's own rule: a mode, a format or a grid that moved is one the
+    /// next event has to be reported against whatever it is over.
     pub(super) fn invalidate(&mut self) {
         self.stale = true;
+        self.last_cell = None;
     }
 
     /// Encode `event` as the modes `terminal` holds right now have it.
@@ -151,6 +155,19 @@ impl Mouse {
             self.setopt(ffi::MouseEncoderOption::SIZE, &size);
             self.stale = false;
         }
+        // A motion over the cell the last report was already about says
+        // nothing new, and there are as many of those as the pointer has
+        // pixels to cross.
+        //
+        // ponytail: SGR-Pixels is the one format this is wrong for, since
+        // that one reports the position itself and every pixel of it is news.
+        // The cell is all that crosses the boundary today, so there is
+        // nothing finer here to tell them apart with — the same trade the
+        // size below names.
+        if action == ffi::MouseAction::MOTION && self.last_cell == Some(cell) {
+            return Ok(Vec::new());
+        }
+
         // What the option is for is a motion that left the viewport: it is
         // reported only while something is held, which is how a drag out of
         // the window stays a drag. A press is one of those, which is what the
@@ -175,7 +192,14 @@ impl Mouse {
                 },
             );
         }
-        self.encoded()
+        let encoded = self.encoded()?;
+        // Only what was reported: an event the modes swallowed leaves the
+        // last cell where it was, so the first one they do not is reported
+        // wherever it falls.
+        if !encoded.is_empty() {
+            self.last_cell = Some(cell);
+        }
+        Ok(encoded)
     }
 
     /// Ask how much room the sequence needs, then take it.
