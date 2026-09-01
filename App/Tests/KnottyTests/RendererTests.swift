@@ -231,6 +231,29 @@ private func frame(cursorStyle: Int) throws -> Frame {
     #expect((bar.x, bar.y, bar.width, bar.height) == (0, 0, 2, 34))
 }
 
+/// A wide character was given two columns, and the cursor standing on it is
+/// one cursor over both. A bar marks the edge that character starts at and is
+/// the same bar either way. cf. 04-renderer R1.
+@Test func aCursorOnAWideCharacterCoversBothOfItsColumns() throws {
+    func cursor(style: Int) throws -> BackgroundInstance {
+        let session = try Session(cols: cols, rows: rows, scrollback: scrollback)
+        try session.feed(Array("\u{d55c}\u{1b}[\(style) q\u{1b}[H".utf8))
+        let frame = try #require(
+            try session.withSnapshot { Renderer(metrics: metrics, faces: pinned()).frame(for: $0) }
+        )
+        return try #require(frame.backgrounds.last)
+    }
+
+    let block = try cursor(style: 2)
+    #expect((block.x, block.y, block.width, block.height) == (0, 0, 32, 34))
+
+    let underline = try cursor(style: 4)
+    #expect((underline.x, underline.y, underline.width, underline.height) == (0, 32, 32, 2))
+
+    let bar = try cursor(style: 6)
+    #expect((bar.x, bar.y, bar.width, bar.height) == (0, 0, 2, 34))
+}
+
 /// A block covers the letter under it, so that letter is drawn in the colour
 /// the cell would have been. A bar and an underline stand clear of it and
 /// leave it alone. cf. 04-renderer R1.

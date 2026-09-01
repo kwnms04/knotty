@@ -244,9 +244,13 @@ public final class Renderer {
         // rectangle's size saying it, and not a second reading of the shape.
         // cf. 04-renderer R1.
         let cursorCell = cursorIndex(in: snapshot)
+        // A wide character is one character however many columns it was given,
+        // so the cursor standing on it is one cursor and covers them both.
+        let cursorCells = cursorCell.map { Int32(snapshot.cells[$0].isWide ? 2 : 1) } ?? 1
         let cursorRectangle = cursorCell.map { cell in
             self.cursorRectangle(
                 for: snapshot.cursor,
+                cells: cursorCells,
                 // Selected like any other cell: a block cursor takes the
                 // colour of the text under it, and under a highlight that
                 // text is drawn the other way round.
@@ -259,7 +263,8 @@ public final class Renderer {
             )
         }
         let hidden = cursorRectangle.flatMap { rectangle in
-            rectangle.width == metrics.width && rectangle.height == metrics.height
+            rectangle.width == metrics.width * cursorCells
+                && rectangle.height == metrics.height
                 ? cursorCell : nil
         }
 
@@ -521,9 +526,16 @@ public final class Renderer {
     /// The one rectangle that is the cursor. The shapes differ in its size
     /// and in nothing else — an unfocused block has no outline that one
     /// rectangle can draw, and focus is M3's, so it draws as the block it is.
-    private func cursorRectangle(for cursor: Cursor, color: Rgb) -> BackgroundInstance {
+    ///
+    /// ``cells`` is how many columns the character under it was given. A bar
+    /// marks the edge that character starts at and is the same bar either way;
+    /// the other two span it.
+    private func cursorRectangle(
+        for cursor: Cursor, cells: Int32, color: Rgb
+    ) -> BackgroundInstance {
         let x = Int32(cursor.x) * metrics.width
         let y = Int32(cursor.y) * metrics.height
+        let width = metrics.width * cells
 
         switch cursor.drawnShape {
         case .bar:
@@ -533,11 +545,11 @@ public final class Renderer {
         case .underline:
             return BackgroundInstance(
                 x: x, y: y + metrics.height - cursorStroke,
-                width: metrics.width, height: cursorStroke, color: color
+                width: width, height: cursorStroke, color: color
             )
         case .block, .blockHollow, .unknown:
             return BackgroundInstance(
-                x: x, y: y, width: metrics.width, height: metrics.height, color: color
+                x: x, y: y, width: width, height: metrics.height, color: color
             )
         }
     }
