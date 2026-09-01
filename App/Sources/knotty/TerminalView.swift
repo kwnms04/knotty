@@ -36,6 +36,9 @@ final class TerminalView: NSView {
     /// the terminal, and a half-made syllable in the grid could not be taken
     /// back. cf. 05-swift-app 7.
     private var marked: NSAttributedString?
+    /// Where the composition was last put, so that the input method is told
+    /// about a move and not about every frame that did not make one.
+    private var placed: NSPoint?
     /// What an input method committed during the `keyDown` being handled.
     private var committedText: String?
     /// Whether a `keyDown` is the reason an input method is calling back.
@@ -873,13 +876,30 @@ final class TerminalView: NSView {
         }
         preedit.setFrameOrigin(cell.origin)
         preedit.isHidden = false
+
+        // The candidate window is the input method's own and it holds on to
+        // what ``firstRect(forCharacterRange:actualRange:)`` answered with.
+        // `invalidateCharacterCoordinates` alone marks that answer stale
+        // without asking for another: measured, after output scrolled the
+        // cursor the method did not call back for five seconds, until a key
+        // gave it a reason of its own. The pair around it is what the header
+        // names for this exact case — scrolling and resizing while the
+        // content stays on screen — and only that pair moves the window.
+        //
+        // Told on a move and not on every frame, because output arriving is
+        // frames arriving and each of these crosses to the input method.
+        guard cell.origin != placed else { return }
+        placed = cell.origin
+        inputContext?.textInputClientWillStartScrollingOrZooming()
         inputContext?.invalidateCharacterCoordinates()
+        inputContext?.textInputClientDidEndScrollingOrZooming()
     }
 
     /// Take the composition down. What was never committed was never in the
     /// terminal, so there is nothing to undo — only an overlay to stop showing.
     private func unmark() {
         marked = nil
+        placed = nil
         preedit.isHidden = true
     }
 
