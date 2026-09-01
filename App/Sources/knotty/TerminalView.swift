@@ -1,4 +1,5 @@
 import AppKit
+import Carbon.HIToolbox
 import Metal
 import QuartzCore
 import os
@@ -648,10 +649,32 @@ final class TerminalView: NSView {
     /// a composition was open across it does.
     override func keyDown(with event: NSEvent) {
         let wasComposing = marked != nil
+        let composedBefore = marked?.string
         committedText = nil
         handlingKeyDown = true
         interpretKeyEvents([event])
         handlingKeyDown = false
+
+        // Escape over a composition is the user throwing that composition
+        // away, so whatever the method made of the key is dropped rather than
+        // written — the Hangul method answers with a commit, and the half-made
+        // syllable it hands over is the one thing Escape must never put in the
+        // child.
+        //
+        // Whether the key then goes down is the method's own stages saying so.
+        // Hangul ends the composition on the first press, and the key goes on
+        // to leave vim's insert mode with it. A Japanese conversion walks back
+        // to its reading and stays open, which is the method using the key,
+        // and the press that ends that composition is the one that carries it
+        // down. A composition that did not change is a method that did nothing
+        // with the key, and leaving it nowhere would leave no way out at all.
+        if wasComposing, event.keyCode == UInt16(kVK_Escape) {
+            committedText = nil
+            guard marked == nil || marked?.string == composedBefore else { return }
+            endComposition()
+            host?.send(Self.key(of: event, composing: false))
+            return
+        }
 
         // A composition the key was open across owns it. What the method
         // finished making goes down as the text it already is — it stands at
@@ -719,9 +742,10 @@ final class TerminalView: NSView {
     /// An input method that commits on a cursor key does nothing further with
     /// it, so the movement is the terminal's to make — and only then, since a
     /// cursor key the method spent stepping through its own candidates commits
-    /// nothing. Everything else that ends a composition — Enter, Escape — is
-    /// spent on ending it, and a second press is what carries it down. Where
-    /// exactly this line falls is what the manual pass over DoD C is for.
+    /// nothing. Enter is spent on ending the composition, and a second press
+    /// is what runs the command. Escape is read off the composition instead,
+    /// in ``keyDown(with:)``, because what ends one differs by method. Where
+    /// this line falls was settled by the manual pass over DoD C.
     private static func movesTheCursor(_ event: NSEvent) -> Bool {
         switch event.specialKey {
         case .upArrow, .downArrow, .leftArrow, .rightArrow: true
