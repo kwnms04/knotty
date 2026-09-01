@@ -754,11 +754,28 @@ final class TerminalView: NSView {
     }
 
     /// What an input method reaches the responder chain with for anything it
-    /// did not turn into text — a cursor key, a deletion. Nothing here acts on
-    /// one: the key itself is still on its way to the terminal, which is where
-    /// every one of these commands belongs. Swallowing it is what keeps AppKit
-    /// from beeping at a command no responder up the chain implements.
-    nonisolated override func doCommand(by selector: Selector) {}
+    /// did not turn into text — a cursor key, a deletion. The key itself is
+    /// still on its way to the terminal, which is where all but one of these
+    /// commands belongs, and swallowing them is what keeps AppKit from beeping
+    /// at a command no responder up the chain implements.
+    ///
+    /// The one that is acted on is `deleteBackward:`. The Hangul method ends a
+    /// composition on backspace by committing what is left of it and then
+    /// asking for that to be deleted — the pair is how it says the composition
+    /// came to nothing, and a text view nets them out. What it committed has
+    /// not left for the child yet, so the deletion is taken out of it here and
+    /// neither half is ever written. Without this the last jamo lands in the
+    /// child and nothing takes it back.
+    nonisolated override func doCommand(by selector: Selector) {
+        guard selector == #selector(NSStandardKeyBindingResponding.deleteBackward(_:)) else {
+            return
+        }
+        MainActor.assumeIsolated {
+            guard handlingKeyDown, let text = committedText, !text.isEmpty else { return }
+            let left = String(text.dropLast())
+            committedText = left.isEmpty ? nil : left
+        }
+    }
 
     /// Focus leaving takes an unfinished composition with it.
     ///
