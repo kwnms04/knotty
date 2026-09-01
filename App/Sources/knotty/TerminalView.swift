@@ -817,12 +817,42 @@ final class TerminalView: NSView {
     /// Show the composition, in the one face the grid is drawn in.
     private func show(_ text: NSAttributedString) {
         let shown = NSMutableAttributedString(attributedString: text)
+        let whole = NSRange(location: 0, length: shown.length)
         shown.addAttributes(
-            [.font: preeditFont, .foregroundColor: NSColor.white],
-            range: NSRange(location: 0, length: shown.length)
+            [.font: preeditFont, .foregroundColor: NSColor.white], range: whole
         )
         preedit.attributedStringValue = shown
         preedit.sizeToFit()
+        guard cellSize.width > 0, cellSize.height > 0 else {
+            placeComposition()
+            return
+        }
+        let natural = preedit.frame.size
+
+        // The composition stands in for what will land in the grid, so its box
+        // covers whole cells the way the grid does. It is drawn in the grid's
+        // font at the grid's size, but a Hangul syllable comes from a fallback
+        // face whose advance is not the two columns the grid gives it — so the
+        // box is rounded out to the cells it reaches, and the cursor underneath
+        // is covered rather than left showing around it.
+        //
+        // The text hugs the top of whatever box it is given, so growing one to
+        // the cell would carry the glyph up off the row it belongs to. Pushing
+        // it back down by what the box grew leaves it on the baseline the rest
+        // of the line is drawn on.
+        //
+        // ponytail: the width rounds up, so a face whose advance overshoots a
+        // column takes one cell too many. What would settle it is the engine
+        // saying how many columns a string is given, which is not on the
+        // boundary.
+        shown.addAttribute(.baselineOffset, value: natural.height - cellSize.height, range: whole)
+        preedit.attributedStringValue = shown
+        preedit.setFrameSize(
+            NSSize(
+                width: (natural.width / cellSize.width).rounded(.up) * cellSize.width,
+                height: cellSize.height
+            )
+        )
         placeComposition()
     }
 
