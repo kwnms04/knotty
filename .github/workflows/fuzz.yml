@@ -25,7 +25,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Zig
         run: |
@@ -49,7 +49,7 @@ jobs:
       # What one run learned is where the next one starts. The key carries the
       # run id so it never hits: every run restores the newest prefix match and
       # saves the corpus it grew under a key of its own.
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: fuzz/corpus/feed
           key: fuzz-corpus-feed-${{ github.run_id }}
@@ -91,7 +91,7 @@ jobs:
       # expires — so a run that grew the corpus and passed would leave nothing
       # behind. `always()` because a run that crashed still learned on its way
       # there. Bringing it home is by hand; AGENTS.md has the three commands.
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: fuzz-corpus
@@ -100,7 +100,7 @@ jobs:
       # The input that crashed. It reproduces with
       # `cargo +nightly fuzz run feed <file>`, and belongs in
       # `fuzz/corpus/feed/` once the crash is fixed.
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: failure()
         with:
           name: fuzz-artifacts
