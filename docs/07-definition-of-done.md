@@ -12,8 +12,8 @@
 - [ ] **리거처** — 셰이핑 경로는 [R3](04-renderer.md#r3--shaping-unit)와 [0016](adr/0016-derive-the-ligature-path.md)에서 확정
 - [ ] URL: ⌘ 지연 스캔 자동 감지, wrapped 줄 이어붙이기
 - [ ] 붙여넣기 검사·경고·정화, 제목·아이콘 라벨 질의 빈 응답
-- [ ] 창 복원(작업 디렉터리), 종료 경고, ⌘K, Option-as-Meta(좌/우)
-- [ ] TOML 설정 + 라이브 리로드. 파싱 에러 시 진단 표시, 기존 설정 유지
+- [ ] 창 여럿(⌘N·⌘W), 창 복원(프레임·작업 디렉터리), 종료 경고, ⌘K, Option-as-Meta(좌/우)
+- [ ] TOML 설정 + 라이브 리로드 — 폰트·테마·Option-as-Meta·벨. 파싱 에러 시 진단 표시, 기존 설정 유지
 - [ ] tmux 수준 1 표의 전 항목 ([06-integration](06-integration.md))
 
 ## B. Performance gates

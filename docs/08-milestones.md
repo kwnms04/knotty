@@ -58,8 +58,9 @@ Swift 없이 knotty-core와 하네스만 만듭니다.
 
 ## M4 — Daily driver items
 
-- 이벤트 소비 정책(벨·클립보드·종료), 창 복원, 설정 파이프라인
-- ⌘ URL 스캔, 종료 경고, 아틀라스·재드로우 리셋 경로
+- **설정 파이프라인이 뿌리입니다** — 폰트·테마·Option-as-Meta·벨. 나머지 정책은 상수입니다
+- 이벤트 소비 정책(벨·클립보드·종료), **창 여럿(⌘N·⌘W)**, 창 복원
+- ⌘ URL 스캔, 종료 경고, ⌘K, 밑줄 데코레이션, 아틀라스·재드로우 리셋 경로
 - tmux 수준 1 표 전 항목 마감
 - **종료 기준**: [06-integration](06-integration.md) 표 전항 + [DoD A절](07-definition-of-done.md#a-features) 완료
 
