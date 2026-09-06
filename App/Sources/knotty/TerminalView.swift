@@ -98,6 +98,10 @@ final class TerminalView: NSView {
     /// nothing left to hang it on but a clock of the app's own. cf. 02-ffi.
     private var autoscrolling: Timer?
 
+    /// Whether the gesture under way is a ⌘ click that opened a link, and so
+    /// one the terminal hears nothing about at either end.
+    private var linkClick = false
+
     /// The face the grid is measured from: the two things about it that a
     /// display of another scale does not change. Everything else is measured
     /// from them again when one does.
@@ -335,13 +339,23 @@ final class TerminalView: NSView {
                 center.addObserver(
                     forName: NSWindow.didBecomeKeyNotification, object: window, queue: .main
                 ) { [weak self] _ in
-                    MainActor.assumeIsolated { self?.host?.focus(gained: true) }
+                    MainActor.assumeIsolated {
+                        // Asked rather than waited for, because a ⌘ that was
+                        // held across the switch changed nothing on the way
+                        // in and so sends no event to read it off.
+                        self?.showLinks(NSEvent.modifierFlags.contains(.command))
+                        self?.host?.focus(gained: true)
+                    }
                 },
                 center.addObserver(
                     forName: NSWindow.didResignKeyNotification, object: window, queue: .main
                 ) { [weak self] _ in
                     MainActor.assumeIsolated {
                         self?.endComposition()
+                        // A ⌘ released over another window never arrives
+                        // here, so the underlines would stay drawn under a
+                        // modifier nobody is holding any more.
+                        self?.showLinks(false)
                         self?.host?.focus(gained: false)
                     }
                 },
@@ -359,11 +373,25 @@ final class TerminalView: NSView {
     override var acceptsFirstResponder: Bool { true }
 
     override func mouseDown(with event: NSEvent) {
+        // Ahead of the report, and that is what makes ⌘ beat mouse reporting:
+        // a link opens from inside a program that asked for the mouse,
+        // because the click never reaches the question of whether that
+        // program wanted this one. A ⌘ click over nothing is an ordinary
+        // click and goes on down. cf. adr/0017.
+        linkClick = event.modifierFlags.contains(.command) && open(at: cell(of: event))
+        guard !linkClick else { return }
         report(event, .press)
         beginSelecting(event)
     }
 
     override func mouseUp(with event: NSEvent) {
+        // A press that was swallowed has its release swallowed with it. A
+        // child told a button went down and never told it came up is a child
+        // that thinks it is still being held.
+        guard !linkClick else {
+            linkClick = false
+            return
+        }
         report(event, .release)
         anchor = nil
         dragged = nil
@@ -371,8 +399,44 @@ final class TerminalView: NSView {
     }
 
     override func mouseDragged(with event: NSEvent) {
+        guard !linkClick else { return }
         report(event, .motion)
         keepSelecting(event)
+    }
+
+    /// ⌘ going down and coming back up, which is the whole of what shows the
+    /// links.
+    ///
+    /// A modifier and not a key: nothing is typed by it, and what it changes
+    /// is what the same screen is drawn as.
+    override func flagsChanged(with event: NSEvent) {
+        super.flagsChanged(with: event)
+        showLinks(event.modifierFlags.contains(.command))
+    }
+
+    /// Show the screen's links, or stop showing them, and put the frame that
+    /// changed on the screen.
+    ///
+    /// Drawn from here rather than through the display link, because there is
+    /// no wake behind it: the terminal publishes when it moves, and this is
+    /// the app drawing a screen that did not. cf. 05-swift-app 6.
+    private func showLinks(_ shown: Bool) {
+        guard let host, host.linksShown != shown else { return }
+        host.linksShown = shown
+        guard let frame = host.redrawnFrame() else { return }
+        draw(frame)
+    }
+
+    /// Open what a ⌘ click landed on in the browser, and answer whether it
+    /// landed on a link at all.
+    ///
+    /// What opens is what was underlined — the scan the frame on the screen
+    /// was drawn from, so nothing opens that the user was not shown first.
+    /// cf. 05-swift-app 4.
+    private func open(at cell: (column: UInt16, row: UInt16)) -> Bool {
+        guard let url = host?.url(at: cell) else { return false }
+        NSWorkspace.shared.open(url)
+        return true
     }
 
     override func rightMouseDown(with event: NSEvent) { report(event, .press) }

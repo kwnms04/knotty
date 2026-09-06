@@ -121,6 +121,13 @@ extension Row {
     public var isSelected: Bool {
         flags & UInt8(KT_ROW_FLAG_SELECTED.rawValue) != 0
     }
+
+    /// The row runs on into the next one: it ended because it ran out of
+    /// columns and not at a newline. What joins a URL that crossed the two
+    /// back into the one address it is. cf. ``Link/scan(_:)``
+    public var isWrapped: Bool {
+        flags & UInt8(KT_ROW_FLAG_WRAPPED.rawValue) != 0
+    }
 }
 
 /// Whether a session has a child and what has become of it.

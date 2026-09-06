@@ -132,9 +132,13 @@ public struct Frame {
     /// One buffer and so one draw call, which is what keeps a decoration from
     /// costing a pass of its own.
     public let backgrounds: [BackgroundInstance]
-    /// The underlined cells' lines — the rectangles of ``backgrounds``
-    /// between the cells and the cursor, named for the same reason the cursor
-    /// is: a reader of a frame does not have to know where they sit in it.
+    /// The underlines — the rectangles of ``backgrounds`` between the cells
+    /// and the cursor, named for the same reason the cursor is: a reader of a
+    /// frame does not have to know where they sit in it.
+    ///
+    /// The underlined cells' own lines, and after them the links' while ⌘ is
+    /// held. One list, because a line under a cell is the same rectangle
+    /// whichever of the two asked for it. cf. 04-renderer R1.
     public let underlines: [BackgroundInstance]
     /// The cursor's rectangle — the last of ``backgrounds``, named, so that
     /// a reader of a frame does not have to know it is last. Nil when there
@@ -231,10 +235,18 @@ public final class Renderer {
     /// `cursorColor` is what the theme asked for; without one the cursor
     /// takes the colour of the text it stands on. cf. 04-renderer R1.
     ///
+    /// `links` are the URLs to draw a line under, which is none unless ⌘ is
+    /// being held. Handed in rather than found here: where a URL is on the
+    /// screen is a policy the app owns, and a renderer that scanned for one
+    /// would be answering something other than what it was given.
+    /// cf. 01-architecture, ``Link/scan(_:)``
+    ///
     /// The whole grid comes out every time — there is no partial present, and
     /// what a row that did not change saves is the shaping rather than the
     /// draw. cf. 04-renderer R2.
-    public func frame(for snapshot: Snapshot, cursorColor: Rgb? = nil) -> Frame {
+    public func frame(
+        for snapshot: Snapshot, cursorColor: Rgb? = nil, links: [Link] = []
+    ) -> Frame {
         let cols = Int(snapshot.cols)
         let rows = Int(snapshot.rows)
 
@@ -322,6 +334,30 @@ public final class Renderer {
                     )
                 )
             }
+        }
+
+        // A link's line is one rectangle across the cells it covers, and it
+        // goes in the list the cells' own lines are in — a decoration is a
+        // rectangle whoever asked for it, which is what keeps this from
+        // costing a draw call of its own. cf. 04-renderer R1.
+        for run in links.flatMap(\.runs) where run.row >= 0 && run.row < rows {
+            // Held to the grid rather than assumed inside it: the links were
+            // scanned from a snapshot, and a caller handing over ones from an
+            // older frame is a read past the end of this one.
+            let columns = run.columns.clamped(to: 0..<cols)
+            guard !columns.isEmpty else { continue }
+            underlines.append(
+                BackgroundInstance(
+                    x: Int32(columns.lowerBound) * metrics.width,
+                    y: Int32(run.row) * metrics.height + metrics.height - stroke,
+                    width: Int32(columns.count) * metrics.width, height: stroke,
+                    color: resolved(
+                        snapshot.cells[run.row * cols + columns.lowerBound],
+                        selected: selectedColumns(row: run.row, of: snapshot)
+                            .contains(columns.lowerBound)
+                    ).foreground
+                )
+            )
         }
 
         backgrounds.append(contentsOf: underlines)
