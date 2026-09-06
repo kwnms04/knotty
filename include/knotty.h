@@ -1726,6 +1726,35 @@ KtStatus kt_session_take_writes(KtSession *session, KtBytes *out);
 KtStatus kt_session_take_events(KtSession *session, KtEvents *out);
 
 /**
+ * Say whether a program is running in front of the shell.
+ *
+ * What a window asks before closing on one, and the whole of what v1 asks:
+ * which program it is has no call here. False for a session with no
+ * pseudoterminal behind it, and false at a bare prompt — a shell holding its
+ * own terminal is a terminal with nothing running in it.
+ *
+ * Read apart from the child state a snapshot carries, which says only that
+ * there is a shell at all and so answers "running" for every window there has
+ * ever been.
+ *
+ * **Asked here rather than carried on a frame, and asked at the moment it
+ * matters.** A job that prints nothing between starting and being closed on
+ * publishes no frame, so the newest one a consumer holds was captured before
+ * it started and says the terminal was quiet. Nothing but asking now gives
+ * the answer now.
+ *
+ * Works on a defunct session, for the reason given beside [`KtChildState`]:
+ * a child still running behind a session whose thread panicked is a real
+ * pairing, and it is the one an app warns about.
+ *
+ * # Safety
+ *
+ * `session` must be a live handle and `out` must be a valid, writable
+ * pointer to a `bool`.
+ */
+KtStatus kt_session_foreground_busy(KtSession *session, bool *out);
+
+/**
  * Take the latest snapshot, emptying the session's mailbox.
  *
  * Returns `KT_STATUS_NO_VALUE` when nothing has been published since the

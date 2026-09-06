@@ -80,6 +80,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.activate(ignoringOtherApps: true)
     }
 
+    /// One question for all the windows, asked when any one of them has
+    /// something running.
+    ///
+    /// Asked once rather than once per window. Someone who meant to quit
+    /// should not have to answer a question per terminal, and what they are
+    /// being asked — is anything running — is one question about the set.
+    /// A terminate does not put windows through `windowShouldClose(_:)`, so
+    /// nothing is asked twice. cf. 05-swift-app 8.
+    func applicationShouldTerminate(
+        _ sender: NSApplication
+    ) -> NSApplication.TerminateReply {
+        guard terminals.contains(where: { $0.isBusy }) else { return .terminateNow }
+        return confirmEndingPrograms(
+            verb: "Quit", consequence: "Quitting ends what is running."
+        ) ? .terminateNow : .terminateCancel
+    }
+
     /// Releasing the session is what puts the child down and collects it, so
     /// quitting goes through that rather than through process exit.
     func applicationWillTerminate(_ notification: Notification) {

@@ -249,3 +249,67 @@ private func settle<Value>(
     // boundary, so the argument does that work instead.
     #expect(LoginShell.command == [LoginShell.path, "-l"])
 }
+
+/// Keep asking until the answer comes back true, or give up.
+///
+/// A poll rather than a wait on a wake, because what is being waited for
+/// leaves no mark: a shell handing its terminal to a job writes nothing, so
+/// no frame is published and no wake is paid. That is the whole reason
+/// ``Session/foregroundBusy()`` is asked rather than read off a frame — and
+/// asking in a loop is what a test does about it. The app never does this: it
+/// asks once, when a window is being closed.
+private func waitUntilBusy(_ session: Session) throws -> Bool {
+    let deadline = Date().addingTimeInterval(10)
+    while Date() < deadline {
+        if try session.foregroundBusy() { return true }
+        Thread.sleep(forTimeInterval: 0.02)
+    }
+    return false
+}
+
+/// What a window asks before closing, both ways round.
+///
+/// The same command twice, told apart by job control alone. Without it the
+/// `sleep` shares the shell's process group and nothing is in front of
+/// anything; with it — which is how a login shell runs — the `sleep` gets a
+/// process group of its own and the terminal's foreground with it. So the
+/// pair is exactly the distinction the warning is made of: a prompt with
+/// nothing at it against a shell with a job in front of it.
+/// cf. 05-swift-app 8.
+@Test func aSessionSaysWhetherAProgramIsRunningInFrontOfTheShell() throws {
+    let (quiet, quietWoken) = try spawn(["/bin/sh", "-c", "echo ready; sleep 300"])
+    // Waiting for the line is what says the shell got as far as running the
+    // `sleep`. Without it, "nothing is running" would also be the answer for
+    // a shell that had not started yet, which is not the same fact.
+    let printed = try settle(quiet, wokenBy: quietWoken) { snapshot -> Bool? in
+        text(of: snapshot, row: 0).hasPrefix("ready") ? true : nil
+    }
+    #expect(printed == true)
+    #expect(try quiet.foregroundBusy() == false)
+
+    let (busy, _) = try spawn(["/bin/sh", "-c", "set -m; sleep 300"])
+    #expect(
+        try waitUntilBusy(busy),
+        "nothing ever took the terminal in front of the shell"
+    )
+}
+
+/// What a child is told about the terminal it was started in.
+///
+/// All three, because tmux reads all three: terminfo is looked up under
+/// `TERM`, and the `terminal-features` autodetection that decides what tmux
+/// will send is keyed on `TERM_PROGRAM` and `COLORTERM`. Read back out of the
+/// child's own environment rather than out of the spawn code, which is the
+/// only reading that says the child really got them. cf. 06-integration.
+@Test func aChildIsToldWhichTerminalItWasStartedIn() throws {
+    let (session, woken) = try spawn([
+        "/bin/sh", "-c", #"printf "%s|%s|%s\n" "$TERM" "$COLORTERM" "$TERM_PROGRAM""#,
+    ])
+
+    let told = try settle(session, wokenBy: woken) { snapshot -> String? in
+        let line = text(of: snapshot, row: 0).trimmingCharacters(in: .whitespaces)
+        return line.isEmpty ? nil : line
+    }
+
+    #expect(told == "xterm-256color|truecolor|knotty")
+}
