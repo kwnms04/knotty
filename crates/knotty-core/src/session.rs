@@ -13,7 +13,7 @@ use crate::listener::Listener;
 use crate::mailbox::Mailbox;
 use crate::mouse::{MouseEvent, WheelEvent};
 use crate::queue::{Event, EventQueue};
-use crate::snapshot::{ScreenState, Snapshot};
+use crate::snapshot::{Rgb, ScreenState, Snapshot};
 use crate::vt::{Terminal, Wheel};
 use crate::wake::{Debt, Wake};
 use crate::writer::WriteQueue;
@@ -55,6 +55,30 @@ pub enum SelectionUnit {
     /// Out to the whole logical line either end falls in, soft wraps
     /// included. What a triple-click selects.
     Line = 2,
+}
+
+/// The colours a screen is drawn in.
+///
+/// The palette is the engine's runtime state rather than a value read at
+/// capture — `OSC 4` moves it and every cell resolves against whatever it
+/// holds — so the configuration reaches it as a call. The two default colours
+/// travel in the same one because a cell carrying no colour of its own is
+/// filled in from them, and nothing in a published snapshot still says which
+/// cells those were.
+///
+/// The cursor's colour is not here. Nothing in the core reads one: a snapshot
+/// says where the cursor is and not what it is drawn in, so both the colour
+/// and the rule that it falls back to the cell's foreground stay with whoever
+/// draws it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Theme {
+    /// What a cell with no background of its own is drawn on.
+    pub background: Rgb,
+    /// What a cell with no foreground of its own is drawn in.
+    pub foreground: Rgb,
+    /// The sixteen the terminal's own colours are. What the engine builds
+    /// above them — the colour cube and the grey ramp — is left as it is.
+    pub palette: [Rgb; 16],
 }
 
 /// What has become of a session's child.
@@ -368,6 +392,17 @@ impl Session {
         self.terminal.selection_text()
     }
 
+    /// Give the engine the colours a screen is drawn in.
+    ///
+    /// Publishes, and publishes whether or not the grid moved: a cell's
+    /// colours are resolved by the time they cross, so a screen already
+    /// published goes on saying the old theme until a frame comes out in the
+    /// new one. The engine's dirty tracking says nothing about a palette.
+    pub fn set_theme(&mut self, theme: &Theme) -> Result<()> {
+        self.terminal.set_theme(theme)?;
+        self.publish(true)
+    }
+
     /// Move the viewport `lines` lines, up positive.
     ///
     /// What a selection drag out of the window asks for, on the app's own
@@ -646,6 +681,8 @@ pub(crate) enum Request {
         cell_width: u32,
         cell_height: u32,
     },
+    /// Give the engine the colours a screen is drawn in.
+    Theme(Theme),
 }
 
 /// A session with a child process behind a pseudoterminal.
@@ -971,6 +1008,17 @@ impl PtySession {
             cell_width,
             cell_height,
         })
+    }
+
+    /// Give the engine the colours a screen is drawn in.
+    ///
+    /// The frame that comes back is where they show up, for the reason
+    /// [`request`] gives. Taken by value because it outlives this call: it
+    /// waits in the request until the thread comes for it.
+    ///
+    /// [`request`]: PtySession::request
+    pub fn set_theme(&self, theme: Theme) -> Result<()> {
+        self.request(Request::Theme(theme))
     }
 
     /// Put a request where the I/O thread will find it, and tell it to look.

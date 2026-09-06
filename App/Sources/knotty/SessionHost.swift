@@ -23,6 +23,11 @@ final class SessionHost {
     /// The face the configuration asked for, kept because a new raster loads
     /// it again and this is what said which.
     private let font: Config.Font
+    /// What the theme said the cursor is drawn in, or nil when it named none
+    /// — which is the renderer's cue to take the colour of the text the
+    /// cursor stands on. cf. 04-renderer R1.
+    private let cursorColor: Rgb?
+
     /// The grid the last resize sent.
     ///
     /// Zero rather than the counts the session was spawned with, so that the
@@ -61,9 +66,15 @@ final class SessionHost {
     var onTitle: ((String) -> Void)?
 
     /// Spawn the user's login shell behind a terminal of this size, drawn at
-    /// these metrics.
+    /// these metrics and in these colours.
+    ///
+    /// The theme goes down to the core before anything is drawn: the palette
+    /// is the terminal's own state and every cell's colours are resolved
+    /// against it, so a screen captured before the injection is a screen in
+    /// the wrong colours. cf. 02-ffi.
     init(
-        columns: UInt16, rows: UInt16, scrollback: Int, metrics: CellMetrics, font: Config.Font
+        columns: UInt16, rows: UInt16, scrollback: Int, metrics: CellMetrics,
+        font: Config.Font, theme: Config.Theme
     ) throws {
         session = try Session(
             command: LoginShell.command, cols: columns, rows: rows, scrollback: scrollback
@@ -71,6 +82,8 @@ final class SessionHost {
         renderer = Renderer(metrics: metrics, faces: Faces(metrics: metrics, name: font.family))
         self.metrics = metrics
         self.font = font
+        cursorColor = theme.cursor?.rgb
+        try session.setTheme(theme)
     }
 
     /// Tell the session the grid it now has, and how big a cell is on the
@@ -142,7 +155,7 @@ final class SessionHost {
                     title = called
                     onTitle?(called)
                 }
-                return renderer.frame(for: snapshot)
+                return renderer.frame(for: snapshot, cursorColor: cursorColor)
             }
         } catch {
             report(error)

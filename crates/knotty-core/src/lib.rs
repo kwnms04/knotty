@@ -30,7 +30,7 @@ mod writer;
 pub use key::{Key, KeyAction, KeyEvent, Modifier};
 pub use mouse::{MouseAction, MouseButton, MouseEvent, WheelEvent};
 pub use queue::{ClipboardTarget, Event};
-pub use session::{ChildState, PtySession, SelectionRange, SelectionUnit, Session};
+pub use session::{ChildState, PtySession, SelectionRange, SelectionUnit, Session, Theme};
 pub use snapshot::{
     Attribute, Cell, Cursor, CursorShape, Dirty, Rgb, Row, RowFlag, ScreenState, Snapshot,
     Underline,

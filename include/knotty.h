@@ -889,6 +889,24 @@ typedef struct {
 } KtKeyEvent;
 
 /**
+ * A colour, already resolved out of the palette.
+ */
+typedef struct {
+  /**
+   * Red component.
+   */
+  uint8_t r;
+  /**
+   * Green component.
+   */
+  uint8_t g;
+  /**
+   * Blue component.
+   */
+  uint8_t b;
+} KtRgb;
+
+/**
  * What a session calls when it has something new to be taken.
  *
  * `userdata` comes back exactly as it was handed to [`kt_session_set_wake`].
@@ -998,24 +1016,6 @@ typedef struct {
    */
   uint64_t dropped;
 } KtEvents;
-
-/**
- * A colour, already resolved out of the palette.
- */
-typedef struct {
-  /**
-   * Red component.
-   */
-  uint8_t r;
-  /**
-   * Green component.
-   */
-  uint8_t g;
-  /**
-   * Blue component.
-   */
-  uint8_t b;
-} KtRgb;
 
 /**
  * One terminal cell.
@@ -1441,6 +1441,45 @@ KtStatus kt_session_resize(KtSession *session,
                            uint16_t rows,
                            uint32_t cell_width,
                            uint32_t cell_height);
+
+/**
+ * Give the session the colours a screen is drawn in.
+ *
+ * `palette` is the sixteen colours the terminal's own are, in order, and
+ * `palette_len` must be sixteen — any other count is
+ * `KT_STATUS_OUT_OF_RANGE`. What the engine builds above them, the colour
+ * cube and the grey ramp, stays as the engine built it.
+ *
+ * **The one setting a consumer re-injects.** The palette is the terminal's
+ * runtime state — the child moves it with `OSC 4` — so a configuration
+ * reaches it by being pushed rather than by being read off a frame. The two
+ * default colours travel in the same call because a cell that carries no
+ * colour of its own is filled in from them before it crosses, and nothing in
+ * a snapshot still says which cells those were.
+ *
+ * **The cursor's colour is not here.** Nothing in the core reads one: a
+ * snapshot says where the cursor is and not what it is drawn in. Both the
+ * colour and the rule that it falls back to the foreground of the cell it
+ * stands on belong to whoever draws it.
+ *
+ * Publishes a snapshot, whether or not the grid moved — a frame already
+ * taken goes on saying the old colours. **A redraw and not a reset:** cell
+ * colours are resolved by the time they cross and no raster depends on one,
+ * so nothing a consumer baked is stale. cf. `docs/04-renderer.md` R8
+ *
+ * A session with a PTY behind it applies this on its own thread, so the call
+ * returns once the request is queued.
+ *
+ * # Safety
+ *
+ * `session` must be a live handle, and `palette` must point at `palette_len`
+ * readable `KtRgb`.
+ */
+KtStatus kt_session_set_theme(KtSession *session,
+                              KtRgb background,
+                              KtRgb foreground,
+                              const KtRgb *palette,
+                              size_t palette_len);
 
 /**
  * Register what a session calls when it has something new to be taken, or

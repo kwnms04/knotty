@@ -102,6 +102,12 @@ final class TerminalView: NSView {
     /// display of another scale does not change. Everything else is measured
     /// from them again when one does.
     private let font: Config.Font
+    /// The colours the screen is drawn in. What the grid does with them is
+    /// the core's — every cell crosses with its colours already resolved —
+    /// so what is left here is the two places no cell reaches: the strip
+    /// along an edge that no whole cell covers, and the composition overlay,
+    /// which is AppKit's rather than the grid's. cf. 05-swift-app 7, 10.
+    private let theme: Config.Theme
     /// How many device pixels a point is on the display the view is on.
     private var scale: Double
     /// The drawable, in device pixels — the view rather than the grid, so
@@ -128,9 +134,10 @@ final class TerminalView: NSView {
         )
     }
 
-    init(host: SessionHost, font: Config.Font, scale: Double) throws {
+    init(host: SessionHost, font: Config.Font, theme: Config.Theme, scale: Double) throws {
         self.host = host
         self.font = font
+        self.theme = theme
         self.scale = scale
         // Measured here rather than handed in, because the view is what
         // measures it again on a display of another scale. `CellMetrics` is a
@@ -180,11 +187,10 @@ final class TerminalView: NSView {
 
         super.init(frame: .zero)
 
-        // ponytail: the composition is drawn white on black, which is what
-        // this milestone's terminal is. The theme it should take these from
-        // arrives with the configuration pipeline in M4. cf. 05-swift-app 10.
+        // Text on its way into the grid, so it stands on the colours the
+        // grid is drawn in rather than on AppKit's. cf. 05-swift-app 7.
         preedit.drawsBackground = true
-        preedit.backgroundColor = .black
+        preedit.backgroundColor = Self.color(theme.background)
         preedit.isHidden = true
         addSubview(preedit)
 
@@ -219,6 +225,17 @@ final class TerminalView: NSView {
     }
 
     override func makeBackingLayer() -> CALayer { CAMetalLayer() }
+
+    /// A theme colour as AppKit takes one. sRGB because that is what a cell's
+    /// three bytes already are, which is what the layer is tagged with.
+    private static func color(_ color: Config.Theme.Color) -> NSColor {
+        NSColor(
+            srgbRed: Double(color.r) / 255,
+            green: Double(color.g) / 255,
+            blue: Double(color.b) / 255,
+            alpha: 1
+        )
+    }
 
     /// The face the composition is drawn in: the one `CellMetrics` measured
     /// the grid from, asked for in points because the overlay is AppKit's to
@@ -822,7 +839,7 @@ final class TerminalView: NSView {
         let shown = NSMutableAttributedString(attributedString: text)
         let whole = NSRange(location: 0, length: shown.length)
         shown.addAttributes(
-            [.font: preeditFont, .foregroundColor: NSColor.white], range: whole
+            [.font: preeditFont, .foregroundColor: Self.color(theme.foreground)], range: whole
         )
         preedit.attributedStringValue = shown
         preedit.sizeToFit()
@@ -980,7 +997,15 @@ final class TerminalView: NSView {
         let pass = MTLRenderPassDescriptor()
         pass.colorAttachments[0].texture = drawable.texture
         pass.colorAttachments[0].loadAction = .clear
-        pass.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1)
+        // What shows through is the strip along an edge that a whole cell
+        // did not fill, so it clears to what the terminal's background is
+        // rather than to black. cf. `layout`.
+        pass.colorAttachments[0].clearColor = MTLClearColor(
+            red: Double(theme.background.r) / 255,
+            green: Double(theme.background.g) / 255,
+            blue: Double(theme.background.b) / 255,
+            alpha: 1
+        )
         pass.colorAttachments[0].storeAction = .store
         guard let encoder = commands.makeRenderCommandEncoder(descriptor: pass) else { return }
 

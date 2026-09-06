@@ -35,7 +35,8 @@ use crate::key::{Key, KeyAction, KeyEvent};
 use crate::listener::{ClipboardRefusal, Listener, Representation};
 use crate::mouse::{MouseEvent, WheelEvent};
 use crate::queue::ClipboardTarget;
-use crate::session::{SelectionRange, SelectionUnit};
+use crate::session::{SelectionRange, SelectionUnit, Theme};
+use crate::snapshot::Rgb;
 use crate::{Error, Result};
 
 /// DEC mode 2026, synchronized output.
@@ -88,6 +89,13 @@ const ALTERNATE_SCROLL: ffi::Mode = 1007;
 /// caller whose arithmetic went wrong and an allocation of gigabytes. Far
 /// more lines than the tallest screen anyone flicks across.
 const MAX_WHEEL_LINES: u32 = 1024;
+
+/// How many colours the engine's palette holds.
+///
+/// A theme names the first sixteen and the engine builds the rest — the
+/// colour cube and the grey ramp — so this is the size of the array the
+/// engine takes rather than anything a configuration says.
+const PALETTE_LEN: usize = 256;
 
 /// What knotty answers a device attributes query with.
 ///
@@ -864,6 +872,39 @@ impl Terminal {
         });
     }
 
+    /// Give the engine the colours a screen is drawn in.
+    ///
+    /// The engine takes the whole palette at once, so the sixteen the theme
+    /// names are written over its defaults and everything above them is left
+    /// as it built them. The two default colours follow, because a cell that
+    /// carries no colour of its own is filled in from those when it is
+    /// captured. cf. [`capture`](super::capture)
+    ///
+    /// Nothing is redrawn here and no glyph is touched: what changes is the
+    /// colour the next capture resolves a cell to. cf. `04-renderer.md` R8
+    pub fn set_theme(&mut self, theme: &Theme) -> Result<()> {
+        let mut palette = [ffi::ColorRgb { r: 0, g: 0, b: 0 }; PALETTE_LEN];
+        // SAFETY: the call writes exactly the `PALETTE_LEN` entries this holds.
+        unsafe { ffi::ghostty_color_palette_default(palette.as_mut_ptr()) };
+        for (entry, named) in palette.iter_mut().zip(theme.palette) {
+            *entry = color(named);
+        }
+        // Each `set` passes the input type its option documents, which the
+        // engine reads during the call and does not keep.
+        self.set(ffi::TerminalOption::COLOR_PALETTE, palette.as_ptr().cast())?;
+
+        let background = color(theme.background);
+        self.set(
+            ffi::TerminalOption::COLOR_BACKGROUND,
+            ptr::from_ref(&background).cast(),
+        )?;
+        let foreground = color(theme.foreground);
+        self.set(
+            ffi::TerminalOption::COLOR_FOREGROUND,
+            ptr::from_ref(&foreground).cast(),
+        )
+    }
+
     /// Resolve a viewport coordinate to a reference the engine can hold on to.
     ///
     /// The result is good until the next thing that moves the grid, which is
@@ -956,6 +997,15 @@ fn clamped(cell: (u16, u16), grid: (u16, u16)) -> (u16, u16) {
         cell.0.min(grid.0.saturating_sub(1)),
         cell.1.min(grid.1.saturating_sub(1)),
     )
+}
+
+/// A colour on its way into the engine. The way back out is `capture`'s.
+fn color(color: Rgb) -> ffi::ColorRgb {
+    ffi::ColorRgb {
+        r: color.r,
+        g: color.g,
+        b: color.b,
+    }
 }
 
 /// Whether `bytes` can go to the child without asking the user first.

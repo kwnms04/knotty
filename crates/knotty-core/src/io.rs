@@ -471,6 +471,7 @@ pub(crate) fn run(
                 } => session
                     .resize(cols, rows, cell_width, cell_height)
                     .and_then(|()| terminal.set_size(cols, rows, cell_width, cell_height)),
+                Request::Theme(theme) => session.set_theme(&theme),
             };
         }
 

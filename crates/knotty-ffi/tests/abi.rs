@@ -18,9 +18,9 @@ use knotty_ffi::{
     KtSnapshot, KtSnapshotView, KtStatus, KtText, Rgb, Row, RowFlag, SelectionRange, Underline,
     kt_abi_version, kt_config_free, kt_config_load, kt_config_view, kt_paste_is_safe,
     kt_session_feed, kt_session_free, kt_session_key, kt_session_new_detached, kt_session_new_pty,
-    kt_session_paste, kt_session_set_selection, kt_session_set_wake, kt_session_take_events,
-    kt_session_take_snapshot, kt_session_take_writes, kt_session_write, kt_snapshot_free,
-    kt_snapshot_view,
+    kt_session_paste, kt_session_set_selection, kt_session_set_theme, kt_session_set_wake,
+    kt_session_take_events, kt_session_take_snapshot, kt_session_take_writes, kt_session_write,
+    kt_snapshot_free, kt_snapshot_view,
 };
 
 /// Ghostty's own defaults. A change here is an upstream palette change, not a
@@ -113,6 +113,48 @@ fn selected_columns(view: &KtSnapshotView) -> Vec<Option<(u16, u16)>> {
                 .then_some((row.selection_start, row.selection_end))
         })
         .collect()
+}
+
+/// A theme nobody would arrive at by accident: every entry names its own
+/// index, so a cell drawn in the wrong one says which one it took.
+fn themed(index: u8) -> Rgb {
+    Rgb {
+        r: index,
+        g: 0x40,
+        b: 0x50,
+    }
+}
+
+/// The top of the engine's 6x6x6 colour cube, at index 231. A theme names
+/// the sixteen below it and nothing here, so this is what says the rest of
+/// the palette survived one.
+const CUBE_WHITE: Rgb = Rgb {
+    r: 255,
+    g: 255,
+    b: 255,
+};
+
+const THEME_BACKGROUND: Rgb = Rgb {
+    r: 0x1e,
+    g: 0x1e,
+    b: 0x1e,
+};
+const THEME_FOREGROUND: Rgb = Rgb {
+    r: 0xd4,
+    g: 0xd4,
+    b: 0xd4,
+};
+
+fn set_theme(session: *mut KtSession, palette: &[Rgb]) -> KtStatus {
+    unsafe {
+        kt_session_set_theme(
+            session,
+            THEME_BACKGROUND,
+            THEME_FOREGROUND,
+            palette.as_ptr(),
+            palette.len(),
+        )
+    }
 }
 
 fn set_selection(session: *mut KtSession, range: Option<SelectionRange>) -> KtStatus {
@@ -1005,6 +1047,66 @@ fn changing_the_palette_recolours_cells_in_the_next_snapshot() {
     unsafe { kt_session_free(session) };
 }
 
+/// What the app pushes down at spawn and on every reload. The cell keeps
+/// naming palette 1 and the terminal's defaults keep filling in the cells
+/// that carry no colour of their own — so a theme is one call and a frame,
+/// with nothing on the screen having moved.
+#[test]
+fn a_theme_recolours_what_the_next_snapshot_says() {
+    let session = detached(4, 1);
+    // One cell naming palette 1, one in no colour of its own, one out of the
+    // colour cube above the sixteen.
+    feed(session, b"\x1b[31mX\x1b[0m.\x1b[38;5;231mW");
+
+    let before = view(take(session));
+    assert_eq!(cell_at(&before, 0, 0).foreground, PALETTE_RED);
+    assert_eq!(cell_at(&before, 0, 1).foreground, DEFAULT_FOREGROUND);
+    assert_eq!(cell_at(&before, 0, 1).background, DEFAULT_BACKGROUND);
+    assert_eq!(cell_at(&before, 0, 2).foreground, CUBE_WHITE);
+
+    let palette: Vec<Rgb> = (0..16).map(themed).collect();
+    assert_eq!(set_theme(session, &palette), KtStatus::Ok);
+
+    // A frame comes out of it although no row changed: the colours a cell
+    // carries were resolved before it crossed, so the screen already taken
+    // would go on saying the old ones.
+    let after = view(take(session));
+    assert_eq!(
+        cell_at(&after, 0, 0).foreground,
+        themed(1),
+        "the cell still names palette 1, which the theme now says the colour of",
+    );
+    assert_eq!(cell_at(&after, 0, 1).foreground, THEME_FOREGROUND);
+    assert_eq!(cell_at(&after, 0, 1).background, THEME_BACKGROUND);
+    assert_eq!(
+        cell_at(&after, 0, 2).foreground,
+        CUBE_WHITE,
+        "a theme names sixteen colours and the cube above them is untouched",
+    );
+
+    unsafe { kt_session_free(session) };
+}
+
+/// The one thing a caller can get wrong that the boundary can see. Sixteen is
+/// what a theme names; the colour cube above them is the engine's.
+#[test]
+fn a_palette_that_is_not_sixteen_colours_is_refused() {
+    let session = detached(4, 1);
+
+    let short: Vec<Rgb> = (0..8).map(themed).collect();
+    assert_eq!(set_theme(session, &short), KtStatus::OutOfRange);
+    assert_eq!(set_theme(session, &[]), KtStatus::OutOfRange);
+
+    // Nothing was published for a call that never reached the engine.
+    let mut snapshot = ptr::null_mut();
+    assert_eq!(
+        unsafe { kt_session_take_snapshot(session, &mut snapshot) },
+        KtStatus::NoValue,
+    );
+
+    unsafe { kt_session_free(session) };
+}
+
 #[test]
 fn a_snapshot_outlives_the_session_that_published_it() {
     let session = detached(4, 1);
@@ -1632,6 +1734,32 @@ fn a_child_starts_knowing_the_size_of_the_window_it_is_in() {
 
     // What `stty size` prints is rows then columns.
     wait_for(session, "9 37");
+
+    unsafe { kt_session_free(session) };
+}
+
+/// The path an app takes: a session with a thread of its own, where a theme
+/// is a request that thread applies rather than a call that touches the
+/// engine. The frame it publishes is where the new colours show up.
+#[test]
+fn a_theme_reaches_a_session_that_has_a_thread_of_its_own() {
+    // The read is what keeps the child there: a loop whose child has gone is
+    // a loop that has stopped taking requests.
+    let session = pty(
+        24,
+        4,
+        &["/bin/sh", "-c", "printf '\\033[31mred'; read line"],
+    );
+    wait_for(session, "red");
+
+    let palette: Vec<Rgb> = (0..16).map(themed).collect();
+    assert_eq!(set_theme(session, &palette), KtStatus::Ok);
+
+    wait_for_snapshot(session, "a screen in the theme's colours", |view| {
+        (cell_at(view, 0, 0).foreground == themed(1)
+            && cell_at(view, 0, 3).background == THEME_BACKGROUND)
+            .then_some(())
+    });
 
     unsafe { kt_session_free(session) };
 }

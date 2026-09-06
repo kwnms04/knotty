@@ -50,7 +50,7 @@ final class TerminalWindowController: NSWindowController {
 
         let host = try SessionHost(
             columns: columns, rows: rows, scrollback: scrollback,
-            metrics: metrics, font: font
+            metrics: metrics, font: font, theme: config.theme
         )
 
         let window = NSWindow(
@@ -69,7 +69,7 @@ final class TerminalWindowController: NSWindowController {
         // opened, and "prefer tabs when opening documents" would do that to
         // every ⌘N. Tabs are not v1's. cf. 05-swift-app 3, adr/0010.
         window.tabbingMode = .disallowed
-        let view = try TerminalView(host: host, font: font, scale: scale)
+        let view = try TerminalView(host: host, font: font, theme: config.theme, scale: scale)
         window.contentView = view
         // A key reaches a view through the responder chain, and a window whose
         // first responder is still itself answers a `keyDown` with a beep. The

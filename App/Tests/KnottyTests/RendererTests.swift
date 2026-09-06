@@ -284,6 +284,51 @@ private func frame(cursorStyle: Int) throws -> Frame {
     }
 }
 
+/// A theme out of a file the user wrote, which is the path the app takes:
+/// TOML across the boundary and into the terminal's own palette.
+private func theme(_ text: String) throws -> Config.Theme {
+    let path = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appending(path: "knotty-theme-\(UUID().uuidString).toml")
+    try Data(text.utf8).write(to: path)
+    defer { try? FileManager.default.removeItem(at: path) }
+    return try Config.load(from: path).config.theme
+}
+
+/// The colours in the file are the colours on the screen, and taking them
+/// down there costs no raster: a cell crosses with its colours resolved and a
+/// glyph is the same shape in any of them. **A redraw and not a reset.**
+/// cf. 04-renderer R8.
+@Test func aThemeIsDrawnInWithoutEmptyingTheAtlas() throws {
+    // Sixteen nothing else would arrive at: entry N is a red of its own.
+    let sixteen = (0..<16).map { String(format: "\"#%02x0000\"", $0 * 17) }.joined(separator: ", ")
+    let asked = try theme(
+        """
+        [theme]
+        background = "#102030"
+        foreground = "#405060"
+        palette = [\(sixteen)]
+        """
+    )
+    let session = try Session(cols: cols, rows: rows, scrollback: scrollback)
+    // Three cells naming palette 1, then two in no colour of their own.
+    try session.feed(Array("\u{1b}[31mred\u{1b}[0m ok".utf8))
+    let renderer = Renderer(metrics: metrics, faces: pinned())
+
+    let before = try #require(try session.withSnapshot { renderer.frame(for: $0) })
+    #expect(before.glyphs.count == 5)
+    #expect(before.atlasUpdates.count == 5)
+    // The engine's own palette, until somebody says otherwise.
+    #expect(before.glyphs.first.map(\.color).map(hex) == "cc6666")
+
+    try session.setTheme(asked)
+
+    let after = try #require(try session.withSnapshot { renderer.frame(for: $0) })
+    #expect(after.glyphs.first.map(\.color).map(hex) == "110000")
+    #expect(after.glyphs.last.map(\.color).map(hex) == "405060")
+    #expect(after.backgrounds.first.map(\.color).map(hex) == "102030")
+    #expect(after.atlasUpdates.isEmpty, "recolouring baked a glyph again")
+}
+
 /// The bake is real: coverage comes out, and it comes out the right way up.
 ///
 /// Nothing else here would notice a rasterizer that drew nothing or a copy

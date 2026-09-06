@@ -11,7 +11,8 @@ use std::ptr;
 mod entry;
 
 use knotty_core::{
-    ChildState, Error, Event, KeyEvent, MouseEvent, PtySession, Session, Snapshot, Wake, WheelEvent,
+    ChildState, Error, Event, KeyEvent, MouseEvent, PtySession, Session, Snapshot, Theme, Wake,
+    WheelEvent,
 };
 
 /// The snapshot's POD types. A C consumer gets these from the header; this
@@ -256,6 +257,12 @@ impl Userdata {
 /// disagree about layouts, and the caller must not proceed.
 pub const KT_ABI_VERSION: u32 = 9;
 
+/// How many colours a theme names.
+///
+/// The sixteen the terminal's own colours are. Everything above them is the
+/// engine's to build, so no configuration and no caller says what they are.
+const THEME_PALETTE_LEN: usize = 16;
+
 /// Outcome of a call across the boundary.
 #[repr(i32)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -443,6 +450,14 @@ impl Driver {
         match self {
             Self::Detached(session) => status(session.scroll_viewport(lines)),
             Self::Pty(session) => status(session.scroll_viewport(lines)),
+        }
+    }
+
+    /// Give the engine the colours a screen is drawn in.
+    fn set_theme(&mut self, theme: Theme) -> KtStatus {
+        match self {
+            Self::Detached(session) => status(session.set_theme(&theme)),
+            Self::Pty(session) => status(session.set_theme(theme)),
         }
     }
 
@@ -999,6 +1014,67 @@ pub unsafe extern "C" fn kt_session_resize(
         let session = unsafe { entry::at_mut(session) }?;
 
         Ok(session.drive(|driver| driver.resize(cols, rows, cell_width, cell_height)))
+    })
+}
+
+/// Give the session the colours a screen is drawn in.
+///
+/// `palette` is the sixteen colours the terminal's own are, in order, and
+/// `palette_len` must be sixteen — any other count is
+/// `KT_STATUS_OUT_OF_RANGE`. What the engine builds above them, the colour
+/// cube and the grey ramp, stays as the engine built it.
+///
+/// **The one setting a consumer re-injects.** The palette is the terminal's
+/// runtime state — the child moves it with `OSC 4` — so a configuration
+/// reaches it by being pushed rather than by being read off a frame. The two
+/// default colours travel in the same call because a cell that carries no
+/// colour of its own is filled in from them before it crosses, and nothing in
+/// a snapshot still says which cells those were.
+///
+/// **The cursor's colour is not here.** Nothing in the core reads one: a
+/// snapshot says where the cursor is and not what it is drawn in. Both the
+/// colour and the rule that it falls back to the foreground of the cell it
+/// stands on belong to whoever draws it.
+///
+/// Publishes a snapshot, whether or not the grid moved — a frame already
+/// taken goes on saying the old colours. **A redraw and not a reset:** cell
+/// colours are resolved by the time they cross and no raster depends on one,
+/// so nothing a consumer baked is stale. cf. `docs/04-renderer.md` R8
+///
+/// A session with a PTY behind it applies this on its own thread, so the call
+/// returns once the request is queued.
+///
+/// # Safety
+///
+/// `session` must be a live handle, and `palette` must point at `palette_len`
+/// readable `KtRgb`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kt_session_set_theme(
+    session: *mut KtSession,
+    background: Rgb,
+    foreground: Rgb,
+    palette: *const Rgb,
+    palette_len: usize,
+) -> KtStatus {
+    entry::answer(|| {
+        let session = unsafe { entry::at_mut(session) }?;
+        if palette.is_null() {
+            return Err(KtStatus::NullArgument);
+        }
+        if palette_len != THEME_PALETTE_LEN {
+            return Err(KtStatus::OutOfRange);
+        }
+        // SAFETY: non-null, and the caller's promise of `palette_len` readable
+        // colours — which the check above has settled at `THEME_PALETTE_LEN`.
+        let palette = unsafe { palette.cast::<[Rgb; THEME_PALETTE_LEN]>().read() };
+
+        Ok(session.drive(|driver| {
+            driver.set_theme(Theme {
+                background,
+                foreground,
+                palette,
+            })
+        }))
     })
 }
 

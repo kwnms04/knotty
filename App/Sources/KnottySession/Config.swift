@@ -15,7 +15,40 @@ public struct Config: Decodable, Equatable, Sendable {
         public let size: Double
     }
 
+    /// The colours a screen is drawn in.
+    ///
+    /// A colour is three numbers by the time it is here: `#rrggbb` was parsed
+    /// in `knotty-config`, and nothing on this side parses one again.
+    public struct Theme: Decodable, Equatable, Sendable {
+        /// A colour, as the blob spells one.
+        ///
+        /// Its own type rather than the boundary's ``Rgb``. That one is the
+        /// header's layout, and teaching an imported struct to decode itself
+        /// would be a second truth about it — this converts instead, at the
+        /// one call that hands colours back across. cf. 05-swift-app 2.
+        public struct Color: Decodable, Equatable, Sendable {
+            public let r: UInt8
+            public let g: UInt8
+            public let b: UInt8
+
+            /// The same colour, as everything that draws one names it.
+            public var rgb: Rgb { Rgb(r: r, g: g, b: b) }
+        }
+
+        /// What a cell with no background of its own is drawn on.
+        public let background: Color
+        /// What a cell with no foreground of its own is drawn in.
+        public let foreground: Color
+        /// What the cursor is drawn in, or nil when the file named none —
+        /// which is the rule that it takes the colour of the text it stands
+        /// on, rather than a colour that is missing. cf. 04-renderer R1.
+        public let cursor: Color?
+        /// The sixteen the terminal's own colours are, in order.
+        public let palette: [Color]
+    }
+
     public let font: Font
+    public let theme: Theme
 
     /// What a load came to.
     ///

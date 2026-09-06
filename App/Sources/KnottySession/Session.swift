@@ -256,6 +256,34 @@ public final class Session {
         )
     }
 
+    /// Give the session the colours a screen is drawn in.
+    ///
+    /// **The one setting that is pushed down rather than kept up here.** The
+    /// palette is the terminal's runtime state — the child moves it with
+    /// `OSC 4` — and the two defaults travel with it because a cell that
+    /// carries no colour of its own is filled in from them before it crosses.
+    /// A frame comes back in the new colours whether or not the screen moved.
+    ///
+    /// The cursor's is not among them: nothing in the core reads one, so it
+    /// stays with what draws the cursor, along with the rule that a theme
+    /// naming none leaves it the colour of the text it stands on.
+    /// cf. 02-ffi, 04-renderer R1, R8.
+    public func setTheme(_ theme: Config.Theme) throws {
+        let palette = theme.palette.map(\.rgb)
+        try check(
+            "kt_session_set_theme",
+            palette.withUnsafeBufferPointer {
+                kt_session_set_theme(
+                    handle,
+                    theme.background.rgb,
+                    theme.foreground.rgb,
+                    $0.baseAddress,
+                    $0.count
+                )
+            }
+        )
+    }
+
     /// Select a range of the viewport, or clear the selection with nil.
     ///
     /// Both ends are inclusive and either may come first: the pair records
