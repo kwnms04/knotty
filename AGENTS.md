@@ -101,8 +101,9 @@ complete.
 ## Renderer goldens
 
 `App/Tests/KnottyTests/goldens` holds what the renderer draws those same
-recordings as: a rectangle and a colour for every cell, a rectangle for the
-cursor, and for every glyph which one it is, where it sits and what tints it.
+recordings as: a rectangle and a colour for every cell, a rectangle for every
+underline and one for the cursor, and for every glyph which one it is, where it
+sits and what tints it.
 `swift test --package-path App -c release` checks them; only
 `KNOTTY_UPDATE_RENDER_GOLDENS=1 swift test --package-path App -c release`
 writes them. Its own variable and not the harness's, so that rewriting a
