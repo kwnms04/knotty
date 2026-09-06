@@ -1,4 +1,4 @@
-knotty-render-golden 4
+knotty-render-golden 5
 cell 16 34
 backgrounds 1920
 background 0 0 16 34 000000
@@ -1921,6 +1921,7 @@ background 1216 782 16 34 000000
 background 1232 782 16 34 000000
 background 1248 782 16 34 000000
 background 1264 782 16 34 000000
+underlines 0
 cursor 0 782 16 34 ffffff
 glyphs 489
 glyph 0 0 fast regular 0/1 0031 e7c547

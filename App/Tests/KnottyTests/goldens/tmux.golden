@@ -1,4 +1,4 @@
-knotty-render-golden 4
+knotty-render-golden 5
 cell 16 34
 backgrounds 1920
 background 0 0 16 34 000000
@@ -1921,6 +1921,70 @@ background 1216 782 16 34 b5bd68
 background 1232 782 16 34 b5bd68
 background 1248 782 16 34 b5bd68
 background 1264 782 16 34 b5bd68
+underlines 63
+underline 1024 100 16 2 ffffff
+underline 1040 100 16 2 ffffff
+underline 1056 100 16 2 ffffff
+underline 1072 100 16 2 ffffff
+underline 96 134 16 2 ffffff
+underline 112 134 16 2 ffffff
+underline 128 134 16 2 ffffff
+underline 144 134 16 2 ffffff
+underline 160 134 16 2 ffffff
+underline 176 134 16 2 ffffff
+underline 192 134 16 2 ffffff
+underline 208 134 16 2 ffffff
+underline 224 134 16 2 ffffff
+underline 144 406 16 2 cc6666
+underline 160 406 16 2 cc6666
+underline 176 406 16 2 cc6666
+underline 192 406 16 2 cc6666
+underline 208 406 16 2 cc6666
+underline 224 406 16 2 cc6666
+underline 240 406 16 2 cc6666
+underline 256 406 16 2 cc6666
+underline 272 406 16 2 cc6666
+underline 288 406 16 2 cc6666
+underline 304 406 16 2 cc6666
+underline 320 406 16 2 cc6666
+underline 336 406 16 2 cc6666
+underline 352 406 16 2 cc6666
+underline 368 406 16 2 cc6666
+underline 384 406 16 2 cc6666
+underline 400 406 16 2 cc6666
+underline 416 406 16 2 cc6666
+underline 432 406 16 2 cc6666
+underline 448 406 16 2 cc6666
+underline 464 406 16 2 cc6666
+underline 480 406 16 2 cc6666
+underline 496 406 16 2 cc6666
+underline 512 406 16 2 cc6666
+underline 528 406 16 2 cc6666
+underline 176 440 16 2 cc6666
+underline 192 440 16 2 cc6666
+underline 208 440 16 2 cc6666
+underline 224 440 16 2 cc6666
+underline 240 440 16 2 cc6666
+underline 256 440 16 2 cc6666
+underline 272 440 16 2 cc6666
+underline 288 440 16 2 cc6666
+underline 304 440 16 2 cc6666
+underline 320 440 16 2 cc6666
+underline 336 440 16 2 cc6666
+underline 352 440 16 2 cc6666
+underline 368 440 16 2 cc6666
+underline 384 440 16 2 cc6666
+underline 400 440 16 2 cc6666
+underline 416 440 16 2 cc6666
+underline 432 440 16 2 cc6666
+underline 448 440 16 2 cc6666
+underline 464 440 16 2 cc6666
+underline 480 440 16 2 cc6666
+underline 496 440 16 2 cc6666
+underline 512 440 16 2 cc6666
+underline 528 440 16 2 cc6666
+underline 544 440 16 2 cc6666
+underline 560 440 16 2 cc6666
 cursor 32 476 16 34 ffffff
 glyphs 323
 glyph 0 0 fast regular 0/1 0070 ffffff

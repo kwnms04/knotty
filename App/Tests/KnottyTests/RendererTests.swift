@@ -28,7 +28,7 @@ private let goldensDirectory = URL(fileURLWithPath: #filePath)
 
 /// The format the goldens are written in. Bump it when the encoding changes,
 /// so a stale golden fails loudly rather than diffing line by line.
-private let format = "knotty-render-golden 4"
+private let format = "knotty-render-golden 5"
 
 /// The environment variable that turns a check into a rewrite. Its own, not
 /// the harness's: updating a screen must not quietly update a drawing too.
@@ -55,18 +55,25 @@ private let updateVariable = "KNOTTY_UPDATE_RENDER_GOLDENS"
 /// packer's answer rather than a judgement about the screen, and the quad's
 /// width and offset, which are the font's ink and not this code's decision.
 /// What is left is a rectangle and a colour for every cell, a rectangle for
-/// the cursor, and for every glyph what it draws, where it sits and what tints
-/// it.
+/// every underline and one for the cursor, and for every glyph what it draws,
+/// where it sits and what tints it.
 private func describe(_ frame: Frame, at metrics: CellMetrics, of snapshot: Snapshot) -> String {
     var out = "\(format)\n"
     out += "cell \(metrics.width) \(metrics.height)\n"
 
-    // The cursor is the last rectangle of the background pass, and it is
-    // named so that it does not read as one more cell.
-    let cells = frame.backgrounds.count - (frame.cursor == nil ? 0 : 1)
+    // The decorations are the rectangles the background pass ends with — the
+    // underlines, then the cursor — and each is named so that neither reads as
+    // one more cell.
+    let cells = frame.backgrounds.count - frame.underlines.count
+        - (frame.cursor == nil ? 0 : 1)
     out += "backgrounds \(cells)\n"
     for instance in frame.backgrounds.prefix(cells) {
         out += "background \(instance.x) \(instance.y) \(instance.width) \(instance.height)"
+        out += " \(hex(instance.color))\n"
+    }
+    out += "underlines \(frame.underlines.count)\n"
+    for instance in frame.underlines {
+        out += "underline \(instance.x) \(instance.y) \(instance.width) \(instance.height)"
         out += " \(hex(instance.color))\n"
     }
     if let cursor = frame.cursor {
@@ -282,6 +289,59 @@ private func frame(cursorStyle: Int) throws -> Frame {
         let bare = renderer.frame(for: snapshot).backgrounds.last
         #expect(bare.map(\.color).map(hex) == "ffffff")
     }
+}
+
+/// An underlined cell draws a line under it, a bare one draws none, and the
+/// five kinds all draw the same single line.
+///
+/// The kind rides on the cell and the drawing side does not read it: v1 draws
+/// one line for all five, and telling a curly one from a double is the v1.5
+/// item that grows this and nothing else. cf. 04-renderer R1.
+@Test func everyKindOfUnderlineDrawsTheSameSingleLine() throws {
+    let session = try Session(cols: cols, rows: rows, scrollback: scrollback)
+    // SGR 4 and its four kinds, then 24 to put the last of them down.
+    try session.feed(
+        Array("\u{1b}[4mA\u{1b}[21mB\u{1b}[4:3mC\u{1b}[4:4mD\u{1b}[4:5mE\u{1b}[24mF".utf8)
+    )
+    let renderer = Renderer(metrics: metrics, faces: pinned())
+
+    let drawn = try #require(
+        try session.withSnapshot {
+            snapshot -> (kinds: Set<UInt8>, underlines: [BackgroundInstance]) in
+            (
+                // Five kinds really arrived, so that five lines drawn alike is
+                // this code's answer rather than the engine's.
+                kinds: Set(snapshot.cells.prefix(5).map(\.underline)),
+                underlines: renderer.frame(for: snapshot).underlines
+            )
+        }
+    )
+    #expect(drawn.kinds.count == 5)
+
+    // One line per underlined cell and none for the sixth, each at the foot of
+    // its own column and every one of them the same line.
+    #expect(drawn.underlines.count == 5)
+    #expect(drawn.underlines.map(\.x) == (0..<5).map { Int32($0) * metrics.width })
+    #expect(drawn.underlines.allSatisfy { ($0.y, $0.width, $0.height) == (32, 16, 2) })
+    #expect(drawn.underlines.allSatisfy { hex($0.color) == "ffffff" })
+}
+
+/// A wide character was given two columns, and the line under it covers them
+/// both — one character is one character however many columns it was given,
+/// which is the rule the cursor is already drawn by. cf. 04-renderer R1.
+@Test func anUnderlineOnAWideCharacterCoversBothOfItsColumns() throws {
+    let session = try Session(cols: cols, rows: rows, scrollback: scrollback)
+    try session.feed(Array("\u{1b}[4m한A".utf8))
+    let renderer = Renderer(metrics: metrics, faces: pinned())
+
+    let underlines = try #require(
+        try session.withSnapshot { renderer.frame(for: $0).underlines }
+    )
+    // Two lines and not three: the trailing cell of the wide character holds
+    // none of it, and the line its leading cell draws already covers it.
+    #expect(underlines.count == 2)
+    #expect(underlines.map(\.width) == [2 * metrics.width, metrics.width])
+    #expect(underlines.map(\.x) == [0, 2 * metrics.width])
 }
 
 /// A theme out of a file the user wrote, which is the path the app takes:

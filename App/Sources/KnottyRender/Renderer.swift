@@ -51,7 +51,8 @@ public struct CellMetrics: Sendable, Equatable {
     }
 }
 
-/// A solid rectangle: one per cell, then one for the cursor.
+/// A solid rectangle: one per cell, then one per decoration — the underlines
+/// and the cursor.
 ///
 /// Device pixels throughout, with the origin at the top left of the grid.
 public struct BackgroundInstance {
@@ -126,10 +127,15 @@ public struct AtlasUpdate {
 
 /// What one snapshot draws as.
 public struct Frame {
-    /// The background pass, in draw order: every cell, then the cursor over
-    /// whichever cell it sits on. One buffer and so one draw call, which is
-    /// what keeps a cursor from costing a pass of its own.
+    /// The background pass, in draw order: every cell, then the decorations
+    /// over the cells they belong to — the underlines, and the cursor last.
+    /// One buffer and so one draw call, which is what keeps a decoration from
+    /// costing a pass of its own.
     public let backgrounds: [BackgroundInstance]
+    /// The underlined cells' lines — the rectangles of ``backgrounds``
+    /// between the cells and the cursor, named for the same reason the cursor
+    /// is: a reader of a frame does not have to know where they sit in it.
+    public let underlines: [BackgroundInstance]
     /// The cursor's rectangle — the last of ``backgrounds``, named, so that
     /// a reader of a frame does not have to know it is last. Nil when there
     /// is no cursor to draw.
@@ -201,10 +207,11 @@ public final class Renderer {
     /// placement, not a defect. Per-row eviction if a profile ever says the
     /// reset frame shows.
     private static let cachedRows = 512
-    /// How heavy the cursor's stroke is, in device pixels. One number for
-    /// the bar and the underline both: a stroke weighs the same whichever
-    /// way it runs.
-    private let cursorStroke: Int32
+    /// How heavy a decoration's stroke is, in device pixels. One number for
+    /// the cursor's bar, the cursor's underline and an underlined cell's
+    /// line: a stroke weighs the same whichever way it runs and whatever
+    /// asked for it.
+    private let stroke: Int32
 
     /// A page side, in device pixels. What an atlas coordinate is measured
     /// against, and so what an uploader needs to make a texture the size of
@@ -216,7 +223,7 @@ public final class Renderer {
         self.metrics = metrics
         self.faces = faces ?? Faces(metrics: metrics)
         atlas = Atlas(metrics: metrics, faces: self.faces)
-        cursorStroke = max(1, metrics.width / 8)
+        stroke = max(1, metrics.width / 8)
     }
 
     /// Draw a snapshot.
@@ -233,6 +240,7 @@ public final class Renderer {
 
         var backgrounds: [BackgroundInstance] = []
         backgrounds.reserveCapacity(cols * rows + 1)
+        var underlines: [BackgroundInstance] = []
         var glyphs: [GlyphInstance] = []
         glyphs.reserveCapacity(cols * rows)
         var atlasUpdates: [AtlasUpdate] = []
@@ -285,6 +293,22 @@ public final class Renderer {
                     )
                 )
 
+                // Collected rather than appended, because the cell after this
+                // one paints over it: the decorations follow the whole of the
+                // grid and not the cell they belong to. cf. 04-renderer R1.
+                if cell.isUnderlined, !cell.isWideTail {
+                    underlines.append(
+                        BackgroundInstance(
+                            x: x, y: y + metrics.height - stroke,
+                            // A wide character is one character however many
+                            // columns it was given, so its line covers them
+                            // both — the trailing cell carries none of its own.
+                            width: metrics.width * (cell.isWide ? 2 : 1), height: stroke,
+                            color: colors.foreground
+                        )
+                    )
+                }
+
                 guard let placed = placed[col],
                     let slot = atlas.slot(for: placed.request, updates: &atlasUpdates)
                 else { continue }
@@ -300,13 +324,14 @@ public final class Renderer {
             }
         }
 
+        backgrounds.append(contentsOf: underlines)
         if let cursorRectangle {
             backgrounds.append(cursorRectangle)
         }
 
         return Frame(
-            backgrounds: backgrounds, cursor: cursorRectangle, glyphs: glyphs,
-            atlasUpdates: atlasUpdates
+            backgrounds: backgrounds, underlines: underlines, cursor: cursorRectangle,
+            glyphs: glyphs, atlasUpdates: atlasUpdates
         )
     }
 
@@ -540,12 +565,12 @@ public final class Renderer {
         switch cursor.drawnShape {
         case .bar:
             return BackgroundInstance(
-                x: x, y: y, width: cursorStroke, height: metrics.height, color: color
+                x: x, y: y, width: stroke, height: metrics.height, color: color
             )
         case .underline:
             return BackgroundInstance(
-                x: x, y: y + metrics.height - cursorStroke,
-                width: width, height: cursorStroke, color: color
+                x: x, y: y + metrics.height - stroke,
+                width: width, height: stroke, color: color
             )
         case .block, .blockHollow, .unknown:
             return BackgroundInstance(

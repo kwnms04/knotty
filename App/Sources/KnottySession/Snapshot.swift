@@ -65,6 +65,14 @@ extension Cell {
         attributes & UInt16(KT_ATTRIBUTE_ITALIC.rawValue) != 0
     }
 
+    /// SGR 4 and its kinds: the cell carries an underline. Which of the five
+    /// is not asked here, because v1 draws them all as one solid line — the
+    /// cell keeps the kind for when the drawing side grows.
+    /// cf. 04-renderer R1.
+    public var isUnderlined: Bool {
+        underline != UInt8(KT_UNDERLINE_NONE.rawValue)
+    }
+
     /// SGR 7: the cell asked for its colours the other way round. The
     /// palette is resolved by the time a cell crosses, but this is not.
     public var isInverse: Bool {
