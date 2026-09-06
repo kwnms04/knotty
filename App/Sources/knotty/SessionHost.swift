@@ -41,6 +41,25 @@ final class SessionHost {
     /// terminal. cf. 05-swift-app 7.
     private(set) var cursorCell: (column: Int, row: Int)?
 
+    /// What the window is called: the title of the last frame taken, or the
+    /// app's own name when that frame carried none.
+    ///
+    /// Copied out for the reason ``cursorCell`` is read off the snapshot at
+    /// all — the bytes belong to the borrow and a window title outlives every
+    /// frame. Which name a frame asks for is ``Snapshot/windowTitle``'s to
+    /// say; what stands here before there is a frame is the answer it gives
+    /// to one that named nothing.
+    private(set) var title = ProcessInfo.processInfo.processName
+
+    /// What to call when that name changed, which is the window being
+    /// renamed.
+    ///
+    /// A closure the way ``onWake(_:)`` takes one, and for the reason the
+    /// ownership tree gives: the window is the controller's, and a view that
+    /// renamed it would be a second object saying what a window is. It runs
+    /// where the frame was taken, which is the main thread. cf. 05-swift-app 4.
+    var onTitle: ((String) -> Void)?
+
     /// Spawn the user's login shell behind a terminal of this size, drawn at
     /// these metrics.
     init(
@@ -118,6 +137,11 @@ final class SessionHost {
                 cursorCell =
                     snapshot.cursor.visible
                     ? (column: Int(snapshot.cursor.x), row: Int(snapshot.cursor.y)) : nil
+                let called = snapshot.windowTitle
+                if called != title {
+                    title = called
+                    onTitle?(called)
+                }
                 return renderer.frame(for: snapshot)
             }
         } catch {

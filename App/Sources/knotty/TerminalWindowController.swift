@@ -59,7 +59,16 @@ final class TerminalWindowController: NSWindowController {
             backing: .buffered,
             defer: false
         )
-        window.title = "knotty"
+        // What the terminal was told to call itself, or the app's name until
+        // something says otherwise. The window is held weakly by what renames
+        // it: the session holds the closure and the window's own tree ends at
+        // the session. cf. 06-integration.
+        window.title = host.title
+        host.onTitle = { [weak window] title in window?.title = title }
+        // A window merged into another's tab group is not a window the app
+        // opened, and "prefer tabs when opening documents" would do that to
+        // every ⌘N. Tabs are not v1's. cf. 05-swift-app 3, adr/0010.
+        window.tabbingMode = .disallowed
         let view = try TerminalView(host: host, font: font, scale: scale)
         window.contentView = view
         // A key reaches a view through the responder chain, and a window whose
@@ -76,7 +85,14 @@ final class TerminalWindowController: NSWindowController {
 
     /// Release the session, which is what stops the child and collects it.
     /// Process exit alone does neither.
+    ///
+    /// The view goes out of the window with it. A display link holds its
+    /// target and this view holds the link, so the pair keeps itself alive
+    /// past the window that closed — and taking the view out is what runs the
+    /// teardown that breaks it. One window never showed this; the second one
+    /// is what makes it a leak. cf. `TerminalView.viewDidMoveToWindow`.
     func shutDown() {
         host = nil
+        window?.contentView = NSView()
     }
 }

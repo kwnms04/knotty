@@ -1,4 +1,5 @@
 import CKnotty
+import Foundation
 
 /// One terminal cell, as the boundary lays it out.
 ///
@@ -195,6 +196,20 @@ public struct Snapshot {
 }
 
 extension Snapshot {
+    /// What to call a window drawing this frame: the title the terminal was
+    /// given, or the app's own name where it was given none.
+    ///
+    /// An empty title is the ordinary case rather than a failure — a login
+    /// shell out of the box sets none, because `/etc/zshrc` names the title
+    /// hook it sources after `TERM_PROGRAM` and the only such file is
+    /// Terminal's. Without tabs of its own, the title is how one macOS window
+    /// is told from another, so a window is never left nameless.
+    /// cf. 05-swift-app 3, 06-integration.
+    public var windowTitle: String {
+        let named = String(decoding: title, as: UTF8.self)
+        return named.isEmpty ? ProcessInfo.processInfo.processName : named
+    }
+
     /// What one cell holds, in codepoints: its own, or the run the grapheme
     /// table keeps for it.
     ///

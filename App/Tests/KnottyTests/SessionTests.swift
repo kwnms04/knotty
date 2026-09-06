@@ -134,19 +134,24 @@ private func text(of snapshot: Snapshot, row: Int) -> String {
 }
 
 /// A real child, and a way to be told when it has done something.
-///
-/// `/bin/echo` rather than a shell: what is under test is the session, and a
-/// child that prints one line and stops is the smallest one that makes it
-/// publish. The shell itself is looked at by eye, as M2 said it would be.
-private func spawnEcho() throws -> (session: Session, woken: DispatchSemaphore) {
+private func spawn(_ command: [String]) throws -> (session: Session, woken: DispatchSemaphore) {
     let woken = DispatchSemaphore(value: 0)
     let session = try Session(
-        command: ["/bin/echo", "knotty"], cols: cols, rows: rows, scrollback: scrollback
+        command: command, cols: cols, rows: rows, scrollback: scrollback
     )
     // Registering settles what already fell due, so a child quick enough to
     // have finished by this line still wakes us.
     try session.onWake { woken.signal() }
     return (session, woken)
+}
+
+/// The child every test that only needs one takes.
+///
+/// `/bin/echo` rather than a shell: what is under test is the session, and a
+/// child that prints one line and stops is the smallest one that makes it
+/// publish. The shell itself is looked at by eye, as M2 said it would be.
+private func spawnEcho() throws -> (session: Session, woken: DispatchSemaphore) {
+    try spawn(["/bin/echo", "knotty"])
 }
 
 /// Take frames as the session wakes us, until one answers `read` with
@@ -207,6 +212,32 @@ private func settle<Value>(
         state == ChildState.exited(code: 0),
         "the child came back as \(state.map(String.init(describing:)) ?? "still running")"
     )
+}
+
+/// What a window is called comes from the child, and falls back to the app's
+/// own name only where the child named nothing.
+///
+/// Both halves through a real PTY, because both are what a window meets: a
+/// child that sets no title is every login shell out of the box, and the
+/// programs that do set one, tmux above all, do it with `OSC 2`. Read through
+/// the property the window is named from, so that what is checked is the path
+/// the app takes. cf. 05-swift-app 3, 06-integration.
+@Test func aWindowIsNamedByItsChildAndOtherwiseByTheApp() throws {
+    let (quiet, quietWoken) = try spawnEcho()
+    let untold = try settle(quiet, wokenBy: quietWoken) { snapshot -> String? in
+        // Read off the frame the output landed in, so that "named nothing" is
+        // a frame that came rather than a frame that never did.
+        text(of: snapshot, row: 0).trimmingCharacters(in: .whitespaces).isEmpty
+            ? nil : snapshot.windowTitle
+    }
+    #expect(untold == ProcessInfo.processInfo.processName)
+
+    let (naming, namingWoken) = try spawn(["/bin/echo", "-n", "\u{1b}]2;made\u{7}"])
+    let named = try settle(naming, wokenBy: namingWoken) { snapshot -> String? in
+        snapshot.title.isEmpty ? nil : snapshot.windowTitle
+    }
+
+    #expect(named == "made")
 }
 
 /// The shell comes from the user record. An app the window server started
