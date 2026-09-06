@@ -85,18 +85,53 @@ impl Default for Font {
     }
 }
 
-/// The colours, each of which is absent until the user writes one.
+/// The colours a screen is drawn in.
 ///
-/// Absent is a default and not a gap: what stands in for one is the
-/// terminal's own colour, which is the VT engine's to say and not this
-/// file's to restate.
-#[derive(Debug, Default, Deserialize, Serialize, PartialEq)]
+/// **The defaults are Terminal.app's**, read out of its stock Basic profile
+/// by asking a window running it — `OSC 4` for the sixteen and `OSC 10`/`11`
+/// for the two. Written down here rather than left to the VT engine because
+/// the theme is the app's to own and the colours it opens with are part of
+/// what knotty looks like, not a detail of which engine is underneath.
+/// cf. `01-architecture.md`
+#[derive(Debug, Deserialize, Serialize, PartialEq)]
 #[serde(deny_unknown_fields, default)]
 pub struct Theme {
-    pub background: Option<Color>,
-    pub foreground: Option<Color>,
+    pub background: Color,
+    pub foreground: Color,
+    /// What the cursor is drawn in, absent until someone writes one.
+    ///
+    /// The one colour with no default: unwritten means the cursor takes the
+    /// colour of the text it stands on, which is a rule rather than a gap.
     pub cursor: Option<Color>,
-    pub palette: Option<[Color; 16]>,
+    pub palette: [Color; 16],
+}
+
+impl Default for Theme {
+    fn default() -> Self {
+        Self {
+            background: Color::WHITE,
+            foreground: Color::BLACK,
+            cursor: None,
+            palette: [
+                Color::rgb(0x00, 0x00, 0x00),
+                Color::rgb(0x99, 0x00, 0x00),
+                Color::rgb(0x00, 0xa6, 0x00),
+                Color::rgb(0x99, 0x99, 0x00),
+                Color::rgb(0x00, 0x00, 0xb3),
+                Color::rgb(0xb3, 0x00, 0xb3),
+                Color::rgb(0x00, 0xa6, 0xb3),
+                Color::rgb(0xbf, 0xbf, 0xbf),
+                Color::rgb(0x66, 0x66, 0x66),
+                Color::rgb(0xe6, 0x00, 0x00),
+                Color::rgb(0x00, 0xd9, 0x00),
+                Color::rgb(0xe6, 0xe6, 0x00),
+                Color::rgb(0x00, 0x00, 0xff),
+                Color::rgb(0xe6, 0x00, 0xe6),
+                Color::rgb(0x00, 0xe6, 0xe6),
+                Color::rgb(0xe6, 0xe6, 0xe6),
+            ],
+        }
+    }
 }
 
 #[derive(Debug, Default, Deserialize, Serialize, PartialEq)]
@@ -107,13 +142,19 @@ pub struct Terminal {
 }
 
 /// Which `⌥` sends Meta rather than making a character.
+///
+/// Neither by default, which is what macOS does everywhere else: `⌥` is how
+/// a character that is not on the key is typed, and a terminal that takes
+/// that away is one the rest of the system disagrees with. Whoever wants
+/// Meta says so — the reason this is a key at all is that the wrong answer
+/// hurts on every keystroke.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum OptionAsMeta {
     Left,
     Right,
-    #[default]
     Both,
+    #[default]
     None,
 }
 
@@ -153,6 +194,13 @@ impl<'de> Deserialize<'de> for Color {
 }
 
 impl Color {
+    const BLACK: Self = Self::rgb(0x00, 0x00, 0x00);
+    const WHITE: Self = Self::rgb(0xff, 0xff, 0xff);
+
+    const fn rgb(r: u8, g: u8, b: u8) -> Self {
+        Self { r, g, b }
+    }
+
     fn parse(text: &str) -> Option<Self> {
         let digits = text.strip_prefix('#')?;
         if digits.len() != 6 || !digits.bytes().all(|byte| byte.is_ascii_hexdigit()) {
@@ -224,8 +272,23 @@ mod tests {
         assert_eq!(json(&loaded)["font"]["family"], "JetBrains Mono");
         assert_eq!(json(&loaded)["font"]["size"], 16.0);
         assert_eq!(json(&loaded)["bell"]["mode"], "visual");
-        assert_eq!(json(&loaded)["terminal"]["option-as-meta"], "both");
-        assert_eq!(json(&loaded)["theme"]["background"], Value::Null);
+        assert_eq!(json(&loaded)["terminal"]["option-as-meta"], "none");
+        // Terminal.app's Basic, which is what a screen nobody themed opens
+        // in. The cursor is the one colour with no default: unwritten means
+        // it takes the colour of the text it stands on.
+        assert_eq!(
+            json(&loaded)["theme"]["background"],
+            serde_json::json!({"r": 255, "g": 255, "b": 255})
+        );
+        assert_eq!(
+            json(&loaded)["theme"]["foreground"],
+            serde_json::json!({"r": 0, "g": 0, "b": 0})
+        );
+        assert_eq!(json(&loaded)["theme"]["cursor"], Value::Null);
+        assert_eq!(
+            json(&loaded)["theme"]["palette"][4],
+            serde_json::json!({"r": 0, "g": 0, "b": 179})
+        );
     }
 
     #[test]
