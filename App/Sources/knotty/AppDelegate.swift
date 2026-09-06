@@ -10,13 +10,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// reference to any of them. cf. 05-swift-app 4.
     private var terminals: [TerminalWindowController] = []
 
-    /// What a window is opened with, read once at launch. Watching the file
-    /// and handing round what changed is M4's next ticket; what stands here
-    /// is the one value every window is opened from. cf. 05-swift-app 4, 10.
+    /// What a window is opened with: what the file last said, and what the
+    /// next reload is diffed against. cf. 05-swift-app 4, 10.
     ///
-    /// Nil only until that read. Nothing that asks for a window — the menu,
-    /// the Dock icon — runs before it.
+    /// Nil only until the first load. Nothing that asks for a window — the
+    /// menu, the Dock icon — runs before it.
     private var config: Config?
+
+    /// What tells this object the file was saved.
+    ///
+    /// Held for the app's lifetime, because letting go of it is what stops
+    /// the watch. Nil where the system would not give one, which costs the
+    /// following and not the app.
+    private var watch: Config.Watch?
+
+    /// What the file was last wrong about, or nil when it last parsed.
+    ///
+    /// Kept because a window opened after the typo has to say it too: what
+    /// that window is running is the configuration this diagnostic is the
+    /// reason for, and a fresh window with a clean top row would be the app
+    /// saying the file is fine. cf. 05-swift-app 10.
+    private var diagnostic: String?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.mainMenu = Self.mainMenu()
@@ -39,19 +53,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         do {
             // A file that will not parse is not a reason not to start: what
-            // comes back is the defaults with a diagnostic beside them. The
-            // banner that shows one is M4's window work; until then it goes
-            // where every other thing this app has no window for goes.
+            // comes back is the defaults with a diagnostic beside them, and
+            // the window that opens on them is where it is said — after the
+            // window, because there is nowhere to say it before one.
             // cf. 05-swift-app 10.
             let loaded = try Config.load()
-            if let diagnostic = loaded.diagnostic {
-                FileHandle.standardError.write(
-                    Data("knotty: \(Config.path.path(percentEncoded: false)): \(diagnostic)\n".utf8)
-                )
-            }
-
             config = loaded.config
             try open(config: loaded.config)
+            show(diagnostic: loaded.diagnostic)
+            // From here, saving the file is what applies it: nothing is
+            // restarted to try a size.
+            watch = Config.Watch { [weak self] in self?.reload() }
         } catch {
             // No shell, no terminal. There is nothing to put in a window and
             // no path yet for telling anyone why, so this dies where it broke
@@ -101,6 +113,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// The file was saved: read it again, and hand round what moved.
+    ///
+    /// **Item by item, and not the whole configuration.** What each one costs
+    /// is different — a colour is a redraw and a face is every glyph baked
+    /// again — so applying all of it on every save would put the atlas reset
+    /// behind a light/dark switch. cf. 04-renderer R8, 05-swift-app 10.
+    ///
+    /// A file that will not parse changes nothing and says so: the windows go
+    /// on in the configuration they were already running, which is the one
+    /// that has to survive being typed in.
+    @MainActor private func reload() {
+        guard let current = config else { return }
+        // A blob this side cannot read at all is the two sides built from
+        // different sources, which nothing typed into the file can cause and
+        // no banner would help with. The windows keep what they have.
+        guard let loaded = try? Config.reload(keeping: current) else { return }
+        show(diagnostic: loaded.diagnostic)
+
+        let next = loaded.config
+        if next.font != current.font { terminals.forEach { $0.apply(font: next.font) } }
+        if next.theme != current.theme { terminals.forEach { $0.apply(theme: next.theme) } }
+        config = next
+    }
+
+    /// Put a diagnostic in front of every window, or take it back with nil,
+    /// and remember it for the windows there are not yet.
+    @MainActor private func show(diagnostic: String?) {
+        self.diagnostic = diagnostic
+        terminals.forEach { $0.show(diagnostic: diagnostic) }
+    }
+
     /// Spawn a shell, put a window around it and keep the controller.
     @MainActor private func open(config: Config) throws {
         let terminal = try TerminalWindowController.spawningShell(config: config)
@@ -111,6 +154,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             window.cascadeTopLeft(from: previous.cascadeTopLeft(from: .zero))
         }
         terminals.append(terminal)
+        terminal.show(diagnostic: diagnostic)
         terminal.showWindow(nil)
     }
 

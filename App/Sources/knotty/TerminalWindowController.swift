@@ -83,6 +83,68 @@ final class TerminalWindowController: NSWindowController {
         return controller
     }
 
+    /// The view under the window, while there is one.
+    ///
+    /// Nil after ``shutDown()``, which takes it out — so a configuration that
+    /// changed while a window was closing reaches nothing, rather than
+    /// reaching a session that is already gone.
+    private var view: TerminalView? { window?.contentView as? TerminalView }
+
+    /// Put a face the file changed in force: the same grid, at a new cell,
+    /// in a window that moved to hold it.
+    ///
+    /// **The grid is what is kept and the window is what gives way.** A
+    /// terminal whose columns held has nothing to reflow — no `SIGWINCH`, no
+    /// rewrap, and none of the cost of one on a scrollback of any size. The
+    /// other way round, the window would have to be snapped back to whole
+    /// cells afterwards anyway, so "the window stays put" would not be true
+    /// either. It is what Terminal.app and iTerm2 do. cf. 05-swift-app 10.
+    func apply(font: Config.Font) {
+        guard let window, let view else { return }
+        host?.apply(font: font)
+        window.setFrame(Self.fitted(content: view.use(font: font), of: window), display: true)
+    }
+
+    /// Put colours the file changed in force, in the core and in the view.
+    func apply(theme: Config.Theme) {
+        host?.apply(theme: theme)
+        view?.use(theme: theme)
+    }
+
+    /// Say what is wrong with the configuration file, or take it back.
+    func show(diagnostic: String?) {
+        view?.show(diagnostic: diagnostic)
+    }
+
+    /// Where a window holding this much content goes.
+    ///
+    /// The top left stays where it was, because that is the corner the text
+    /// starts in and the one the eye is on. What will not fit on the screen
+    /// is given up — and giving up frame is giving up grid, since the layout
+    /// under it divides whatever it is left by the cell. That is the whole of
+    /// "a grid that shrinks to what the screen can hold": no second count of
+    /// the cells, and no second place where one could disagree with the
+    /// other. cf. 05-swift-app 10.
+    private static func fitted(content: NSSize, of window: NSWindow) -> NSRect {
+        var size = window.frameRect(forContentRect: NSRect(origin: .zero, size: content)).size
+        let corner = NSPoint(x: window.frame.minX, y: window.frame.maxY)
+        guard let visible = window.screen?.visibleFrame else {
+            return NSRect(
+                x: corner.x, y: corner.y - size.height, width: size.width, height: size.height
+            )
+        }
+        size.width = min(size.width, visible.width)
+        size.height = min(size.height, visible.height)
+        // Held inside the screen after the size settled, so that a window
+        // that grew against an edge comes back in rather than off.
+        return NSRect(
+            x: min(max(corner.x, visible.minX), visible.maxX - size.width),
+            y: min(max(corner.y - size.height, visible.minY), visible.maxY - size.height),
+            width: size.width,
+            height: size.height
+        )
+    }
+
     /// Release the session, which is what stops the child and collects it.
     /// Process exit alone does neither.
     ///

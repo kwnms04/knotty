@@ -22,11 +22,11 @@ final class SessionHost {
     private var metrics: CellMetrics
     /// The face the configuration asked for, kept because a new raster loads
     /// it again and this is what said which.
-    private let font: Config.Font
+    private var font: Config.Font
     /// What the theme said the cursor is drawn in, or nil when it named none
     /// — which is the renderer's cue to take the colour of the text the
     /// cursor stands on. cf. 04-renderer R1.
-    private let cursorColor: Rgb?
+    private var cursorColor: Rgb?
 
     /// The grid the last resize sent.
     ///
@@ -126,6 +126,51 @@ final class SessionHost {
         } catch {
             report(error)
         }
+    }
+
+    /// Put a theme the file changed in force.
+    ///
+    /// **Redraw only, and no new raster.** The palette is the terminal's own
+    /// state, so it goes back down to the core and every cell crosses in the
+    /// new colours on the next frame — which the injection itself publishes.
+    /// A glyph's coverage is not a function of what tints it, so nothing that
+    /// was baked is stale. cf. 04-renderer R8, 05-swift-app 10.
+    func apply(theme: Config.Theme) {
+        cursorColor = theme.cursor?.rgb
+        do {
+            try session.setTheme(theme)
+        } catch {
+            report(error)
+        }
+    }
+
+    /// Take a face the file changed.
+    ///
+    /// What the counts become is the window's answer, and the layout that
+    /// follows the window moving is what carries it down. Two things here are
+    /// what that layout cannot do for itself.
+    ///
+    /// **The raster is remade**, because a face is not a cell: two families
+    /// can measure the same, and then the resize that answers a new cell has
+    /// nothing to answer.
+    ///
+    /// **The grid is forgotten**, so the layout after it always reaches the
+    /// core — the same reason the counts start at zero. A face that measures
+    /// like the last one moves no window and changes no count, and nothing
+    /// would publish a frame: the new glyphs would sit baked and waiting
+    /// while the screen kept the old ones until the child next wrote
+    /// something. What goes down is the grid it already had, which the engine
+    /// rewraps nothing for.
+    ///
+    /// ponytail: where the size moved too, that resize remakes the raster a
+    /// second time at the new cell — two four-face loads, about 2ms, on a
+    /// save. Handing the new metrics in here would settle it, at the cost of
+    /// a branch that has to know what the window is about to do.
+    /// cf. 04-renderer R8, 05-swift-app 10.
+    func apply(font: Config.Font) {
+        self.font = font
+        renderer = Renderer(metrics: metrics, faces: Faces(metrics: metrics, name: font.family))
+        (columns, rows) = (0, 0)
     }
 
     /// Register what the session calls when it has something to be taken.

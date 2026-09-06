@@ -47,6 +47,16 @@ final class TerminalView: NSView {
     /// off the cell grid — which is why it is a view and not a third pass.
     private let preedit = NSTextField(labelWithString: "")
     private var preeditFont: NSFont
+    /// What the configuration file was last wrong about, across the top of
+    /// the grid, or hidden when it was not wrong about anything.
+    ///
+    /// **A banner and not a sheet.** A sheet is modal, and a typo in the file
+    /// is fixed by looking at the terminal it was typed in — a message that
+    /// takes the window away is one that takes away what it is about. It sits
+    /// over the top row rather than taking a row from the grid, because
+    /// resizing the terminal to make room would reflow the screen for the
+    /// sake of a sentence about a font. cf. 05-swift-app 10.
+    private let banner = NSTextField(labelWithString: "")
     /// One cell in points, which is what places anything AppKit lays out.
     private var cellSize = NSSize.zero
     /// What watches the window becoming, and ceasing to be, the one typed
@@ -101,13 +111,14 @@ final class TerminalView: NSView {
     /// The face the grid is measured from: the two things about it that a
     /// display of another scale does not change. Everything else is measured
     /// from them again when one does.
-    private let font: Config.Font
+    private var font: Config.Font
     /// The colours the screen is drawn in. What the grid does with them is
     /// the core's — every cell crosses with its colours already resolved —
-    /// so what is left here is the two places no cell reaches: the strip
-    /// along an edge that no whole cell covers, and the composition overlay,
-    /// which is AppKit's rather than the grid's. cf. 05-swift-app 7, 10.
-    private let theme: Config.Theme
+    /// so what is left here is the places no cell reaches: the strip along an
+    /// edge that no whole cell covers, the composition overlay, and the
+    /// banner, all of them AppKit's rather than the grid's.
+    /// cf. 05-swift-app 7, 10.
+    private var theme: Config.Theme
     /// How many device pixels a point is on the display the view is on.
     private var scale: Double
     /// The drawable, in device pixels — the view rather than the grid, so
@@ -190,9 +201,16 @@ final class TerminalView: NSView {
         // Text on its way into the grid, so it stands on the colours the
         // grid is drawn in rather than on AppKit's. cf. 05-swift-app 7.
         preedit.drawsBackground = true
-        preedit.backgroundColor = Self.color(theme.background)
         preedit.isHidden = true
         addSubview(preedit)
+
+        banner.drawsBackground = true
+        banner.lineBreakMode = .byTruncatingTail
+        banner.isHidden = true
+        addSubview(banner)
+
+        // What both of them are drawn in, from the one place that says so.
+        use(theme: theme)
 
         // What asks `makeBackingLayer()` for the layer configured just below.
         wantsLayer = true
@@ -225,6 +243,81 @@ final class TerminalView: NSView {
     }
 
     override func makeBackingLayer() -> CALayer { CAMetalLayer() }
+
+    /// Take a face the configuration file changed, and say how big the window
+    /// now has to be to hold the grid it already had.
+    ///
+    /// The cell is measured here and not handed in, for the reason the
+    /// initializer gives: this view is what measures it again on a display of
+    /// another scale, and a caller measuring it too could measure it against
+    /// a different one. Moving the window is the controller's — this says
+    /// what to move it to and nothing else. cf. 04-renderer R4,
+    /// 05-swift-app 4, 10.
+    func use(font: Config.Font) -> NSSize {
+        // Read before the cell moves: these counts are what the new size is
+        // made of, since the grid is what is kept.
+        let grid = self.grid
+        self.font = font
+        remeasure()
+        // Asked for rather than waited on: a window whose new size works out
+        // the same as its old one is not one AppKit lays out again, and the
+        // cell under it moved all the same.
+        needsLayout = true
+        // Rounded up, because the window is sized in points where the cell is
+        // counted in device pixels: a grid an odd number of pixels wide falls
+        // on half a point at 2x, and down would be a column short of the ones
+        // being kept. Up is the strip along the edge that the pass already
+        // clears to the terminal's background.
+        return NSSize(
+            width: (Double(grid.columns) * Double(metrics.width) / scale).rounded(.up),
+            height: (Double(grid.rows) * Double(metrics.height) / scale).rounded(.up)
+        )
+    }
+
+    /// Measure the cell, and the face the overlay is laid out in, from the
+    /// face the grid is drawn in and the scale it is drawn at.
+    private func remeasure() {
+        metrics = .system(pointSize: font.size, scale: scale, name: font.family)
+        preeditFont = Self.overlayFont(pointSize: font.size)
+    }
+
+    /// Take colours the configuration file changed.
+    ///
+    /// The grid's own arrive resolved on the next snapshot, which the
+    /// injection into the core publishes. What is left here is the three
+    /// places no cell reaches: the strip along an edge that no whole cell
+    /// covers, the composition overlay, and the banner. cf. 05-swift-app 10.
+    func use(theme: Config.Theme) {
+        self.theme = theme
+        preedit.backgroundColor = Self.color(theme.background)
+        // The banner takes the same two the wrong way round. A diagnostic has
+        // to be told at a glance from the output it lies over, and inverting
+        // is the one way of doing that which cannot clash with a palette the
+        // user chose.
+        banner.backgroundColor = Self.color(theme.foreground)
+        banner.textColor = Self.color(theme.background)
+    }
+
+    /// Say what is wrong with the configuration file, or take the saying back
+    /// with nil.
+    func show(diagnostic: String?) {
+        guard let diagnostic else {
+            banner.isHidden = true
+            return
+        }
+        banner.stringValue = diagnostic
+        banner.isHidden = false
+        placeBanner()
+    }
+
+    /// Put the banner across the top of the view, as tall as its own text.
+    private func placeBanner() {
+        guard !banner.isHidden else { return }
+        let height = banner.fittingSize.height
+        banner.frame = NSRect(
+            x: 0, y: bounds.height - height, width: bounds.width, height: height
+        )
+    }
 
     /// A theme colour as AppKit takes one. sRGB because that is what a cell's
     /// three bytes already are, which is what the layer is tagged with.
@@ -265,8 +358,7 @@ final class TerminalView: NSView {
             // Device pixels are what a cell is measured in, so a display of
             // another scale is a different cell and a whole new raster.
             // cf. 04-renderer R8.
-            metrics = .system(pointSize: font.size, scale: scale, name: font.family)
-            preeditFont = Self.overlayFont(pointSize: font.size)
+            remeasure()
         }
         cellSize = NSSize(
             width: Double(metrics.width) / scale, height: Double(metrics.height) / scale
@@ -282,15 +374,26 @@ final class TerminalView: NSView {
             layer.drawableSize = viewport
         }
 
-        // Whole cells, and never none: a window can be dragged smaller than
-        // the one cell a terminal has to have. What the division leaves over
-        // is nothing on the path a drag takes, and elsewhere — zooming, which
-        // rounds to the screen and not to the step above — it is the strip
-        // along the edge that the pass clears to the terminal's background.
-        host?.resize(
+        placeBanner()
+        host?.resize(columns: grid.columns, rows: grid.rows, metrics: metrics)
+    }
+
+    /// The grid this size makes of this cell.
+    ///
+    /// Whole cells, and never none: a window can be dragged smaller than the
+    /// one cell a terminal has to have. What the division leaves over is
+    /// nothing on the path a drag takes, and elsewhere — zooming, which
+    /// rounds to the screen and not to the step above; a window held to what
+    /// a screen can show — it is the strip along the edge that the pass
+    /// clears to the terminal's background.
+    ///
+    /// Read by the controller as well as by the layout, and for the opposite
+    /// reason: a face that changed keeps these counts and moves the window,
+    /// so this is what the new size is made of. cf. 05-swift-app 10.
+    var grid: (columns: UInt16, rows: UInt16) {
+        (
             columns: UInt16(clamping: max(1, Int(viewport.width) / Int(metrics.width))),
-            rows: UInt16(clamping: max(1, Int(viewport.height) / Int(metrics.height))),
-            metrics: metrics
+            rows: UInt16(clamping: max(1, Int(viewport.height) / Int(metrics.height)))
         )
     }
 

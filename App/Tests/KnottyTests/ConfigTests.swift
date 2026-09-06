@@ -3,12 +3,18 @@ import Testing
 
 import KnottySession
 
-/// The configuration path end to end: a file the user wrote, through the
-/// boundary, into the values a window opens with.
-private func loading(_ text: String) throws -> Config.Loaded {
+/// A directory of this test's own, for a file that is written more than once.
+private func temporaryDirectory() throws -> URL {
     let directory = URL(fileURLWithPath: NSTemporaryDirectory())
         .appending(path: "knotty-config-\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    return directory
+}
+
+/// The configuration path end to end: a file the user wrote, through the
+/// boundary, into the values a window opens with.
+private func loading(_ text: String) throws -> Config.Loaded {
+    let directory = try temporaryDirectory()
     defer { try? FileManager.default.removeItem(at: directory) }
 
     let path = directory.appending(path: "config.toml")
@@ -96,4 +102,111 @@ private func loading(_ text: String) throws -> Config.Loaded {
 /// user is told to write.
 @Test func theFileIsUnderTheUsersConfigDirectory() {
     #expect(Config.path.path(percentEncoded: false).hasSuffix("/.config/knotty/config.toml"))
+}
+
+/// A typo made while the app is running costs the banner and nothing else.
+///
+/// The difference from the first load, which has the defaults to fall back
+/// on: here there is a configuration the user is working in, and taking their
+/// colours away halfway through a line they are still typing would be the
+/// editing losing them the terminal they are editing in.
+@Test func aTypoOnReloadKeepsWhatIsInForce() throws {
+    let directory = try temporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let path = directory.appending(path: "config.toml")
+
+    try Data("[font]\nfamily = \"Menlo\"\nsize = 15.5\n".utf8).write(to: path)
+    let inForce = try Config.load(from: path).config
+
+    try Data("[font]\nfamily = \"Menlo\"\nsize = -3.0\n".utf8).write(to: path)
+    let reloaded = try Config.reload(from: path, keeping: inForce)
+
+    #expect(reloaded.diagnostic?.contains("size") == true)
+    #expect(reloaded.config == inForce)
+}
+
+/// A file the user fixed is a file that applies, which is the other half of
+/// the same call.
+@Test func aFileThatParsesOnReloadIsWhatComesBack() throws {
+    let directory = try temporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let path = directory.appending(path: "config.toml")
+
+    try Data("[font]\nfamily = \"Menlo\"\nsize = 15.5\n".utf8).write(to: path)
+    let inForce = try Config.load(from: path).config
+
+    try Data("[font]\nfamily = \"Menlo\"\nsize = 18.0\n".utf8).write(to: path)
+    let reloaded = try Config.reload(from: path, keeping: inForce)
+
+    #expect(reloaded.diagnostic == nil)
+    #expect(reloaded.config.font.size == 18.0)
+}
+
+/// Saves in quick succession are one reload.
+///
+/// What a hand on ⌘S twice comes to, and what one save comes to as well: an
+/// editor writing a file touches its directory more than once, and every one
+/// of those would otherwise be a reload of its own — half of them reading a
+/// file that is not finished being written.
+@MainActor @Test func consecutiveSavesAreOneReload() async throws {
+    let directory = try temporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let path = directory.appending(path: "config.toml")
+    try Data("[font]\nsize = 13.0\n".utf8).write(to: path)
+
+    let reloads = Reloads()
+    let watch = Config.Watch(path: path) { reloads.count += 1 }
+
+    // What making the directory left in flight is not what this is about, and
+    // a stream is not watching the moment it is asked to.
+    try await Task.sleep(for: .milliseconds(400))
+    reloads.count = 0
+
+    // No tolerance, because this gap is the thing being tested: a sleep the
+    // runtime is free to round up could put the two saves in windows of their
+    // own and prove nothing.
+    try Data("[font]\nsize = 14.0\n".utf8).write(to: path)
+    try await Task.sleep(for: .milliseconds(30), tolerance: .zero)
+    try Data("[font]\nsize = 15.0\n".utf8).write(to: path)
+
+    // Comfortably past the latency the stream gathers for, so that a second
+    // callback would have arrived by now if there were going to be one.
+    try await Task.sleep(for: .milliseconds(800))
+    #expect(reloads.count == 1)
+
+    withExtendedLifetime(watch) {}
+}
+
+/// The first configuration a user ever writes is seen without a restart.
+///
+/// Writing it makes `~/.config/knotty` as well as the file in it, so the
+/// directory the watch was given did not exist when the watch began. A stream
+/// that resolved its path once would stay silent through exactly the save
+/// that matters most.
+@MainActor @Test func aConfigurationWrittenForTheFirstTimeIsSeen() async throws {
+    let parent = try temporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: parent) }
+    // Named but not made, the way `~/.config/knotty` is before the first save.
+    let directory = parent.appending(path: "knotty")
+    let path = directory.appending(path: "config.toml")
+
+    let reloads = Reloads()
+    let watch = Config.Watch(path: path) { reloads.count += 1 }
+
+    try await Task.sleep(for: .milliseconds(400))
+    reloads.count = 0
+
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    try Data("[font]\nsize = 14.0\n".utf8).write(to: path)
+
+    try await Task.sleep(for: .seconds(1))
+    #expect(reloads.count >= 1)
+
+    withExtendedLifetime(watch) {}
+}
+
+/// How often the watch called back. A reference, because the closure it is
+/// counted in outlives the call that made it.
+@MainActor private final class Reloads {
+    var count = 0
 }
