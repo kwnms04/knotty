@@ -3,7 +3,9 @@
 //! Every identifier that crosses the boundary is an opaque pointer or a
 //! `repr(C)` struct, and no VT engine type appears here.
 
-use std::ffi::c_void;
+use std::ffi::{OsStr, c_void};
+use std::os::unix::ffi::OsStrExt;
+use std::path::Path;
 use std::ptr;
 
 mod entry;
@@ -252,7 +254,7 @@ impl Userdata {
 /// A caller reads the constant from the header it compiled against and
 /// compares it with [`kt_abi_version`]. Mismatch means header and library
 /// disagree about layouts, and the caller must not proceed.
-pub const KT_ABI_VERSION: u32 = 8;
+pub const KT_ABI_VERSION: u32 = 9;
 
 /// Outcome of a call across the boundary.
 #[repr(i32)]
@@ -1544,6 +1546,114 @@ pub unsafe extern "C" fn kt_snapshot_view(
                 child_state,
                 session_state: snapshot.session,
                 child_exit_code,
+            };
+            KtStatus::Ok
+        }))
+    })
+}
+
+/// Opaque handle to a loaded configuration.
+///
+/// One blob and no getter per key: a key added to the schema moves what is in
+/// the JSON and leaves the header where it is. cf. `02-ffi.md`
+pub struct KtConfig {
+    json: String,
+    diagnostic: String,
+}
+
+/// Borrowed view of a loaded configuration.
+///
+/// The pointers stay valid until the configuration is freed.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct KtConfigView {
+    /// The configuration as one JSON object, defaults already merged in.
+    pub json: KtText,
+    /// What was wrong with the file, or empty when nothing was. A load that
+    /// says something here still carries a whole configuration in `json` —
+    /// the defaults, since a first load has no previous one to keep.
+    pub diagnostic: KtText,
+}
+
+/// Read the configuration file at `path`, or the defaults where there is no
+/// file.
+///
+/// **Failure is a diagnostic and not a refusal.** A file that will not parse
+/// comes back as `KT_STATUS_OK` carrying the defaults and a diagnostic beside
+/// them, because a window opens either way and what a caller does with the
+/// diagnostic is show it. What this refuses is a caller's own mistake: a null
+/// `out`, or a null path of some length. An empty path names no file, and no
+/// file is the defaults.
+///
+/// On success `out` receives an owned handle, to be released with
+/// [`kt_config_free`]; otherwise it receives null.
+///
+/// The path is the caller's because watching the file is: nothing here knows
+/// where a configuration lives, and the app that reloads on a change is what
+/// already had to.
+///
+/// # Safety
+///
+/// `path` must point at `path_len` readable bytes, or be null when `path_len`
+/// is 0, and `out` must be a valid, writable pointer to a `KtConfig *`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kt_config_load(
+    path: *const u8,
+    path_len: usize,
+    out: *mut *mut KtConfig,
+) -> KtStatus {
+    entry::answer(|| {
+        let out = unsafe { entry::out(out, ptr::null_mut()) }?;
+        let path = unsafe { entry::borrowed(path, path_len) }?;
+
+        Ok(guarded(KtStatus::Panicked, || {
+            // Bytes and not a `str`: a path is whatever the file system will
+            // take, and this one is on its way straight back out to it.
+            let path = Path::new(OsStr::from_bytes(path));
+            let loaded = knotty_config::load(path);
+            *out = Box::into_raw(Box::new(KtConfig {
+                json: loaded.json,
+                diagnostic: loaded.diagnostic.unwrap_or_default(),
+            }));
+            KtStatus::Ok
+        }))
+    })
+}
+
+/// Release a configuration. Null is a no-op.
+///
+/// # Safety
+///
+/// `config` must come from [`kt_config_load`] and must not be used
+/// afterwards.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kt_config_free(config: *mut KtConfig) {
+    guarded((), || {
+        if !config.is_null() {
+            drop(unsafe { Box::from_raw(config) });
+        }
+    });
+}
+
+/// Fill `out` with a view of the configuration's contents.
+///
+/// # Safety
+///
+/// `config` must be a live handle and `out` must be a valid, writable pointer
+/// to a `KtConfigView`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kt_config_view(
+    config: *const KtConfig,
+    out: *mut KtConfigView,
+) -> KtStatus {
+    entry::answer(|| {
+        let out = unsafe { entry::at_mut(out) }?;
+        let config = unsafe { entry::at(config) }?;
+
+        Ok(guarded(KtStatus::Panicked, || {
+            *out = KtConfigView {
+                json: config.json.as_str().into(),
+                diagnostic: config.diagnostic.as_str().into(),
             };
             KtStatus::Ok
         }))

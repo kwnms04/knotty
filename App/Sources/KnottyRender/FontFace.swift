@@ -97,9 +97,12 @@ public struct Ligatures: Sendable {
 /// Loading walks the font's GSUB once. On a ten-megabyte font that is a
 /// perceptible cost, and it is paid once per face rather than once per frame.
 public final class FontFace {
-    /// The face this milestone draws with. Configuration is M4's, so this is
-    /// a constant — but not the system's fixed-pitch font, which carries no
-    /// ligature feature at all and so could never draw one.
+    /// The face to load when a caller names none.
+    ///
+    /// What the app draws with is `font.family`, and the default behind that
+    /// key is `knotty-config`'s. This is the one the loading calls below fall
+    /// back to when nobody said — not the system's fixed-pitch font, which
+    /// carries no ligature feature at all and so could never draw one.
     public static let preferredName = "JetBrains Mono"
 
     /// The two features a ligature comes out of, enabled together and read

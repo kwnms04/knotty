@@ -98,10 +98,10 @@ final class TerminalView: NSView {
     /// nothing left to hang it on but a clock of the app's own. cf. 02-ffi.
     private var autoscrolling: Timer?
 
-    /// The face's size in points, which is the one thing about the grid that
-    /// a display of another scale does not change. Everything else is
-    /// measured from it again when one does.
-    private let pointSize: Double
+    /// The face the grid is measured from: the two things about it that a
+    /// display of another scale does not change. Everything else is measured
+    /// from them again when one does.
+    private let font: Config.Font
     /// How many device pixels a point is on the display the view is on.
     private var scale: Double
     /// The drawable, in device pixels — the view rather than the grid, so
@@ -128,16 +128,16 @@ final class TerminalView: NSView {
         )
     }
 
-    init(host: SessionHost, pointSize: Double, scale: Double) throws {
+    init(host: SessionHost, font: Config.Font, scale: Double) throws {
         self.host = host
-        self.pointSize = pointSize
+        self.font = font
         self.scale = scale
         // Measured here rather than handed in, because the view is what
         // measures it again on a display of another scale. `CellMetrics` is a
-        // function of these two numbers, so this is the same grid the window
-        // around it was sized to. cf. 04-renderer R4.
-        metrics = .system(pointSize: pointSize, scale: scale)
-        preeditFont = Self.overlayFont(pointSize: pointSize)
+        // function of the face and the scale, so this is the same grid the
+        // window around it was sized to. cf. 04-renderer R4.
+        metrics = .system(pointSize: font.size, scale: scale, name: font.family)
+        preeditFont = Self.overlayFont(pointSize: font.size)
 
         guard let device = MTLCreateSystemDefaultDevice() else {
             throw MetalMissing("a GPU")
@@ -248,8 +248,8 @@ final class TerminalView: NSView {
             // Device pixels are what a cell is measured in, so a display of
             // another scale is a different cell and a whole new raster.
             // cf. 04-renderer R8.
-            metrics = .system(pointSize: pointSize, scale: scale)
-            preeditFont = Self.overlayFont(pointSize: pointSize)
+            metrics = .system(pointSize: font.size, scale: scale, name: font.family)
+            preeditFont = Self.overlayFont(pointSize: font.size)
         }
         cellSize = NSSize(
             width: Double(metrics.width) / scale, height: Double(metrics.height) / scale

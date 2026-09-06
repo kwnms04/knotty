@@ -3,6 +3,8 @@
 
 use std::ffi::c_void;
 use std::mem::MaybeUninit;
+use std::os::unix::ffi::OsStrExt;
+use std::path::Path;
 use std::ptr;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::thread;
@@ -12,12 +14,13 @@ use rustix::process::{Pid, test_kill_process};
 
 use knotty_ffi::{
     Attribute, Cell, ClipboardTarget, Cursor, CursorShape, Dirty, Key, KeyAction, KtBytes,
-    KtChildState, KtEventKind, KtEvents, KtKeyEvent, KtSession, KtSessionState, KtSnapshot,
-    KtSnapshotView, KtStatus, KtText, Rgb, Row, RowFlag, SelectionRange, Underline, kt_abi_version,
-    kt_paste_is_safe, kt_session_feed, kt_session_free, kt_session_key, kt_session_new_detached,
-    kt_session_new_pty, kt_session_paste, kt_session_set_selection, kt_session_set_wake,
-    kt_session_take_events, kt_session_take_snapshot, kt_session_take_writes, kt_session_write,
-    kt_snapshot_free, kt_snapshot_view,
+    KtChildState, KtConfigView, KtEventKind, KtEvents, KtKeyEvent, KtSession, KtSessionState,
+    KtSnapshot, KtSnapshotView, KtStatus, KtText, Rgb, Row, RowFlag, SelectionRange, Underline,
+    kt_abi_version, kt_config_free, kt_config_load, kt_config_view, kt_paste_is_safe,
+    kt_session_feed, kt_session_free, kt_session_key, kt_session_new_detached, kt_session_new_pty,
+    kt_session_paste, kt_session_set_selection, kt_session_set_wake, kt_session_take_events,
+    kt_session_take_snapshot, kt_session_take_writes, kt_session_write, kt_snapshot_free,
+    kt_snapshot_view,
 };
 
 /// Ghostty's own defaults. A change here is an upstream palette change, not a
@@ -2285,4 +2288,80 @@ fn the_paste_check_judges_a_run_without_a_session_behind_it() {
     // Nothing to paste is nothing to warn about, and the empty run is the one
     // that may be null.
     assert!(unsafe { kt_paste_is_safe(ptr::null(), 0) });
+}
+
+/// Read a configuration the way a consumer does: load it, look at it, free
+/// it. What comes back is the blob and the diagnostic together, since a load
+/// that had something to complain about still carries a configuration.
+fn config(path: &Path) -> (String, String) {
+    let path = path.as_os_str().as_bytes();
+    let mut config = ptr::null_mut();
+    let status = unsafe { kt_config_load(path.as_ptr(), path.len(), &mut config) };
+    assert_eq!(status, KtStatus::Ok);
+    assert!(!config.is_null());
+
+    let mut view = MaybeUninit::<KtConfigView>::uninit();
+    assert_eq!(
+        unsafe { kt_config_view(config, view.as_mut_ptr()) },
+        KtStatus::Ok,
+    );
+    let view = unsafe { view.assume_init() };
+    let read = |text: KtText| {
+        String::from_utf8(unsafe { std::slice::from_raw_parts(text.bytes, text.len) }.to_vec())
+            .expect("the boundary lends UTF-8")
+    };
+    let answer = (read(view.json), read(view.diagnostic));
+
+    unsafe { kt_config_free(config) };
+    answer
+}
+
+/// Write `text` where a configuration would be and read it back through the
+/// boundary. The file is the whole of the input: nothing else about a load
+/// depends on where it was.
+fn config_of(text: &str) -> (String, String) {
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let path = dir.path().join("config.toml");
+    std::fs::write(&path, text).expect("write the config");
+    config(&path)
+}
+
+#[test]
+fn a_configuration_crosses_as_one_blob() {
+    let (json, diagnostic) = config_of("[font]\nfamily = \"Menlo\"\nsize = 15.5\n");
+
+    assert_eq!(diagnostic, "");
+    // The blob is one object with every group in it, whether or not the file
+    // said anything about that group. A consumer reads the part it has a use
+    // for and there is no getter to add when it grows one.
+    assert!(json.contains(r#""family":"Menlo""#), "{json}");
+    assert!(json.contains(r#""size":15.5"#), "{json}");
+    assert!(json.contains(r#""theme""#), "{json}");
+    assert!(json.contains(r#""terminal""#), "{json}");
+    assert!(json.contains(r#""bell""#), "{json}");
+}
+
+/// The two runs travel together: a load with something to complain about
+/// still lends a whole configuration beside the complaint. What the defaults
+/// and the merging are is `knotty-config`'s to test; what this one is about
+/// is that both halves cross.
+#[test]
+fn a_bad_value_comes_back_as_a_diagnostic_beside_the_defaults() {
+    let (json, diagnostic) = config_of("[font]\nfamily = \"Menlo\"\nsize = -3.0\n");
+
+    assert!(diagnostic.contains("size"), "{diagnostic}");
+    assert!(json.contains(r#""family":"JetBrains Mono""#), "{json}");
+}
+
+/// A null out parameter is the caller's mistake, and the one thing here that
+/// is refused rather than answered.
+#[test]
+fn a_load_with_nowhere_to_put_the_answer_is_refused() {
+    let path = b"/nonexistent/config.toml";
+    assert_eq!(
+        unsafe { kt_config_load(path.as_ptr(), path.len(), ptr::null_mut()) },
+        KtStatus::NullArgument,
+    );
+    // And freeing nothing is nothing, the way freeing a null snapshot is.
+    unsafe { kt_config_free(ptr::null_mut()) };
 }

@@ -1,6 +1,7 @@
 import AppKit
 
 import KnottyRender
+import KnottySession
 
 /// One window and everything under it: the session that feeds it and the view
 /// that beats with it. cf. 05-swift-app 4.
@@ -9,11 +10,9 @@ final class TerminalWindowController: NSWindowController {
     /// dragged it to, and the view is what measures that.
     private static let columns: UInt16 = 80
     private static let rows: UInt16 = 24
-    /// The one size this milestone draws at. The configuration pipeline is
-    /// M4's, so the face, the size and the grid are all constants.
-    private static let pointSize = 13.0
-    /// How much of what scrolled off a session keeps. Also M4's to configure,
-    /// and applied to new sessions only when it is. cf. 05-swift-app 10.
+    /// How much of what scrolled off a session keeps. A constant and not a
+    /// key: what the configuration opens is what hurts daily without a
+    /// rebuild, and this is not one of them. cf. 05-swift-app 10.
     private static let scrollback = 10_000
 
     /// The only strong reference to the session there is.
@@ -27,7 +26,7 @@ final class TerminalWindowController: NSWindowController {
     ///
     /// A factory rather than an initializer because the failure is the
     /// spawn's, and `NSWindowController.init()` is not one that can throw.
-    static func spawningShell() throws -> TerminalWindowController {
+    static func spawningShell(config: Config) throws -> TerminalWindowController {
         // The primary font decides the cell alone, and the grid is the cell
         // times the counts above. cf. 04-renderer R4.
         //
@@ -37,7 +36,10 @@ final class TerminalWindowController: NSWindowController {
         // view to lay out, which is what re-measures them against the display
         // it really came up on.
         let scale = Double(NSScreen.main?.backingScaleFactor ?? 2)
-        let metrics = CellMetrics.system(pointSize: pointSize, scale: scale)
+        let font = config.font
+        let metrics = CellMetrics.system(
+            pointSize: font.size, scale: scale, name: font.family
+        )
         // The grid in device pixels, which is what the renderer places into.
         // The window is that in points, so it opens on whole cells and the
         // step it resizes by keeps it on them.
@@ -47,7 +49,8 @@ final class TerminalWindowController: NSWindowController {
         )
 
         let host = try SessionHost(
-            columns: columns, rows: rows, scrollback: scrollback, metrics: metrics
+            columns: columns, rows: rows, scrollback: scrollback,
+            metrics: metrics, font: font
         )
 
         let window = NSWindow(
@@ -57,7 +60,7 @@ final class TerminalWindowController: NSWindowController {
             defer: false
         )
         window.title = "knotty"
-        let view = try TerminalView(host: host, pointSize: pointSize, scale: scale)
+        let view = try TerminalView(host: host, font: font, scale: scale)
         window.contentView = view
         // A key reaches a view through the responder chain, and a window whose
         // first responder is still itself answers a `keyDown` with a beep. The

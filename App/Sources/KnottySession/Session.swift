@@ -407,13 +407,20 @@ public final class Session {
         }
     }
 
-    /// The header's status type is ambiguous in Swift — the C enum and the
-    /// typedef beside it arrive under one name — so what a call answers is
-    /// held as the integer it is and compared against the constants.
-    private func check(_ call: StaticString, _ status: Int32) throws {
-        guard status == KT_STATUS_OK.rawValue else {
-            throw SessionError(call: call, status: status)
-        }
+}
+
+/// Turn what a boundary call answered into a thrown error, or nothing.
+///
+/// The header's status type is ambiguous in Swift — the C enum and the
+/// typedef beside it arrive under one name — so what a call answers is held
+/// as the integer it is and compared against the constants.
+///
+/// At module scope rather than on ``Session`` because not every call at this
+/// boundary is a session's: loading a configuration is one that has no handle
+/// behind it at all.
+func check(_ call: StaticString, _ status: Int32) throws {
+    guard status == KT_STATUS_OK.rawValue else {
+        throw SessionError(call: call, status: status)
     }
 }
 

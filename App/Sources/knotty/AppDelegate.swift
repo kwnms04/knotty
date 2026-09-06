@@ -1,6 +1,8 @@
 import AppKit
 import Foundation
 
+import KnottySession
+
 /// One window, and the menu AppKit needs for the quit, copy and paste
 /// shortcuts to exist.
 final class AppDelegate: NSObject, NSApplicationDelegate {
@@ -19,7 +21,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         FileManager.default.changeCurrentDirectoryPath(NSHomeDirectory())
 
         do {
-            let terminal = try TerminalWindowController.spawningShell()
+            // A file that will not parse is not a reason not to start: what
+            // comes back is the defaults with a diagnostic beside them. The
+            // banner that shows one is M4's window work; until then it goes
+            // where every other thing this app has no window for goes.
+            // cf. 05-swift-app 10.
+            let loaded = try Config.load()
+            if let diagnostic = loaded.diagnostic {
+                FileHandle.standardError.write(
+                    Data("knotty: \(Config.path.path(percentEncoded: false)): \(diagnostic)\n".utf8)
+                )
+            }
+
+            let terminal = try TerminalWindowController.spawningShell(config: loaded.config)
             terminal.showWindow(nil)
             self.terminal = terminal
         } catch {
@@ -27,7 +41,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // no path yet for telling anyone why, so this dies where it broke
             // and leaves the reason in the crash report. The sheet that would
             // say it out loud arrives with the rest of the event policy in M4.
-            fatalError("knotty could not start a shell: \(error)")
+            //
+            // A configuration that could not be read at all lands here too,
+            // which is the two sides built from different sources rather than
+            // anything in the file — a typo comes back as the diagnostic
+            // above and starts a window all the same.
+            fatalError("knotty could not start: \(error)")
         }
 
         NSApp.activate(ignoringOtherApps: true)

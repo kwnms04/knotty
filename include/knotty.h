@@ -14,7 +14,7 @@
  * compares it with [`kt_abi_version`]. Mismatch means header and library
  * disagree about layouts, and the caller must not proceed.
  */
-#define KT_ABI_VERSION 8
+#define KT_ABI_VERSION 9
 
 /**
  * Outcome of a call across the boundary.
@@ -797,6 +797,14 @@ typedef uint8_t KtRowFlag;
 #endif // __cplusplus
 
 /**
+ * Opaque handle to a loaded configuration.
+ *
+ * One blob and no getter per key: a key added to the schema moves what is in
+ * the JSON and leaves the header where it is. cf. `02-ffi.md`
+ */
+typedef struct KtConfig KtConfig;
+
+/**
  * Opaque handle to a session.
  */
 typedef struct KtSession KtSession;
@@ -1160,6 +1168,24 @@ typedef struct {
    */
   int32_t child_exit_code;
 } KtSnapshotView;
+
+/**
+ * Borrowed view of a loaded configuration.
+ *
+ * The pointers stay valid until the configuration is freed.
+ */
+typedef struct {
+  /**
+   * The configuration as one JSON object, defaults already merged in.
+   */
+  KtText json;
+  /**
+   * What was wrong with the file, or empty when nothing was. A load that
+   * says something here still carries a whole configuration in `json` —
+   * the defaults, since a first load has no previous one to keep.
+   */
+  KtText diagnostic;
+} KtConfigView;
 
 #ifdef __cplusplus
 extern "C" {
@@ -1701,6 +1727,51 @@ void kt_snapshot_free(KtSnapshot *snapshot);
  * pointer to a `KtSnapshotView`.
  */
 KtStatus kt_snapshot_view(const KtSnapshot *snapshot, KtSnapshotView *out);
+
+/**
+ * Read the configuration file at `path`, or the defaults where there is no
+ * file.
+ *
+ * **Failure is a diagnostic and not a refusal.** A file that will not parse
+ * comes back as `KT_STATUS_OK` carrying the defaults and a diagnostic beside
+ * them, because a window opens either way and what a caller does with the
+ * diagnostic is show it. What this refuses is a caller's own mistake: a null
+ * `out`, or a null path of some length. An empty path names no file, and no
+ * file is the defaults.
+ *
+ * On success `out` receives an owned handle, to be released with
+ * [`kt_config_free`]; otherwise it receives null.
+ *
+ * The path is the caller's because watching the file is: nothing here knows
+ * where a configuration lives, and the app that reloads on a change is what
+ * already had to.
+ *
+ * # Safety
+ *
+ * `path` must point at `path_len` readable bytes, or be null when `path_len`
+ * is 0, and `out` must be a valid, writable pointer to a `KtConfig *`.
+ */
+KtStatus kt_config_load(const uint8_t *path, size_t path_len, KtConfig **out);
+
+/**
+ * Release a configuration. Null is a no-op.
+ *
+ * # Safety
+ *
+ * `config` must come from [`kt_config_load`] and must not be used
+ * afterwards.
+ */
+void kt_config_free(KtConfig *config);
+
+/**
+ * Fill `out` with a view of the configuration's contents.
+ *
+ * # Safety
+ *
+ * `config` must be a live handle and `out` must be a valid, writable pointer
+ * to a `KtConfigView`.
+ */
+KtStatus kt_config_view(const KtConfig *config, KtConfigView *out);
 
 #ifdef __cplusplus
 }  // extern "C"

@@ -9,7 +9,7 @@
 
 /* Golden snapshot comparison depends on these layouts, so a change here is an
  * ABI change and must come with a version bump. */
-_Static_assert(KT_ABI_VERSION == 8, "ABI version moved without updating this consumer");
+_Static_assert(KT_ABI_VERSION == 9, "ABI version moved without updating this consumer");
 
 _Static_assert(sizeof(KtCell) == 16, "KtCell grew or shrank");
 _Static_assert(offsetof(KtCell, codepoint) == 0, "KtCell fields moved");
@@ -187,4 +187,32 @@ static void kt_consumer_on_wake(void *userdata) { *(int *)userdata = 1; }
 
 KtStatus kt_consumer_draw_when_told(KtSession *session, int *needs_frame) {
     return kt_session_set_wake(session, kt_consumer_on_wake, needs_frame);
+}
+
+/* Configuration: one load, one blob, and a diagnostic beside it rather than
+ * instead of it. There is no getter to call per key, which is what keeps a
+ * key added later out of this header.
+ *
+ * The two runs point into the handle, so what a consumer keeps it copies
+ * while the handle is still alive — which is why the copying and the freeing
+ * are both in here rather than the runs being handed back. */
+int kt_consumer_read_config(const char *path, char *out_json, size_t room) {
+    KtConfig *config = NULL;
+    if (kt_config_load((const uint8_t *)path, strlen(path), &config) != KT_STATUS_OK) {
+        return 0;
+    }
+
+    KtConfigView view;
+    int read = 0;
+    if (kt_config_view(config, &view) == KT_STATUS_OK && view.json.len < room) {
+        memcpy(out_json, view.json.bytes, view.json.len);
+        out_json[view.json.len] = '\0';
+        /* A load that had something to say still carried a whole
+         * configuration, so the diagnostic is something to show and not a
+         * reason to have nothing. */
+        read = view.diagnostic.len == 0 ? 1 : 2;
+    }
+
+    kt_config_free(config);
+    return read;
 }

@@ -9,6 +9,7 @@ version.workspace = true
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [dependencies]
+knotty-config.workspace = true
 knotty-core.workspace = true
 
 [dev-dependencies]
@@ -17,3 +18,6 @@ cbindgen = "0.29"
 # process and not about knotty. Already in the graph; cf. the M1 spec,
 # `kwnms04/knotty#10`.
 rustix.workspace = true
+# A configuration file to read back through the boundary. Already in the graph
+# as cbindgen's.
+tempfile = "3"

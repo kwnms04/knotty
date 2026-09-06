@@ -20,6 +20,9 @@ final class SessionHost {
     private var renderer: Renderer
     /// What one cell measures, on the display the window is on now.
     private var metrics: CellMetrics
+    /// The face the configuration asked for, kept because a new raster loads
+    /// it again and this is what said which.
+    private let font: Config.Font
     /// The grid the last resize sent.
     ///
     /// Zero rather than the counts the session was spawned with, so that the
@@ -40,12 +43,15 @@ final class SessionHost {
 
     /// Spawn the user's login shell behind a terminal of this size, drawn at
     /// these metrics.
-    init(columns: UInt16, rows: UInt16, scrollback: Int, metrics: CellMetrics) throws {
+    init(
+        columns: UInt16, rows: UInt16, scrollback: Int, metrics: CellMetrics, font: Config.Font
+    ) throws {
         session = try Session(
             command: LoginShell.command, cols: columns, rows: rows, scrollback: scrollback
         )
-        renderer = Renderer(metrics: metrics)
+        renderer = Renderer(metrics: metrics, faces: Faces(metrics: metrics, name: font.family))
         self.metrics = metrics
+        self.font = font
     }
 
     /// Tell the session the grid it now has, and how big a cell is on the
@@ -74,7 +80,9 @@ final class SessionHost {
         guard (columns, rows, metrics) != (self.columns, self.rows, self.metrics) else { return }
         if metrics != self.metrics {
             self.metrics = metrics
-            renderer = Renderer(metrics: metrics)
+            renderer = Renderer(
+                metrics: metrics, faces: Faces(metrics: metrics, name: font.family)
+            )
         }
         (self.columns, self.rows) = (columns, rows)
 

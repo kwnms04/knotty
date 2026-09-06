@@ -1,5 +1,10 @@
 [workspace]
-members = ["crates/knotty-core", "crates/knotty-ffi", "crates/knotty-harness"]
+members = [
+    "crates/knotty-config",
+    "crates/knotty-core",
+    "crates/knotty-ffi",
+    "crates/knotty-harness",
+]
 resolver = "3"
 
 [workspace.package]
@@ -9,6 +14,7 @@ publish = false
 version = "0.0.0"
 
 [workspace.dependencies]
+knotty-config = { path = "crates/knotty-config" }
 knotty-core = { path = "crates/knotty-core" }
 # Pinned: the VT engine is a public alpha. Bumping it is gated on the harness.
 # The bindgen-generated layer only: the safe boundary above it is knotty's own,

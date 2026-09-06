@@ -1,0 +1,17 @@
+[package]
+name = "knotty-config"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+version.workspace = true
+
+[dependencies]
+# All three are already in the graph as cbindgen's, so the schema costs no new
+# crate. `toml` reads the file the user writes; `serde_json` writes the one
+# blob the boundary carries.
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+toml = "0.9"
+
+[dev-dependencies]
+tempfile = "3"
