@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use crate::io::{self, Pty, Waker};
+use crate::io::{self, Foreground, Pty, Waker};
 use crate::key::KeyEvent;
 use crate::listener::Listener;
 use crate::mailbox::Mailbox;
@@ -718,6 +718,10 @@ pub struct PtySession {
     // leaves, and the only way the app's side learns that nothing is driving
     // the engine any more.
     broken: Arc<AtomicBool>,
+    // What answers whether anything is running in front of the shell. Held
+    // here rather than asked of the I/O thread, which is busy waiting: it has
+    // a handle of its own on the terminal, and the answer is a syscall.
+    foreground: Foreground,
     waker: Waker,
     stopping: Arc<AtomicBool>,
     // Taken in `drop`, which is the only place this is `None`.
@@ -735,6 +739,9 @@ impl PtySession {
         max_scrollback: usize,
     ) -> Result<Self> {
         let (mut terminal, waker) = Pty::spawn(program, args, cols, rows)?;
+        // Taken before the terminal goes to the thread that owns it, which is
+        // the last moment this side can reach it.
+        let foreground = terminal.foreground()?;
         let (requests, arriving) = mpsc::channel();
         let stopping = Arc::new(AtomicBool::new(false));
         let child_exit = Arc::new(AtomicI32::new(STILL_RUNNING));
@@ -797,6 +804,7 @@ impl PtySession {
             writes,
             child_exit,
             broken,
+            foreground,
             waker,
             stopping,
             thread: Some(thread),
@@ -812,6 +820,19 @@ impl PtySession {
             STILL_RUNNING => ChildState::Running,
             code => ChildState::Exited(code),
         }
+    }
+
+    /// Whether a program is running in front of the shell.
+    ///
+    /// What a window asks before closing on one. Read now rather than taken
+    /// off the last frame: a job that prints nothing publishes no frame, so
+    /// the newest one anybody holds was captured before it started. cf.
+    /// [`Foreground`]
+    ///
+    /// [`Foreground`]: crate::io::Foreground
+    #[must_use]
+    pub fn foreground_busy(&self) -> bool {
+        self.foreground.busy()
     }
 
     /// Whether the session's thread gave up mid-round, leaving nothing to
@@ -1068,6 +1089,7 @@ impl Drop for PtySession {
 mod tests {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+    use std::sync::mpsc;
     use std::thread;
     use std::time::Instant;
 
@@ -1375,6 +1397,41 @@ mod tests {
                 Err(other) => panic!("a live queue refused a write with {other:?}"),
             }
         }
+    }
+
+    /// Letting go of a session still puts down a child that is flooding it,
+    /// with the handle the close warning asks through still open.
+    ///
+    /// That handle is a second copy of our end of the terminal, and the order
+    /// [`Pty`] takes itself apart in was written when there was only one: the
+    /// terminal is closed before the child is collected, so that a child
+    /// blocked writing into a terminal nobody is draining is let go of by the
+    /// hangup that closing the last copy raises. A copy still open is no
+    /// hangup, so what has to hold instead is that the signal reaches a child
+    /// asleep in a write — and that is what this asks. Without it the release
+    /// below would be each side waiting for the other. cf. `io::Foreground`,
+    /// `03-core.md` C6
+    ///
+    /// A flood rather than one line: the child has to be *in* a write that
+    /// cannot finish by the time the I/O thread stops draining, and `yes`
+    /// fills the terminal again as fast as it is emptied.
+    #[test]
+    fn letting_go_of_a_flooding_session_still_collects_its_child() {
+        let session = PtySession::new(b"/usr/bin/yes", &[b"knotty".to_vec()], 4, 1, 0)
+            .expect("a session with a child that floods it");
+
+        // Released on a thread of its own, so a release that never ends is a
+        // test that fails rather than a suite that hangs — the same shape the
+        // I/O module's own teardown test takes.
+        let (released, waiting) = mpsc::channel();
+        thread::spawn(move || {
+            drop(session);
+            let _ = released.send(());
+        });
+
+        waiting
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the child was put down and collected");
     }
 
     /// The cap keeps a child that has stopped reading from growing the queue

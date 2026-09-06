@@ -492,6 +492,17 @@ impl Driver {
         }
     }
 
+    /// Whether a program is running in front of the shell, which only a
+    /// session with a shell behind it can have.
+    fn foreground_busy(&self) -> bool {
+        match self {
+            // A detached session has no terminal, so nothing can be in front
+            // of anything on it.
+            Self::Detached(_) => false,
+            Self::Pty(session) => session.foreground_busy(),
+        }
+    }
+
     /// Whether the session's own thread gave up, which only a session with a
     /// thread can do.
     fn broken(&self) -> bool {
@@ -1491,6 +1502,47 @@ pub unsafe extern "C" fn kt_session_take_events(
             dropped,
         };
         Ok(KtStatus::Ok)
+    })
+}
+
+/// Say whether a program is running in front of the shell.
+///
+/// What a window asks before closing on one, and the whole of what v1 asks:
+/// which program it is has no call here. False for a session with no
+/// pseudoterminal behind it, and false at a bare prompt — a shell holding its
+/// own terminal is a terminal with nothing running in it.
+///
+/// Read apart from the child state a snapshot carries, which says only that
+/// there is a shell at all and so answers "running" for every window there has
+/// ever been.
+///
+/// **Asked here rather than carried on a frame, and asked at the moment it
+/// matters.** A job that prints nothing between starting and being closed on
+/// publishes no frame, so the newest one a consumer holds was captured before
+/// it started and says the terminal was quiet. Nothing but asking now gives
+/// the answer now.
+///
+/// Works on a defunct session, for the reason given beside [`KtChildState`]:
+/// a child still running behind a session whose thread panicked is a real
+/// pairing, and it is the one an app warns about.
+///
+/// # Safety
+///
+/// `session` must be a live handle and `out` must be a valid, writable
+/// pointer to a `bool`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kt_session_foreground_busy(
+    session: *mut KtSession,
+    out: *mut bool,
+) -> KtStatus {
+    entry::answer(|| {
+        let out = unsafe { entry::out(out, false) }?;
+        let session = unsafe { entry::at_mut(session) }?;
+
+        Ok(session.guard(|driver| {
+            *out = driver.foreground_busy();
+            KtStatus::Ok
+        }))
     })
 }
 

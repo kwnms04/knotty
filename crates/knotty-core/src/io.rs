@@ -47,6 +47,22 @@ impl From<std::io::Error> for Error {
 /// which would have to be shipped and installed before it was worth anything.
 const TERM: &str = "xterm-256color";
 
+/// That every colour a child names is drawn as named.
+///
+/// `TERM` promises 256 where knotty draws 24 bits, so a child reading `TERM`
+/// alone underestimates it. This is the variable that says otherwise, and it
+/// is half of what tmux's `terminal-features` autodetection reads. cf.
+/// `06-integration.md`
+const COLORTERM: &str = "truecolor";
+
+/// What knotty calls itself to a child that asks which terminal it is in.
+///
+/// The other half tmux reads. Knotty's own name and not a better-known
+/// terminal's: passing off as `Apple_Terminal` would buy `OSC 7` out of
+/// `/etc/zshrc` for free and lie to every other program that tells terminals
+/// apart, which the M4 spec turned down. cf. `06-integration.md`
+const TERM_PROGRAM: &str = "knotty";
+
 /// How much comes off the terminal in one read.
 const READ_CHUNK: usize = 64 * 1024;
 
@@ -110,8 +126,9 @@ pub struct Pty {
     /// Held so the child stays ours to wait on, and to collect on the way out.
     ///
     /// **Declared last on purpose.** Fields are dropped in declaration order,
-    /// so this one is collected with the terminal already closed. See
-    /// [`Kept`] for what that ordering is worth.
+    /// so this one is collected with this struct's handles on the terminal
+    /// already closed. See [`Kept`] for what that ordering is worth, and for
+    /// what a [`Foreground`] elsewhere still holding one costs it.
     child: Kept,
 }
 
@@ -129,6 +146,13 @@ pub struct Pty {
 /// drain it is the very one waiting here — so waiting with our end still open
 /// is each side waiting for the other. Letting go first leaves the kernel
 /// nothing to wait for. cf. `03-core.md` C6
+///
+/// **A [`Foreground`] is a second handle on our end, and it outlives this
+/// one.** So letting go here is no longer the last handle closing, and the
+/// hangup that used to end the wait need not come. What carries it instead is
+/// the signal above: a child asleep in a write to a terminal is woken by one,
+/// and there is no state a kill does not reach. That is what
+/// `letting_go_of_a_flooding_session_still_collects_its_child` holds down.
 struct Kept {
     /// Ours to wait on for as long as this lives.
     process: Child,
@@ -172,6 +196,66 @@ fn exit_code(status: ExitStatus) -> i32 {
     status
         .code()
         .unwrap_or_else(|| 128 + status.signal().unwrap_or(0))
+}
+
+/// A standing question about a [`Pty`]: is anything running in front of the
+/// shell?
+///
+/// Handed to whoever closes windows, which is never the thread sitting in the
+/// wait — the same reason [`Waker`] is a type of its own. It carries a handle
+/// of its own on the terminal so that asking never has to reach across to the
+/// thread that owns one.
+///
+/// Asked rather than published, and that is the whole of why this is not a
+/// field on a snapshot. A frame is only taken when one was published, and a
+/// job that prints nothing between starting and being closed on — `make`
+/// with its output redirected, a `sleep` — publishes none: the last frame
+/// anybody holds was captured before the job started and says so. What the
+/// window needs is the answer at the moment it is closing, and nothing but
+/// asking then gives that. Asking then is also what keeps it off the idle
+/// path — nothing here runs until somebody tries to close a window. cf.
+/// `07-definition-of-done.md` B7
+pub struct Foreground {
+    /// Our own end of the terminal, duplicated from the one the I/O thread
+    /// took. Read-only as far as this is concerned.
+    terminal: OwnedFd,
+    /// The process group the child leads, which is the number a foreground
+    /// group is only interesting for differing from.
+    shell: i32,
+}
+
+impl Foreground {
+    /// Whether something other than the shell itself holds the terminal's
+    /// foreground.
+    ///
+    /// The child is the shell, and a shell puts every job it runs in the
+    /// foreground into a process group of its own — so a foreground group
+    /// that is not the shell's is a program running, and one that is is a
+    /// prompt waiting. Asking what the child state says instead would answer
+    /// "running" for as long as the shell lives, which is every window there
+    /// has ever been. cf. `05-swift-app.md` 8
+    ///
+    /// Read on our end of the terminal and not the far one, which is the
+    /// opposite of what [`set_size`] does: this ioctl is answered for the
+    /// terminal the asking process controls, and the far end is the
+    /// *child's* controlling terminal rather than ours — asking there is
+    /// `ENOTTY`. A pseudoterminal's own end answers it for the far end's
+    /// foreground group, which is the number wanted here.
+    ///
+    /// A terminal with no foreground group at all — the moment between the
+    /// fork and the child's `setsid`, and a terminal already torn down —
+    /// reads as quiet. Nothing is running that closing the window would take
+    /// down, and a warning nobody can act on is the one that teaches people
+    /// to click through the one that matters.
+    ///
+    /// [`set_size`]: Pty::set_size
+    #[must_use]
+    pub fn busy(&self) -> bool {
+        let Ok(foreground) = rustix::termios::tcgetpgrp(&self.terminal) else {
+            return false;
+        };
+        foreground.as_raw_nonzero().get() != self.shell
+    }
 }
 
 /// The sending end of a [`Pty`]'s nudge pipe.
@@ -254,7 +338,9 @@ impl Pty {
             .stdin(Stdio::from(far.try_clone()?))
             .stdout(Stdio::from(far.try_clone()?))
             .stderr(Stdio::from(far.try_clone()?))
-            .env("TERM", TERM);
+            .env("TERM", TERM)
+            .env("COLORTERM", COLORTERM)
+            .env("TERM_PROGRAM", TERM_PROGRAM);
         // The crate's other exception to the ban on `unsafe`, and the smaller
         // one: there is no safe way to ask for work between fork and exec.
         //
@@ -296,6 +382,31 @@ impl Pty {
                 _receiver: nudge,
             },
         ))
+    }
+
+    /// Take a handle for asking, later and from another thread, whether
+    /// anything is running in front of the shell.
+    ///
+    /// Its own duplicate of the terminal rather than a borrow of this one:
+    /// what asks outlives neither more nor less than the session, and this
+    /// [`Pty`] belongs to a thread the asking side may not touch.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Io`] when the terminal could not be duplicated.
+    pub fn foreground(&self) -> Result<Foreground> {
+        Ok(Foreground {
+            terminal: self.terminal.try_clone()?,
+            // `setsid` made the child the leader of a session and of a process
+            // group at once, so the group it leads is numbered by its own
+            // process id and no second reading is needed to learn it.
+            //
+            // Said rather than defended against: a process id is an `i32` on
+            // the way in and cannot fail to be one on the way back out. A
+            // fallback here would be a number that is nobody's process group,
+            // which is every window warning for ever.
+            shell: i32::try_from(self.child.process.id()).expect("a process id is an i32"),
+        })
     }
 
     /// Block until the terminal has something, has room, a nudge arrives, or

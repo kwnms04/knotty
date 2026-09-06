@@ -22,6 +22,12 @@ final class TerminalWindowController: NSWindowController {
     /// off the view AppKit holds.
     private var host: SessionHost?
 
+    /// Whether a program is running in front of this window's shell.
+    ///
+    /// A window whose session has already been released has nothing running
+    /// in it, which is what keeps shutting one down twice quiet.
+    var isBusy: Bool { host?.isBusy ?? false }
+
     /// Spawn a shell and put a window around it.
     ///
     /// A factory rather than an initializer because the failure is the
@@ -80,6 +86,10 @@ final class TerminalWindowController: NSWindowController {
 
         let controller = TerminalWindowController(window: window)
         controller.host = host
+        // Set rather than inherited: `NSWindowController` does not make itself
+        // the delegate of a window it was handed, and the delegate is the only
+        // thing asked whether a close may go ahead.
+        window.delegate = controller
         return controller
     }
 
@@ -157,4 +167,45 @@ final class TerminalWindowController: NSWindowController {
         host = nil
         window?.contentView = NSView()
     }
+}
+
+extension TerminalWindowController: NSWindowDelegate {
+    /// Warn before a window with a program running in it goes away.
+    ///
+    /// A prompt with nothing at it closes without a word, which is the whole
+    /// point: a warning that comes up every time is one that gets clicked
+    /// through, and then it is not there for the `make` either.
+    /// cf. 05-swift-app 8.
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        guard isBusy else { return true }
+        return confirmEndingPrograms(
+            verb: "Close", consequence: "Closing this window ends what is running in it."
+        )
+    }
+}
+
+/// Ask before a running program is taken down with the window it is in,
+/// answering whether to go ahead.
+///
+/// Modal rather than the sheet a paste warning gets, and the one place this
+/// app runs a modal on purpose: `windowShouldClose(_:)` and
+/// `applicationShouldTerminate(_:)` are both answered on the spot with a
+/// value, and a sheet answers in a callback — so a sheet here would mean
+/// closing the window twice, once to ask and once to mean it.
+///
+/// What is running is not named. Which program it is needs a lookup the
+/// boundary has no call for, and "something is running" is the whole of what
+/// v1 says. cf. 05-swift-app 8.
+///
+/// Cancel is first for the reason the paste warning gives: it is the button
+/// return presses, and the answer that cannot be undone should not be the one
+/// a stray keystroke gives.
+@MainActor func confirmEndingPrograms(verb: String, consequence: String) -> Bool {
+    let alert = NSAlert()
+    alert.alertStyle = .warning
+    alert.messageText = "A program is still running"
+    alert.informativeText = consequence
+    alert.addButton(withTitle: "Cancel")
+    alert.addButton(withTitle: verb)
+    return alert.runModal() == .alertSecondButtonReturn
 }

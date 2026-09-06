@@ -379,6 +379,25 @@ public final class Session {
         return [UInt8](UnsafeBufferPointer(start: queued, count: bytes.len))
     }
 
+    /// Whether a program is running in front of the shell.
+    ///
+    /// What a window asks before closing on one. False for a session with no
+    /// PTY behind it, and false at a bare prompt — a shell holding its own
+    /// terminal is a terminal with nothing running in it.
+    ///
+    /// Asked now rather than read off the last frame. A job that prints
+    /// nothing between starting and being closed on publishes no frame, so
+    /// the newest one anybody holds was taken before it started and says the
+    /// terminal was quiet. cf. 05-swift-app 8.
+    public func foregroundBusy() throws -> Bool {
+        var busy = false
+        try check(
+            "kt_session_foreground_busy",
+            kt_session_foreground_busy(handle, &busy)
+        )
+        return busy
+    }
+
     /// Take the latest frame and lend a view of it to `body`, or answer nil
     /// when nothing has been published since the last take.
     ///

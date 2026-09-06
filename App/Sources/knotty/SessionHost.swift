@@ -67,6 +67,19 @@ final class SessionHost {
     /// up. What a ⌘ click is answered from.
     private var links: [Link] = []
 
+    /// Whether a program is running in front of the shell.
+    ///
+    /// Asked of the session rather than kept off the last frame, which is the
+    /// one thing here that is not. A job that prints nothing publishes no
+    /// frame, so the newest one this object saw was taken before the job
+    /// started — and what asks is a window being closed, which is not a
+    /// moment there is a fresh frame for. cf. 05-swift-app 8.
+    ///
+    /// A boundary that refused answers no. A window whose session cannot be
+    /// asked is not one to hold up: there is nothing left it can say is
+    /// running.
+    var isBusy: Bool { (try? session.foregroundBusy()) ?? false }
+
     /// What to call when that name changed, which is the window being
     /// renamed.
     ///
