@@ -32,6 +32,14 @@ public final class Session {
     /// What was last registered with ``onWake(_:)``, held here because the
     /// core keeps a pointer to it rather than a reference.
     private var wake: Wake?
+    /// The frame last taken, kept alive rather than released on the way out
+    /// of the call that took it.
+    ///
+    /// What lets the screen be read again between publishes, which is what a
+    /// hover needs: ⌘ going down is the app deciding to draw the same screen
+    /// differently, and the terminal has no reason to publish for it. One
+    /// frame of the core's memory, beside the one the mailbox already holds.
+    private var held: OpaquePointer?
 
     /// Create a session with no PTY behind it.
     public init(cols: UInt16, rows: UInt16, scrollback: Int) throws {
@@ -67,6 +75,9 @@ public final class Session {
     /// session that stops the thread and collects the child of one that has
     /// them.
     deinit {
+        // The frame this session is still holding goes with it. It is owned
+        // separately from the session, so nothing else would release it.
+        if let held { kt_snapshot_free(held) }
         kt_session_free(handle)
     }
 
@@ -377,8 +388,9 @@ public final class Session {
     /// work. cf. adr/0005.
     ///
     /// The scope is the lifetime: the pointers in the view are good until
-    /// `body` returns, and the release on the way out is the only release
-    /// there is.
+    /// `body` returns, and nothing of the frame may outlive it. That the
+    /// handle behind them is held past the call is this object's business and
+    /// not a consumer's — the next take is what releases it.
     public func withSnapshot<Value>(_ body: (Snapshot) throws -> Value) throws -> Value? {
         var snapshot: OpaquePointer?
         let status = kt_session_take_snapshot(handle, &snapshot)
@@ -391,8 +403,34 @@ public final class Session {
         guard let snapshot else {
             preconditionFailure("kt_session_take_snapshot succeeded with no snapshot")
         }
-        defer { kt_snapshot_free(snapshot) }
+        // The one before it goes now that there is a newer one, rather than
+        // on the way out of this call: what it is kept for is
+        // ``withHeldSnapshot(_:)``, and the frame that call reads is the one
+        // this one lent.
+        if let held { kt_snapshot_free(held) }
+        held = snapshot
 
+        return try lend(snapshot, to: body)
+    }
+
+    /// Lend a view of the frame last taken, without taking a new one — nil
+    /// when this session has taken none.
+    ///
+    /// Not a second way to read a frame that is there to be taken. What it is
+    /// for is the app drawing an unmoved screen differently, which is what ⌘
+    /// does to the URLs on one: the terminal publishes when it moves, so
+    /// there is no frame coming for a change that was never the terminal's.
+    /// cf. 05-swift-app 6, ``Link/scan(_:)``
+    public func withHeldSnapshot<Value>(_ body: (Snapshot) throws -> Value) throws -> Value? {
+        guard let held else { return nil }
+        return try lend(held, to: body)
+    }
+
+    /// Open a view on one frame for the length of `body`, which is the whole
+    /// of the borrow either caller above gets.
+    private func lend<Value>(
+        _ snapshot: OpaquePointer, to body: (Snapshot) throws -> Value
+    ) throws -> Value {
         var view = KtSnapshotView()
         try check("kt_snapshot_view", kt_snapshot_view(snapshot, &view))
         return try body(Snapshot(view))

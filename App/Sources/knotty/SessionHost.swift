@@ -56,6 +56,17 @@ final class SessionHost {
     /// to one that named nothing.
     private(set) var title = ProcessInfo.processInfo.processName
 
+    /// Whether the screen's URLs are being shown, which is ⌘ being held.
+    ///
+    /// The whole of when a screen is scanned for one: with ⌘ up nothing looks,
+    /// so a lazy scan is what the feature costs the rest of the time. Set by
+    /// the view, which is where a modifier arrives. cf. adr/0006.
+    var linksShown = false
+
+    /// The links the frame on the screen was drawn with, and none while ⌘ is
+    /// up. What a ⌘ click is answered from.
+    private var links: [Link] = []
+
     /// What to call when that name changed, which is the window being
     /// renamed.
     ///
@@ -191,21 +202,53 @@ final class SessionHost {
     func takeFrame() -> Frame? {
         do {
             try session.drainEvents()
-            return try session.withSnapshot { snapshot in
-                cursorCell =
-                    snapshot.cursor.visible
-                    ? (column: Int(snapshot.cursor.x), row: Int(snapshot.cursor.y)) : nil
-                let called = snapshot.windowTitle
-                if called != title {
-                    title = called
-                    onTitle?(called)
-                }
-                return renderer.frame(for: snapshot, cursorColor: cursorColor)
-            }
+            return try session.withSnapshot { frame(of: $0) }
         } catch {
             report(error)
             return nil
         }
+    }
+
+    /// The frame the screen draws as now, for a change that is the app's
+    /// rather than the terminal's — ⌘ going down, and coming back up.
+    ///
+    /// Nil where no frame has been taken yet. The terminal publishes when it
+    /// moves and it has not moved, so this reads the frame already taken
+    /// rather than waiting for one that is not coming. No event drain either:
+    /// nothing arrived to drain. cf. 05-swift-app 6.
+    func redrawnFrame() -> Frame? {
+        do {
+            return try session.withHeldSnapshot { frame(of: $0) }
+        } catch {
+            report(error)
+            return nil
+        }
+    }
+
+    /// One snapshot as what draws it, and the things read off it on the way.
+    private func frame(of snapshot: Snapshot) -> Frame {
+        cursorCell =
+            snapshot.cursor.visible
+            ? (column: Int(snapshot.cursor.x), row: Int(snapshot.cursor.y)) : nil
+        let called = snapshot.windowTitle
+        if called != title {
+            title = called
+            onTitle?(called)
+        }
+        // The one place a screen is scanned, and only while ⌘ asks — which is
+        // what makes the feature free the rest of the time. cf. adr/0006.
+        links = linksShown ? Link.scan(snapshot) : []
+        return renderer.frame(for: snapshot, cursorColor: cursorColor, links: links)
+    }
+
+    /// Where a ⌘ click over a cell goes, or nil where the frame on the screen
+    /// drew no link there.
+    ///
+    /// Read off what was drawn rather than scanned again: a second scan is a
+    /// second judgement, and what opens has to be what the user saw
+    /// underlined.
+    func url(at cell: (column: UInt16, row: UInt16)) -> URL? {
+        links.first { $0.covers(row: Int(cell.row), column: Int(cell.column)) }?.url
     }
 
     /// Hand one key to the session, which is what decides its bytes.
