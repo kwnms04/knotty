@@ -126,9 +126,8 @@ pub struct Pty {
     /// Held so the child stays ours to wait on, and to collect on the way out.
     ///
     /// **Declared last on purpose.** Fields are dropped in declaration order,
-    /// so this one is collected with this struct's handles on the terminal
-    /// already closed. See [`Kept`] for what that ordering is worth, and for
-    /// what a [`Foreground`] elsewhere still holding one costs it.
+    /// so this one is collected with the terminal already closed. See
+    /// [`Kept`] for what that ordering is worth.
     child: Kept,
 }
 
@@ -147,12 +146,9 @@ pub struct Pty {
 /// is each side waiting for the other. Letting go first leaves the kernel
 /// nothing to wait for. cf. `03-core.md` C6
 ///
-/// **A [`Foreground`] is a second handle on our end, and it outlives this
-/// one.** So letting go here is no longer the last handle closing, and the
-/// hangup that used to end the wait need not come. What carries it instead is
-/// the signal above: a child asleep in a write to a terminal is woken by one,
-/// and there is no state a kill does not reach. That is what
-/// `letting_go_of_a_flooding_session_still_collects_its_child` holds down.
+/// A [`Foreground`] is a second handle on our end, so it has to be let go of
+/// before the wait that gets here — which is what `PtySession::drop` does,
+/// and why this stays the last handle closing.
 struct Kept {
     /// Ours to wait on for as long as this lives.
     process: Child,
@@ -215,6 +211,11 @@ fn exit_code(status: ExitStatus) -> i32 {
 /// asking then gives that. Asking then is also what keeps it off the idle
 /// path — nothing here runs until somebody tries to close a window. cf.
 /// `07-definition-of-done.md` B7
+///
+/// **Let go of before a session waits on its thread.** The handle is a second
+/// copy of our end of the terminal, and [`Kept`] leans on the release inside
+/// that thread being the last copy closing. `PtySession::drop` drops this
+/// first for that reason.
 pub struct Foreground {
     /// Our own end of the terminal, duplicated from the one the I/O thread
     /// took. Read-only as far as this is concerned.
