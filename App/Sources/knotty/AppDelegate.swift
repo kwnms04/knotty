@@ -32,6 +32,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// saying the file is fine. cf. 05-swift-app 10.
     private var diagnostic: String?
 
+    /// Where the windows of the last run are kept, and where this run's go.
+    private let store = WindowStore(defaults: .standard)
+
+    /// Whether the app is on its way out.
+    ///
+    /// `applicationWillTerminate(_:)` runs while every window is still up, and
+    /// the windows are sent `willCloseNotification` after it — so a quit that
+    /// went on saving would follow the whole set with an empty one and there
+    /// would be nothing to come back to. Measured, not assumed.
+    private var isTerminating = false
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.mainMenu = Self.mainMenu()
 
@@ -50,6 +61,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self, selector: #selector(windowWillClose(_:)),
             name: NSWindow.willCloseNotification, object: nil
         )
+        // A window being dragged or resized is the other half of what moves
+        // what is saved for it; the `cd` inside it is the session's to say.
+        // Nothing here is on a timer: a save that ran while nothing happened
+        // would be work in an idle app, which B7 does not have.
+        // cf. 05-swift-app 9, adr/0020.
+        for moved in [NSWindow.didMoveNotification, NSWindow.didResizeNotification] {
+            NotificationCenter.default.addObserver(
+                self, selector: #selector(windowDidMove(_:)), name: moved, object: nil
+            )
+        }
 
         do {
             // A file that will not parse is not a reason not to start: what
@@ -59,7 +80,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // cf. 05-swift-app 10.
             let loaded = try Config.load()
             config = loaded.config
-            try open(config: loaded.config)
+            try openSaved(config: loaded.config)
             show(diagnostic: loaded.diagnostic)
             // From here, saving the file is what applies it: nothing is
             // restarted to try a size.
@@ -99,7 +120,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Releasing the session is what puts the child down and collects it, so
     /// quitting goes through that rather than through process exit.
+    ///
+    /// What is saved for the windows is whatever the last event that touched
+    /// one wrote, and from here on nothing more is written — the windows are
+    /// about to be torn down, and that is not them being closed.
     func applicationWillTerminate(_ notification: Notification) {
+        isTerminating = true
         terminals.forEach { $0.shutDown() }
     }
 
@@ -161,18 +187,58 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         terminals.forEach { $0.show(diagnostic: diagnostic) }
     }
 
+    /// Open the windows the last run left, or one window where it left none.
+    ///
+    /// **`NSQuitAlwaysKeepsWindows` is honoured although none of this is macOS
+    /// state restoration.** What that setting says is whether windows come
+    /// back, not which machinery is to bring them; a user who turned it off
+    /// and got windows anyway would be right to call it broken. Turning it off
+    /// leaves what was saved where it is — it is the reading that stops, so
+    /// turning it back on is not starting from nothing. cf. adr/0020.
+    @MainActor private func openSaved(config: Config) throws {
+        let saved = store.restoresWindows ? store.load() : []
+        guard !saved.isEmpty else { return try open(config: config) }
+        for state in saved {
+            try open(config: config, state: state)
+        }
+    }
+
     /// Spawn a shell, put a window around it and keep the controller.
-    @MainActor private func open(config: Config) throws {
-        let terminal = try TerminalWindowController.spawningShell(config: config)
+    @MainActor private func open(config: Config, state: WindowState? = nil) throws {
+        let terminal = try TerminalWindowController.spawningShell(config: config, state: state)
         // A window opened exactly over the last one is one the user cannot
-        // tell is there, and every window opens centred. AppKit steps it down
-        // and right from the one opened before it.
-        if let previous = terminals.last?.window, let window = terminal.window {
+        // tell is there, and every fresh window opens centred. AppKit steps it
+        // down and right from the one opened before it. A restored window has
+        // a place of its own and is left standing in it.
+        if state == nil, let previous = terminals.last?.window, let window = terminal.window {
             window.cascadeTopLeft(from: previous.cascadeTopLeft(from: .zero))
         }
         terminals.append(terminal)
+        terminal.onSavedStateChange = { [weak self] in self?.saveWindows() }
         terminal.show(diagnostic: diagnostic)
         terminal.showWindow(nil)
+        saveWindows()
+    }
+
+    /// Put the windows there are now in the store, in the order they were
+    /// opened.
+    ///
+    /// All of them for a change to one: what is written is a list, so there is
+    /// nothing smaller to write, and a window's own state is asked of it
+    /// rather than kept here twice.
+    @MainActor private func saveWindows() {
+        guard !isTerminating else { return }
+        store.save(terminals.compactMap(\.savedState))
+    }
+
+    /// A window was dragged or resized.
+    ///
+    /// A drag posts this the whole way across the screen and each one is a
+    /// write; that is a user with a window in their hand, not an idle app.
+    /// A window nothing here opened — a sheet, an alert — writes the same list
+    /// back, which is why it is not worth telling them apart.
+    @MainActor @objc private func windowDidMove(_ notification: Notification) {
+        saveWindows()
     }
 
     /// Let go of a window that closed, which is what puts its child down.
@@ -188,6 +254,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         else { return }
         terminal.shutDown()
         terminals.removeAll { $0 === terminal }
+        // A window the user closed is a window that does not come back.
+        saveWindows()
     }
 
     /// An app with no menu has no quit shortcut either, which is why the

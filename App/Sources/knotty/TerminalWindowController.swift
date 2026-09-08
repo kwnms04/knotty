@@ -28,11 +28,31 @@ final class TerminalWindowController: NSWindowController {
     /// in it, which is what keeps shutting one down twice quiet.
     var isBusy: Bool { host?.isBusy ?? false }
 
-    /// Spawn a shell and put a window around it.
+    /// What is kept of this window for the next run, or nil once the window
+    /// has gone.
+    ///
+    /// Asked of the window rather than remembered, so that there is one answer
+    /// to where the window is and AppKit has it. cf. 05-swift-app 9.
+    var savedState: WindowState? {
+        guard let window else { return nil }
+        return WindowState(frame: window.frame, directory: host?.workingDirectory)
+    }
+
+    /// What to call when what would be saved for this window changed on its
+    /// own, which is the shell's directory moving.
+    ///
+    /// Moving and resizing the window is not in here: AppKit posts those, and
+    /// the object that keeps the windows hears them for all of them at once.
+    var onSavedStateChange: (() -> Void)?
+
+    /// Spawn a shell and put a window around it, on `state` where a run before
+    /// this one left one.
     ///
     /// A factory rather than an initializer because the failure is the
     /// spawn's, and `NSWindowController.init()` is not one that can throw.
-    static func spawningShell(config: Config) throws -> TerminalWindowController {
+    static func spawningShell(
+        config: Config, state: WindowState? = nil
+    ) throws -> TerminalWindowController {
         // The primary font decides the cell alone, and the grid is the cell
         // times the counts above. cf. 04-renderer R4.
         //
@@ -46,25 +66,49 @@ final class TerminalWindowController: NSWindowController {
         let metrics = CellMetrics.system(
             pointSize: font.size, scale: scale, name: font.family
         )
+        let style: NSWindow.StyleMask = [.titled, .closable, .miniaturizable, .resizable]
+        // **The frame is the truth and the grid is derived from it.** A window
+        // that was saved comes back the rectangle it was, and how many cells
+        // that holds is whatever the cell measures now — so a font changed
+        // while the app was down moves the grid rather than the window.
+        // A window nothing was saved for goes the other way: the counts above
+        // are what it has, and the rectangle follows from them.
+        // cf. 05-swift-app 9.
+        let restored = state.map {
+            WindowStore.placed(
+                $0.frame,
+                screens: NSScreen.screens.map(\.frame),
+                fallback: NSScreen.main?.visibleFrame ?? $0.frame
+            )
+        }
         // The grid in device pixels, which is what the renderer places into.
-        // The window is that in points, so it opens on whole cells and the
-        // step it resizes by keeps it on them.
-        let content = NSSize(
-            width: Double(Int32(columns) * metrics.width) / scale,
-            height: Double(Int32(rows) * metrics.height) / scale
-        )
+        // The window is that in points, so a fresh one opens on whole cells and
+        // the step it resizes by keeps it on them.
+        let content =
+            restored.map { NSWindow.contentRect(forFrameRect: $0, styleMask: style).size }
+            ?? NSSize(
+                width: Double(Int32(columns) * metrics.width) / scale,
+                height: Double(Int32(rows) * metrics.height) / scale
+            )
+        let grid =
+            restored == nil
+            ? (columns: columns, rows: rows)
+            : (
+                columns: cells(content.width * scale, per: metrics.width),
+                rows: cells(content.height * scale, per: metrics.height)
+            )
 
-        // Nowhere in particular: this app opens every window in its own
-        // working directory. What a restored window opens in is the directory
-        // it was saved with, which is the milestone's next step.
+        // Where a restored window's shell comes up, and nowhere in particular
+        // for every other one — which leaves it in this process's own working
+        // directory. cf. adr/0020.
         let host = try SessionHost(
-            columns: columns, rows: rows, scrollback: scrollback,
-            metrics: metrics, font: font, theme: config.theme, directory: nil
+            columns: grid.columns, rows: grid.rows, scrollback: scrollback,
+            metrics: metrics, font: font, theme: config.theme, directory: state?.directory
         )
 
         let window = NSWindow(
             contentRect: NSRect(origin: .zero, size: content),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            styleMask: style,
             backing: .buffered,
             defer: false
         )
@@ -85,15 +129,28 @@ final class TerminalWindowController: NSWindowController {
         // window is what hands that out, so the object that made the window is
         // where it is handed out. cf. 05-swift-app 4.
         window.makeFirstResponder(view)
-        window.center()
+        if let restored { window.setFrame(restored, display: false) } else { window.center() }
 
         let controller = TerminalWindowController(window: window)
         controller.host = host
+        // A `cd` is the one thing in the saved state that moves without AppKit
+        // saying so. Weak, because the controller is what owns the session the
+        // closure hangs off.
+        host.onWorkingDirectory = { [weak controller] in controller?.onSavedStateChange?() }
         // Set rather than inherited: `NSWindowController` does not make itself
         // the delegate of a window it was handed, and the delegate is the only
         // thing asked whether a close may go ahead.
         window.delegate = controller
         return controller
+    }
+
+    /// How many whole cells that many device pixels hold.
+    ///
+    /// Never none: a terminal of no rows is one nothing can be written to, and
+    /// a frame saved smaller than a single cell is worth one cell rather than
+    /// a refusal.
+    private static func cells(_ pixels: Double, per size: Int32) -> UInt16 {
+        UInt16(min(max(Int(pixels) / Int(size), 1), Int(UInt16.max)))
     }
 
     /// The view under the window, while there is one.

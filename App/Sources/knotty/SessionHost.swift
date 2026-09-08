@@ -56,6 +56,25 @@ final class SessionHost {
     /// to one that named nothing.
     private(set) var title = ProcessInfo.processInfo.processName
 
+    /// Where the child is, or nil while nothing has said.
+    ///
+    /// Read off the frame the way ``title`` is, and for the same reason: the
+    /// bytes belong to the borrow, and what is saved for a window outlives
+    /// every frame. Filling it is the core's — a shell that sends OSC 7 is
+    /// taken at its word and one that sends nothing has it read off the
+    /// process — so there is nothing to decide here beyond what an empty path
+    /// means, which is that no directory is known rather than that the child
+    /// is in the root. cf. adr/0020.
+    private(set) var workingDirectory: String?
+
+    /// What to call when that directory changed, which is the window's saved
+    /// state going stale.
+    ///
+    /// A closure for the reason ``onTitle`` is one, and the whole of what puts
+    /// a `cd` in the store: saving on a timer instead would be work in an idle
+    /// app. cf. 05-swift-app 9, adr/0020.
+    var onWorkingDirectory: (() -> Void)?
+
     /// Whether the screen's URLs are being shown, which is ⌘ being held.
     ///
     /// The whole of when a screen is scanned for one: with ⌘ up nothing looks,
@@ -251,6 +270,12 @@ final class SessionHost {
         if called != title {
             title = called
             onTitle?(called)
+        }
+        let directory = snapshot.pwd.isEmpty
+            ? nil : String(decoding: snapshot.pwd, as: UTF8.self)
+        if directory != workingDirectory {
+            workingDirectory = directory
+            onWorkingDirectory?()
         }
         // The one place a screen is scanned, and only while ⌘ asks — which is
         // what makes the feature free the rest of the time. cf. adr/0006.
