@@ -12,7 +12,7 @@ import KnottySession
 /// different macOS versions, and neither a font's advance nor its raster is
 /// promised to be the same across them. Metrics are already an input to the
 /// renderer, so pinning them costs nothing.
-private let metrics = CellMetrics(width: 16, height: 34, fontPixelSize: 26)
+let metrics = CellMetrics(width: 16, height: 34, fontPixelSize: 26)
 
 /// The face every golden below is held to, pinned for the same reason the
 /// metrics are: the ligature path a face takes is derived from that face's own
@@ -20,7 +20,7 @@ private let metrics = CellMetrics(width: 16, height: 34, fontPixelSize: 26)
 /// recordings by a different set of judgements than a runner without one. The
 /// system's fixed-pitch face carries no ligature feature anywhere, which is
 /// what makes it the one both agree on.
-private func pinned() -> Faces { Faces(metrics: metrics, name: nil) }
+func pinned() -> Faces { Faces(metrics: metrics, name: nil) }
 
 private let goldensDirectory = URL(fileURLWithPath: #filePath)
     .deletingLastPathComponent()

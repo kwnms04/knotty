@@ -219,14 +219,23 @@ public final class Renderer {
 
     /// A page side, in device pixels. What an atlas coordinate is measured
     /// against, and so what an uploader needs to make a texture the size of
-    /// the page the renderer packs into. Of the type and not of an instance:
-    /// a page is the same size whichever renderer is filling one.
-    public static var atlasSide: Int32 { Atlas.side }
+    /// the page the renderer packs into. Of the type and not of an instance,
+    /// because every renderer made the way the app makes one packs into a
+    /// page this size — a smaller page is asked for by name, and only a test
+    /// asks.
+    public static var atlasSide: Int32 { Atlas.defaultSide }
 
-    public init(metrics: CellMetrics, faces: Faces? = nil) {
+    public convenience init(metrics: CellMetrics, faces: Faces? = nil) {
+        self.init(metrics: metrics, faces: faces, atlasSide: Atlas.defaultSide)
+    }
+
+    /// The same renderer on smaller pages, which is the only way a test
+    /// watches them fill up: at the size the app runs, a page holds a year of
+    /// a screen's letters. cf. 04-renderer R7.
+    init(metrics: CellMetrics, faces: Faces?, atlasSide: Int32) {
         self.metrics = metrics
         self.faces = faces ?? Faces(metrics: metrics)
-        atlas = Atlas(metrics: metrics, faces: self.faces)
+        atlas = Atlas(metrics: metrics, faces: self.faces, side: atlasSide)
         stroke = max(1, metrics.width / 8)
     }
 
@@ -244,9 +253,46 @@ public final class Renderer {
     /// The whole grid comes out every time — there is no partial present, and
     /// what a row that did not change saves is the shaping rather than the
     /// draw. cf. 04-renderer R2.
+    ///
+    /// A pass that ran the pages out is drawn a second time on an emptied
+    /// atlas and the first one is thrown away whole: the slots it chose are a
+    /// page ago, so a frame that kept them would draw letters out of places
+    /// other letters now sit in. The shaping cache is emptied with the atlas,
+    /// which is the rest of what R7 empties. cf. 04-renderer R7.
+    ///
+    /// ponytail: once a frame, so nothing can take this round again inside
+    /// one. What can happen is a frame that empties the pages and still does
+    /// not fit on them — a screen holding more distinct letters than a page
+    /// has slots, or a single slot wider than a page — and that frame empties
+    /// them again on every frame it is up. It draws the same letters each
+    /// time, because a screen that did not change is placed in the order it
+    /// was placed in before, and the cells past the end of the page keep
+    /// their background. Remembering that the last reset did not help is what
+    /// to do if either is ever real; neither is reachable at the size the app
+    /// packs into.
     public func frame(
         for snapshot: Snapshot, cursorColor: Rgb? = nil, links: [Link] = []
     ) -> Frame {
+        // What the pass about to be thrown away asked the cache is thrown
+        // away with it. A hit is a row that reached the screen, and no row of
+        // that pass did — leaving them counted would put a frame's rows in
+        // the rate R3 is read off twice. cf. ``CacheStats``.
+        let counted = (hits, misses)
+        let pass = draw(snapshot, cursorColor: cursorColor, links: links)
+        guard pass.saturated else { return pass.frame }
+
+        atlas.empty()
+        lines.removeAll(keepingCapacity: true)
+        (hits, misses) = counted
+        return draw(snapshot, cursorColor: cursorColor, links: links).frame
+    }
+
+    /// One pass over the grid, which is the whole of a frame when the pages
+    /// had room for it — and says so, because a pass that ran them out is one
+    /// whose slots the caller has to throw away.
+    private func draw(
+        _ snapshot: Snapshot, cursorColor: Rgb?, links: [Link]
+    ) -> (frame: Frame, saturated: Bool) {
         let cols = Int(snapshot.cols)
         let rows = Int(snapshot.rows)
 
@@ -256,6 +302,8 @@ public final class Renderer {
         var glyphs: [GlyphInstance] = []
         glyphs.reserveCapacity(cols * rows)
         var atlasUpdates: [AtlasUpdate] = []
+        // Set where a cell asked for a slot the pages had no room left for.
+        var saturated = false
 
         // The cursor is settled before the grid is walked, because the letter
         // under one that covers its whole cell would be hidden by it and so
@@ -321,9 +369,15 @@ public final class Renderer {
                     )
                 }
 
-                guard let placed = placed[col],
-                    let slot = atlas.slot(for: placed.request, updates: &atlasUpdates)
-                else { continue }
+                guard let placed = placed[col] else { continue }
+                // The one thing a slot comes back nil for is a page with no
+                // room left, so this is where saturation is noticed. The cell
+                // keeps its background for the rest of this pass; the pass
+                // after it is the one that draws.
+                guard let slot = atlas.slot(for: placed.request, updates: &atlasUpdates) else {
+                    saturated = true
+                    continue
+                }
                 glyphs.append(
                     GlyphInstance(
                         x: x, y: y, atlasX: slot.x, atlasY: slot.y,
@@ -365,9 +419,11 @@ public final class Renderer {
             backgrounds.append(cursorRectangle)
         }
 
-        return Frame(
-            backgrounds: backgrounds, underlines: underlines, cursor: cursorRectangle,
-            glyphs: glyphs, atlasUpdates: atlasUpdates
+        return (
+            Frame(
+                backgrounds: backgrounds, underlines: underlines, cursor: cursorRectangle,
+                glyphs: glyphs, atlasUpdates: atlasUpdates
+            ), saturated
         )
     }
 
