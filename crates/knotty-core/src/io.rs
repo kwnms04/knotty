@@ -667,6 +667,7 @@ pub(crate) fn run(
                     let _ = answering.send(text);
                 }),
                 Request::Scroll { lines } => session.scroll_viewport(lines),
+                Request::Clear => session.clear(),
                 Request::Key(event) => session.key(&event),
                 Request::Paste(bytes) => session.paste(&bytes),
                 Request::Mouse(event) => session.mouse(&event),

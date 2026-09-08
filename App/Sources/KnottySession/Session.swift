@@ -377,6 +377,15 @@ public final class Session {
         try check("kt_session_scroll_viewport", kt_session_scroll_viewport(handle, lines))
     }
 
+    /// Empty the screen and the scrollback and put the cursor at the origin.
+    ///
+    /// What ⌘K asks for. Nothing is sent to the child, and what the alternate
+    /// screen does is the core's judgement rather than one made here — the
+    /// header says both. cf. 02-ffi.
+    public func clear() throws {
+        try check("kt_session_clear", kt_session_clear(handle))
+    }
+
     /// Take the bytes a detached session has queued for its child, emptying
     /// the queue.
     ///

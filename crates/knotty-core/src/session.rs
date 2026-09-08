@@ -433,6 +433,19 @@ impl Session {
         self.publish(false)
     }
 
+    /// Empty the screen and the scrollback and put the cursor at the origin.
+    ///
+    /// Nothing is queued for the child: what is emptied is the terminal's.
+    /// The alternate screen is left as it is, and then there is no frame to
+    /// publish. Both are [`Terminal::clear`](crate::vt::Terminal::clear)'s to
+    /// explain.
+    pub fn clear(&mut self) -> Result<()> {
+        if !self.terminal.clear()? {
+            return Ok(());
+        }
+        self.publish(false)
+    }
+
     /// Process `bytes` to completion on the calling thread, publishing at most
     /// one snapshot.
     ///
@@ -681,6 +694,8 @@ pub(crate) enum Request {
     Copy(Sender<Option<Vec<u8>>>),
     /// Move the viewport, up positive.
     Scroll { lines: i32 },
+    /// Empty the screen and the scrollback and put the cursor at the origin.
+    Clear,
     /// Encode a key and queue what it comes to for the child.
     Key(KeyEvent),
     /// Sanitize a run of pasted bytes, wrap it as the modes ask, and queue it
@@ -986,6 +1001,11 @@ impl PtySession {
     /// Move the viewport, up positive.
     pub fn scroll_viewport(&self, lines: i32) -> Result<()> {
         self.request(Request::Scroll { lines })
+    }
+
+    /// Empty the screen and the scrollback and put the cursor at the origin.
+    pub fn clear(&self) -> Result<()> {
+        self.request(Request::Clear)
     }
 
     /// Encode a key event and queue what it comes to for the child.

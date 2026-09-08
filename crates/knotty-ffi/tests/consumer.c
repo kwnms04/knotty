@@ -183,6 +183,13 @@ KtStatus kt_consumer_paste(KtSession *session, const char *text, size_t len, int
     return kt_session_paste(session, (const uint8_t *)text, len);
 }
 
+/* ⌘K: one call, no arguments, and nothing sent to the child. The screen and
+ * the history behind it are the terminal's, so emptying them is knotty's to
+ * do — a shell asked instead would write over a half-typed line and could not
+ * reach the history at all. Nothing here names a screen: leaving the
+ * alternate one alone is the core's judgement, not the consumer's. */
+KtStatus kt_consumer_clear(KtSession *session) { return kt_session_clear(session); }
+
 /* A wake runs on the core's thread and may do nothing but flag the consumer's
  * own, which is why it takes no lock and reads nothing back. */
 static void kt_consumer_on_wake(void *userdata) { *(int *)userdata = 1; }

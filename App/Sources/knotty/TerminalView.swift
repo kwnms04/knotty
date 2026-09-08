@@ -795,6 +795,16 @@ final class TerminalView: NSView {
         }
     }
 
+    /// Empty the screen and the scrollback.
+    ///
+    /// Reached by the Edit menu's ⌘K for the reason ``copy(_:)`` is: a menu's
+    /// key equivalent is offered before any view sees the event, so the key
+    /// never reaches the child as a key. What the call does, and does not do,
+    /// is the core's. cf. 05-swift-app 4.
+    @objc func clear(_ sender: Any?) {
+        host?.clear()
+    }
+
     /// Whether the sheet is shown at all, which is 05-swift-app 8's setting
     /// with its two other values — "always" and "off" — still to come. Which
     /// runs it is shown *for* is ``Paste/warns(about:)``.

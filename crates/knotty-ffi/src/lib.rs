@@ -453,6 +453,14 @@ impl Driver {
         }
     }
 
+    /// Empty the screen and the scrollback and put the cursor at the origin.
+    fn clear(&mut self) -> KtStatus {
+        match self {
+            Self::Detached(session) => status(session.clear()),
+            Self::Pty(session) => status(session.clear()),
+        }
+    }
+
     /// Give the engine the colours a screen is drawn in.
     fn set_theme(&mut self, theme: Theme) -> KtStatus {
         match self {
@@ -1402,6 +1410,34 @@ pub unsafe extern "C" fn kt_session_scroll_viewport(
         let session = unsafe { entry::at_mut(session) }?;
 
         Ok(session.drive(|driver| driver.scroll_viewport(lines)))
+    })
+}
+
+/// Empty the screen and the scrollback and put the cursor at the origin.
+///
+/// What ⌘K asks for. **Nothing is queued for the child** — what is emptied is
+/// the terminal's, and a shell told to clear it could not reach the
+/// scrollback anyway — so a line half-typed at a prompt is still in the shell
+/// afterwards, off the screen until the shell has reason to draw it again.
+///
+/// **The alternate screen is left as it is**, and the call succeeds having
+/// published nothing: the program drawing there repaints only what it thinks
+/// changed, so a screen emptied under it would stay empty.
+///
+/// A clear that lands while the terminal is part-way through a sequence its
+/// child had only half-sent loses that sequence. The engine offers no erase
+/// call, so emptying a screen means writing the sequence for it. cf.
+/// `docs/02-ffi.md`
+///
+/// # Safety
+///
+/// `session` must be a live handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kt_session_clear(session: *mut KtSession) -> KtStatus {
+    entry::answer(|| {
+        let session = unsafe { entry::at_mut(session) }?;
+
+        Ok(session.drive(Driver::clear))
     })
 }
 

@@ -60,6 +60,27 @@ private func text(of snapshot: Snapshot, row: Int) -> String {
     #expect(try session.takeWrites() == Array("한".utf8))
 }
 
+/// That the app reaches the call at all, and reaches the right one: an
+/// emptied screen is what says which symbol was bound. What emptying means —
+/// the history, the alternate screen, the cursor — is `abi.rs`'s.
+@Test func clearingASessionEmptiesTheScreenItCameBackWith() throws {
+    let session = try replaySynthetic()
+    _ = try session.withSnapshot { _ in true }
+    // What the recording's queries were answered with, so that whatever is in
+    // the queue afterwards is the clear's doing.
+    _ = try session.takeWrites()
+
+    try session.clear()
+
+    let emptied = try session.withSnapshot { snapshot in
+        (0..<Int(snapshot.rows)).allSatisfy { text(of: snapshot, row: $0).allSatisfy { $0 == " " } }
+            && snapshot.cursor.x == 0 && snapshot.cursor.y == 0
+    }
+
+    #expect(emptied == true)
+    #expect(try session.takeWrites().isEmpty)
+}
+
 /// Anything that outlives the frame is copied out of it, which is what the
 /// borrowed pointers leave a consumer no choice about.
 @Test func aTitleKeptPastTheFrameIsACopy() throws {
