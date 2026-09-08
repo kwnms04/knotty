@@ -38,11 +38,21 @@ public enum AtlasPage: Int, Sendable {
 /// the same reason: what the cascade and the mark positions come to is a
 /// property of the whole cluster and of nothing smaller. cf. 04-renderer R3.
 ///
-/// Growing the pages and emptying them are M4's; these fill up and then
-/// answer nothing. cf. 04-renderer R7.
+/// A page that filled up is emptied whole rather than evicted from: no LRU,
+/// because saturation is a once-a-year event and an LRU is a cost on every
+/// frame. Growing to the eight pages R7 caps at is not here — that is a
+/// texture array on the uploader's side, and until it lands the cap this
+/// reaches is the one page each format has. cf. 04-renderer R6, R7.
 final class Atlas {
-    /// A page side, in device pixels.
-    static let side: Int32 = 1024
+    /// What a page's side is, in device pixels, unless a smaller one was
+    /// asked for.
+    static let defaultSide: Int32 = 1024
+
+    /// This atlas's page side, in device pixels. The default wherever the app
+    /// runs; a test that has to watch the pages fill up asks for a smaller
+    /// one, because filling a real page takes a year of a screen's letters.
+    /// cf. 04-renderer R7.
+    let side: Int32
 
     /// What a cell asks the pages for.
     ///
@@ -96,9 +106,10 @@ final class Atlas {
     /// One shelf per page, in the order ``AtlasPage`` numbers them.
     private var shelves = [Shelf(), Shelf()]
 
-    init(metrics: CellMetrics, faces: Faces) {
+    init(metrics: CellMetrics, faces: Faces, side: Int32) {
         self.metrics = metrics
         self.faces = faces
+        self.side = side
         // The primary face's, for every face: a slot is one cell tall and the
         // rows of a screen share one baseline, so a bold face with a deeper
         // descent draws on the grid the regular one settled rather than on a
@@ -186,17 +197,30 @@ final class Atlas {
         }
     }
 
+    /// Forget every slot and start the shelves over.
+    ///
+    /// Nothing is uploaded and nothing is cleared on the page itself: what a
+    /// page holds where no slot has been placed is read by nothing, and every
+    /// slot placed after this is uploaded before it is drawn. The caller owes
+    /// the other half of R7 — the shaping cache, emptied with this — and owes
+    /// the frame that provoked it being drawn again, because the slots it
+    /// chose are a page ago. cf. 04-renderer R7.
+    func empty() {
+        slots.removeAll(keepingCapacity: true)
+        shelves = [Shelf(), Shelf()]
+    }
+
     /// Walk the page's shelf far enough to fit `width`, or answer nil when it
     /// has run out — of this shelf and of the ones below it, or of the page
     /// altogether for something wider than one.
     private func place(width: Int32, offsetX: Int32, page: AtlasPage) -> Slot? {
-        guard width <= Self.side else { return nil }
+        guard width <= side else { return nil }
         var shelf = shelves[page.rawValue]
-        if shelf.x + width > Self.side {
+        if shelf.x + width > side {
             shelf.x = 0
             shelf.y += metrics.height
         }
-        guard shelf.y + metrics.height <= Self.side else { return nil }
+        guard shelf.y + metrics.height <= side else { return nil }
 
         let slot = Slot(x: shelf.x, y: shelf.y, width: width, offsetX: offsetX, page: page)
         shelf.x += width
