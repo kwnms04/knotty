@@ -872,6 +872,43 @@ impl Terminal {
         });
     }
 
+    /// Empty the screen and the scrollback and put the cursor at the origin,
+    /// and answer whether anything was emptied.
+    ///
+    /// The alternate screen is left alone and answered `false`. That screen
+    /// belongs to the program drawing on it, which is holding its own idea of
+    /// what every cell says and will not repaint what it did not put there;
+    /// there is no scrollback behind it to empty either.
+    ///
+    /// **Written as a sequence, because the engine's C API has no erase call.**
+    /// `ghostty_terminal_reset` is the only thing near it and is a different
+    /// thing entirely — it takes the modes and the palette with it.
+    ///
+    /// ponytail: so this is the one input that goes into the parser rather
+    /// than to the child, and a parser left part-way through a sequence by a
+    /// read boundary is one this cuts across: that sequence is lost and what
+    /// was left of it arrives as text. Nothing here can tell — the engine
+    /// reports no parser state, and reading the child's bytes ourselves is
+    /// the division of labour `03-core.md` C4 keeps. An upstream erase call
+    /// is what removes it; until then the cost is one mangled sequence in the
+    /// instant ⌘K lands. cf. `docs/open-questions.md`,
+    /// `a_sequence_the_child_had_half_sent_is_lost_to_a_clear`
+    ///
+    /// The scrollback is emptied after the screen rather than before, so that
+    /// the order does not depend on whether erasing the screen scrolls any of
+    /// it into history first.
+    ///
+    /// `CSI H` is the origin except under origin mode, where it is the top of
+    /// the scrolling region — the child's own setting, and not one to undo
+    /// on its behalf here.
+    pub fn clear(&mut self) -> Result<bool> {
+        if self.alternate_screen()? {
+            return Ok(false);
+        }
+        self.feed(b"\x1b[2J\x1b[3J\x1b[H");
+        Ok(true)
+    }
+
     /// Give the engine the colours a screen is drawn in.
     ///
     /// The engine takes the whole palette at once, so the sixteen the theme

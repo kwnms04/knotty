@@ -17,10 +17,10 @@ use knotty_ffi::{
     KtChildState, KtConfigView, KtEventKind, KtEvents, KtKeyEvent, KtSession, KtSessionState,
     KtSnapshot, KtSnapshotView, KtStatus, KtText, Rgb, Row, RowFlag, SelectionRange, Underline,
     kt_abi_version, kt_config_free, kt_config_load, kt_config_view, kt_paste_is_safe,
-    kt_session_feed, kt_session_free, kt_session_key, kt_session_new_detached, kt_session_new_pty,
-    kt_session_paste, kt_session_set_selection, kt_session_set_theme, kt_session_set_wake,
-    kt_session_take_events, kt_session_take_snapshot, kt_session_take_writes, kt_session_write,
-    kt_snapshot_free, kt_snapshot_view,
+    kt_session_clear, kt_session_feed, kt_session_free, kt_session_key, kt_session_new_detached,
+    kt_session_new_pty, kt_session_paste, kt_session_scroll_viewport, kt_session_set_selection,
+    kt_session_set_theme, kt_session_set_wake, kt_session_take_events, kt_session_take_snapshot,
+    kt_session_take_writes, kt_session_write, kt_snapshot_free, kt_snapshot_view,
 };
 
 /// Ghostty's own defaults. A change here is an upstream palette change, not a
@@ -162,6 +162,51 @@ fn set_selection(session: *mut KtSession, range: Option<SelectionRange>) -> KtSt
         Some(range) => unsafe { kt_session_set_selection(session, &range) },
         None => unsafe { kt_session_set_selection(session, ptr::null()) },
     }
+}
+
+/// Empty the screen and the scrollback, which is what ⌘K asks for.
+fn clear(session: *mut KtSession) {
+    let status = unsafe { kt_session_clear(session) };
+    assert_eq!(status, KtStatus::Ok);
+}
+
+/// Further than any history these tests build, so the viewport lands on the
+/// top of whatever there is.
+const PAST_THE_TOP: i32 = 100;
+
+/// Drop whatever is in the mailbox, so that what a later take finds is the
+/// work of what happened in between.
+fn drain(session: *mut KtSession) {
+    if let Some(snapshot) = take_if_any(session) {
+        unsafe { kt_snapshot_free(snapshot) };
+    }
+}
+
+/// Two rows with a third scrolled off behind them, and nothing left in the
+/// mailbox. What every clear below is read against.
+fn a_screen_with_history() -> *mut KtSession {
+    let session = detached_with_scrollback(6, 2, 100);
+    feed(session, b"one\r\ntwo\r\nthree");
+    drain(session);
+    session
+}
+
+/// What the history holds, read by scrolling to the top of it — or `None`
+/// when nothing was published, which is a viewport that did not move and so a
+/// history with nothing in it.
+fn scrolled_back_lines(session: *mut KtSession) -> Option<Vec<String>> {
+    let status = unsafe { kt_session_scroll_viewport(session, PAST_THE_TOP) };
+    assert_eq!(status, KtStatus::Ok);
+
+    let snapshot = take_if_any(session)?;
+    let lines = screen_lines(&view(snapshot));
+    unsafe { kt_snapshot_free(snapshot) };
+    Some(lines)
+}
+
+/// What `a_screen_with_history` left behind it.
+fn the_history() -> Option<Vec<String>> {
+    Some(vec!["one   ".to_owned(), "two   ".to_owned()])
 }
 
 /// Paste a run, which is the one call that sanitizes what it is given.
@@ -798,6 +843,128 @@ fn a_selection_with_no_visible_row_is_not_the_same_as_no_selection() {
     assert_eq!(selected_columns(&cleared_view), vec![None, None, None]);
 
     unsafe { kt_snapshot_free(cleared) };
+    unsafe { kt_session_free(session) };
+}
+
+/// ⌘K, at the level a window is not needed for: the grid goes blank and the
+/// cursor goes back to the origin.
+#[test]
+fn clearing_empties_the_screen_and_puts_the_cursor_at_the_origin() {
+    let session = a_screen_with_history();
+
+    clear(session);
+
+    let snapshot = take(session);
+    let cleared = view(snapshot);
+    assert_eq!(screen_lines(&cleared), ["      ", "      "]);
+    assert_eq!((cleared.cursor.x, cleared.cursor.y), (0, 0));
+
+    unsafe { kt_snapshot_free(snapshot) };
+    unsafe { kt_session_free(session) };
+}
+
+/// The scrollback goes with the screen. It is the terminal's and never the
+/// shell's, which is the whole of why this is a call of knotty's own rather
+/// than a `clear` sent to the child — the child has no way to empty it.
+#[test]
+fn clearing_empties_the_scrollback_behind_the_screen() {
+    let session = a_screen_with_history();
+
+    // The probe read against a history that is there. Without this, finding
+    // nothing after the clear would as easily mean the probe never reached a
+    // history at all.
+    assert_eq!(scrolled_back_lines(session), the_history());
+    // Back down to the active area, so that what follows is about the history
+    // and not about where the viewport was left.
+    assert_eq!(
+        unsafe { kt_session_scroll_viewport(session, -PAST_THE_TOP) },
+        KtStatus::Ok,
+    );
+    drain(session);
+
+    clear(session);
+    drain(session);
+
+    assert_eq!(
+        scrolled_back_lines(session),
+        None,
+        "nothing to scroll back to",
+    );
+
+    unsafe { kt_session_free(session) };
+}
+
+/// **Nothing is queued for the child.** That is what leaves a half-typed
+/// prompt alone: a `clear` sent to the shell would be typed over the line the
+/// user is in the middle of.
+#[test]
+fn clearing_queues_nothing_for_the_child() {
+    let session = detached(8, 2);
+    feed(session, b"$ vim fi");
+    assert!(writes(session).is_empty(), "nothing queued by the feed");
+
+    clear(session);
+
+    assert!(writes(session).is_empty());
+
+    unsafe { kt_session_free(session) };
+}
+
+/// The alternate screen is left as it is, and the call still succeeds.
+///
+/// What draws there holds its own idea of every cell and repaints only what
+/// it thinks moved, so a screen emptied out from under it would stay empty.
+/// The history is the primary screen's and is not the alternate screen's to
+/// lose either.
+#[test]
+fn clearing_leaves_the_alternate_screen_alone() {
+    let session = a_screen_with_history();
+    feed(session, b"\x1b[?1049h\x1b[Halt");
+    drain(session);
+
+    clear(session);
+    assert!(take_if_any(session).is_none(), "nothing was published");
+
+    // Something has to publish before the screen can be read back, and a byte
+    // the program itself sent is the honest way to ask for one.
+    feed(session, b"!");
+    let snapshot = take(session);
+    assert_eq!(screen_lines(&view(snapshot))[0], "alt!  ");
+    unsafe { kt_snapshot_free(snapshot) };
+
+    // Back on the primary screen, the history behind it is still there.
+    feed(session, b"\x1b[?1049l");
+    drain(session);
+    assert_eq!(scrolled_back_lines(session), the_history());
+
+    unsafe { kt_session_free(session) };
+}
+
+/// The documented limit, seen rather than assumed: a clear that lands while
+/// the engine's parser is part-way through a sequence loses that sequence,
+/// and what was left of it arrives as text.
+///
+/// The engine's C API has no erase call, so the only way to empty a screen is
+/// to write the sequence for it — and a read that ended mid-escape leaves the
+/// parser somewhere a written sequence cuts across. Nothing here can tell:
+/// the engine reports no parser state, and scanning the child's bytes
+/// ourselves is the division of labour `03-core.md` C4 keeps.
+///
+/// This test is what an upstream erase call would make fail. cf.
+/// `docs/open-questions.md`
+#[test]
+fn a_sequence_the_child_had_half_sent_is_lost_to_a_clear() {
+    let session = detached(8, 1);
+    // The `\x1b[31m` a read boundary split down the middle.
+    feed(session, b"\x1b[");
+
+    clear(session);
+    feed(session, b"31mX");
+
+    let snapshot = take(session);
+    assert_eq!(screen_lines(&view(snapshot)), ["31mX    "]);
+
+    unsafe { kt_snapshot_free(snapshot) };
     unsafe { kt_session_free(session) };
 }
 
@@ -1748,6 +1915,44 @@ fn a_pty_session_puts_what_its_child_printed_on_the_screen() {
     let session = pty(24, 4, &["/bin/sh", "-c", "printf 'up and running'"]);
 
     wait_for(session, "up and running");
+
+    unsafe { kt_session_free(session) };
+}
+
+/// The half-typed line in the form the criterion is really about: one a child
+/// is part-way through being given.
+///
+/// It leaves the screen, because the screen is what was emptied. It does not
+/// leave the child — nothing was sent there — so the ⏎ after the clear ends
+/// the same line that was begun before it.
+///
+/// What holds the line here is the terminal's own line discipline rather than
+/// a shell's line editor. Which of the two is holding it does not change what
+/// is being shown — that a clear reaches neither — and this one is a child
+/// that is ready to read the moment it starts.
+#[test]
+fn a_line_half_typed_survives_a_clear() {
+    let session = pty(
+        24,
+        4,
+        &["/bin/sh", "-c", "read line; printf 'ran:%s' \"$line\""],
+    );
+
+    write(session, b"still-here");
+    wait_for(session, "still-here");
+
+    clear(session);
+    wait_for_screen(session, "an empty screen", |lines| {
+        lines
+            .iter()
+            .all(|line| line.trim().is_empty())
+            .then_some(())
+    });
+
+    // Carriage return rather than newline, for the reason
+    // `bytes_written_to_a_pty_session_reach_its_child` gives.
+    write(session, b"\r");
+    wait_for(session, "ran:still-here");
 
     unsafe { kt_session_free(session) };
 }

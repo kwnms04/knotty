@@ -1694,6 +1694,29 @@ KtStatus kt_session_paste(KtSession *session, const uint8_t *bytes, size_t len);
 KtStatus kt_session_scroll_viewport(KtSession *session, int32_t lines);
 
 /**
+ * Empty the screen and the scrollback and put the cursor at the origin.
+ *
+ * What ⌘K asks for. **Nothing is queued for the child** — what is emptied is
+ * the terminal's, and a shell told to clear it could not reach the
+ * scrollback anyway — so a line half-typed at a prompt is still in the shell
+ * afterwards, off the screen until the shell has reason to draw it again.
+ *
+ * **The alternate screen is left as it is**, and the call succeeds having
+ * published nothing: the program drawing there repaints only what it thinks
+ * changed, so a screen emptied under it would stay empty.
+ *
+ * A clear that lands while the terminal is part-way through a sequence its
+ * child had only half-sent loses that sequence. The engine offers no erase
+ * call, so emptying a screen means writing the sequence for it. cf.
+ * `docs/02-ffi.md`
+ *
+ * # Safety
+ *
+ * `session` must be a live handle.
+ */
+KtStatus kt_session_clear(KtSession *session);
+
+/**
  * Take the bytes a detached session has queued for its child, emptying the
  * queue.
  *

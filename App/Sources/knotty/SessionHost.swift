@@ -376,6 +376,17 @@ final class SessionHost {
         }
     }
 
+    /// Empty the screen and the scrollback.
+    ///
+    /// The core publishes, so nothing is redrawn from here.
+    func clear() {
+        do {
+            try session.clear()
+        } catch {
+            report(error)
+        }
+    }
+
     /// Tell the session the window gained or lost focus.
     func focus(gained: Bool) {
         do {

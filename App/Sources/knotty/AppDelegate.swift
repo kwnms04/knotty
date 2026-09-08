@@ -203,6 +203,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// reaching the item is also ⌘C not reaching the child — where it would
     /// have been encoded as a key like any other. ⌃C is the one that
     /// interrupts, and nothing here touches it.
+    ///
+    /// ⌘K is here for that same reason and one more: it names no target
+    /// either, so it is greyed out when no terminal is being typed into
+    /// rather than emptying whatever window happens to be up.
     private static func mainMenu() -> NSMenu {
         let quit = NSMenuItem(
             title: "Quit knotty",
@@ -242,9 +246,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             action: #selector(NSText.paste(_:)),
             keyEquivalent: "v"
         )
+        // Named for both, because it empties both: an item saying only
+        // "Clear" would not say that the history goes with the screen.
+        let clear = NSMenuItem(
+            title: "Clear Screen and Scrollback",
+            action: #selector(TerminalView.clear(_:)),
+            keyEquivalent: "k"
+        )
         let editMenu = NSMenu(title: "Edit")
         editMenu.addItem(copy)
         editMenu.addItem(paste)
+        editMenu.addItem(.separator())
+        editMenu.addItem(clear)
 
         let editItem = NSMenuItem()
         editItem.submenu = editMenu
