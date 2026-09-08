@@ -36,17 +36,21 @@ impl Terminal {
     /// `even_if_unchanged` is for a caller with something to say that the
     /// screen cannot show, and takes that answer away: it always yields a
     /// frame.
+    ///
+    /// `foreground_pwd` is where the caller read the child to be, for the
+    /// snapshot to carry when the terminal reports no directory of its own.
     pub(crate) fn capture(
         &mut self,
         previous: &ScreenState,
         even_if_unchanged: bool,
+        foreground_pwd: &str,
     ) -> Result<Option<Snapshot>> {
         // SAFETY: both handles are ours and outlive the call, which is the one
         // point where reading the render state needs the terminal at all.
         check(unsafe { ffi::ghostty_render_state_update(self.render, self.raw) })?;
 
         let dirty = self.dirty()?;
-        let screen = self.screen_state()?;
+        let screen = self.screen_state(foreground_pwd)?;
         if !even_if_unchanged && dirty == Dirty::Clean && screen == *previous {
             return Ok(None);
         }
@@ -139,11 +143,24 @@ impl Terminal {
     }
 
     /// Everything a snapshot says that is not the grid.
-    fn screen_state(&self) -> Result<ScreenState> {
+    ///
+    /// What the terminal reports beats `foreground_pwd`, and reporting nothing
+    /// is what makes the fallback the answer: OSC 7 is the child saying where
+    /// it is, and nothing read off the process outside it can be newer than
+    /// that. The control characters are taken out of either one — a path from
+    /// the system is no more a promise about its bytes than a path from a
+    /// child. cf. `02-ffi.md`
+    fn screen_state(&self, foreground_pwd: &str) -> Result<ScreenState> {
+        let reported = path_of(self.text(ffi::TerminalData::PWD)?);
+        let pwd = if reported.is_empty() {
+            foreground_pwd
+        } else {
+            reported.as_str()
+        };
         Ok(ScreenState {
             cursor: self.cursor()?,
             title: without_control_characters(self.text(ffi::TerminalData::TITLE)?),
-            pwd: without_control_characters(&path_of(self.text(ffi::TerminalData::PWD)?)),
+            pwd: without_control_characters(pwd),
         })
     }
 

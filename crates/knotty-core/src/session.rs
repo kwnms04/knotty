@@ -165,6 +165,13 @@ pub struct Session {
     // Whether the block now open has been given up on. While it stands nothing
     // is held back; closing the block clears it.
     given_up_on_block: bool,
+    // Where the process in front of the child has its working directory, as
+    // whoever drives this session last read it. What a capture falls back on
+    // when the terminal has no directory of its own to give, which is every
+    // shell that does not report one. Empty for a detached session, which has
+    // no process to read and no one to read it. cf.
+    // `docs/adr/0020-restore-windows-ourselves.md`
+    foreground_pwd: String,
 }
 
 impl Session {
@@ -191,7 +198,19 @@ impl Session {
             held_back: false,
             held_since: None,
             given_up_on_block: false,
+            foreground_pwd: String::new(),
         })
+    }
+
+    /// Say where the process in front of the child now is, for the captures
+    /// that follow to fall back on.
+    ///
+    /// Told rather than read: this side of the session knows nothing of
+    /// processes, and the thread that drives a PTY does. What the terminal
+    /// itself reports still wins — this is only what stands in when it reports
+    /// nothing.
+    pub(crate) fn set_foreground_pwd(&mut self, pwd: String) {
+        self.foreground_pwd = pwd;
     }
 
     /// Set what to call when the session has something new to be taken, or
@@ -503,9 +522,9 @@ impl Session {
         // no cell — so a screen that did not move can still leave something
         // to take.
         let mut something_to_take = self.events.lock().expect("event queue lock").take_arrival();
-        if let Some(mut snapshot) = self
-            .terminal
-            .capture(&self.last_screen, even_if_unchanged)?
+        if let Some(mut snapshot) =
+            self.terminal
+                .capture(&self.last_screen, even_if_unchanged, &self.foreground_pwd)?
         {
             self.last_screen = snapshot.screen.clone();
             // The mailbox keeps only the newest snapshot, so publishing over
@@ -734,16 +753,19 @@ pub struct PtySession {
 }
 
 impl PtySession {
-    /// Start `program` with `args` behind a pseudoterminal of `cols` by
-    /// `rows`, and put a thread on it.
+    /// Start `program` with `args` in `directory`, behind a pseudoterminal of
+    /// `cols` by `rows`, and put a thread on it.
+    ///
+    /// An empty `directory` names none, and the child inherits this process's.
     pub fn new(
         program: &[u8],
         args: &[Vec<u8>],
+        directory: &[u8],
         cols: u16,
         rows: u16,
         max_scrollback: usize,
     ) -> Result<Self> {
-        let (mut terminal, waker) = Pty::spawn(program, args, cols, rows)?;
+        let (mut terminal, waker) = Pty::spawn(program, args, directory, cols, rows)?;
         // Taken before the terminal goes to the thread that owns it, which is
         // the last moment this side can reach it.
         let foreground = Some(terminal.foreground()?);
@@ -1381,8 +1403,15 @@ mod tests {
     /// pairing that broke when this path stopped going through the channel.
     #[test]
     fn a_write_with_no_thread_left_to_carry_it_says_so() {
-        let session = PtySession::new(b"/bin/sh", &[b"-c".to_vec(), b"exit 0".to_vec()], 4, 1, 0)
-            .expect("a session whose child ends at once");
+        let session = PtySession::new(
+            b"/bin/sh",
+            &[b"-c".to_vec(), b"exit 0".to_vec()],
+            b"",
+            4,
+            1,
+            0,
+        )
+        .expect("a session whose child ends at once");
 
         // Polled: what is waited for is the thread winding up, and it has no
         // telling of its own.
@@ -1420,8 +1449,15 @@ mod tests {
     /// three are at it.
     #[test]
     fn the_queue_bound_holds_against_a_child_that_never_reads() {
-        let session = PtySession::new(b"/bin/sh", &[b"-c".to_vec(), b"sleep 30".to_vec()], 4, 1, 0)
-            .expect("a session with a child that never reads");
+        let session = PtySession::new(
+            b"/bin/sh",
+            &[b"-c".to_vec(), b"sleep 30".to_vec()],
+            b"",
+            4,
+            1,
+            0,
+        )
+        .expect("a session with a child that never reads");
 
         let chunk = vec![b'x'; 64 * 1024];
         assert!(session.write(&chunk).is_ok(), "the first write was refused");

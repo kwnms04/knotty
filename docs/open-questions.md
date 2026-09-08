@@ -22,7 +22,7 @@
 
 - **스크롤백 메모리** — 설정 키를 두지 않기로 하면서 소멸했습니다. 사용자가 큰 값을 넣을 길이 없으면 상한 동작을 정할 일이 없습니다.
 - **defunct 세션의 표현** — 질문이 이미 답해져 있었습니다. `KtSessionState`(OK/BROKEN)와 `KtChildState`(NONE/RUNNING/EXITED)가 따로 있고, 닫을 때 경고할지는 후자가 입력을 계속 받을지는 전자가 정합니다.
-- **스폰 시 작업 디렉터리** — ABI 9에서 `kt_session_new_pty`의 인자로 더합니다.
+- **스폰 시 작업 디렉터리** — ABI 10에서 `kt_session_new_pty`의 인자로 더했습니다. [0020](adr/0020-restore-windows-ourselves.md)은 ABI 9라 적었으나 9는 설정 읽기가 먼저 가져갔고, 시그니처를 바꾸는 변경이라 새 번호가 필요했습니다.
 - **⌘K 대응 경로** — `kt_session_clear` 신설로 갑니다. `clear`는 스크롤백을 지우지 못하므로 셸이 대신할 수 있는 일이 아닙니다.
 
 ## v1.5

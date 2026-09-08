@@ -16,7 +16,7 @@ v1은 수준 1(패스스루)입니다. 수준 2(컨트롤 모드)는 v2이며, `
 | 포커스 (1004) | `focus-events on` → vim autoread 등 | 입력 경로 |
 | 동기화 출력 (2026) | tmux 사용. 블록 중 wake 억제로 티어링 제거 | [C5](03-core.md#c5--wake-emission) |
 | OSC 10/11 질의 | 내부 앱의 배경색 감지가 tmux를 관통 | 내부 응답 경로 |
-| OSC 7 (작업 디렉터리) | tmux 기본 미전달. **문서화된 한계**. 비 tmux 환경을 위해 유지 | 스냅샷 필드 |
+| OSC 7 (작업 디렉터리) | tmux 기본 미전달. 보고가 없으면 포어그라운드 프로세스에서 읽으므로 tmux 안에서는 **tmux를 띄운 자리**가 나옵니다 — 비는 것이 아니라 틀리는 것이며 **문서화된 한계**입니다 | 스냅샷 필드 |
 | 환경 | `TERM=xterm-256color`, `COLORTERM=truecolor`, `TERM_PROGRAM`. tmux `terminal-features` 권장 설정은 사용자 문서 항목 | 스폰 파라미터 |
 
 **OSC 8은 v1 범위가 아닙니다.** cf. [0006](adr/0006-no-osc8-in-v1.md) — 최신 tmux가 패스스루하더라도 우리가 셀→링크 연결을 받을 수 없습니다. URL은 ⌘ 스캔이 담당합니다.

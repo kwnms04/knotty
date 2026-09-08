@@ -6,6 +6,7 @@ publish.workspace = true
 version.workspace = true
 
 [dependencies]
+libc.workspace = true
 libghostty-vt-sys.workspace = true
 rustix.workspace = true
 

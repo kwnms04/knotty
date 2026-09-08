@@ -134,10 +134,12 @@ private func text(of snapshot: Snapshot, row: Int) -> String {
 }
 
 /// A real child, and a way to be told when it has done something.
-private func spawn(_ command: [String]) throws -> (session: Session, woken: DispatchSemaphore) {
+private func spawn(
+    _ command: [String], in directory: String? = nil
+) throws -> (session: Session, woken: DispatchSemaphore) {
     let woken = DispatchSemaphore(value: 0)
     let session = try Session(
-        command: command, cols: cols, rows: rows, scrollback: scrollback
+        command: command, cols: cols, rows: rows, scrollback: scrollback, directory: directory
     )
     // Registering settles what already fell due, so a child quick enough to
     // have finished by this line still wakes us.
@@ -240,6 +242,30 @@ private func settle<Value>(
     #expect(named == "made")
 }
 
+/// What this binding does that no test below it can: hand a path across as a
+/// pointer and a length, and read the field a restored window would be opened
+/// from back off a frame. The child reports no directory of its own — `/bin/sh`
+/// sends no OSC 7 — so the path that comes back is the one read off the
+/// process. cf. adr/0020.
+@Test func aSessionStartsWhereItWasToldAndSaysWhereThatIs() throws {
+    // A directory that is its own real path, so that what comes back can be
+    // compared with what was asked for. A temporary one would not do: `/tmp`
+    // is a symlink, and the system answers with what it points at.
+    let directory = "/usr/lib"
+    // A child that stays, so the frame under test is not one from a session
+    // already on its way out.
+    let (session, woken) = try spawn(
+        ["/bin/sh", "-c", "printf ready; read line"], in: directory
+    )
+
+    let reported = try settle(session, wokenBy: woken) { snapshot -> String? in
+        let pwd = String(decoding: snapshot.pwd, as: UTF8.self)
+        return pwd.isEmpty ? nil : pwd
+    }
+
+    #expect(reported == directory)
+}
+
 /// The shell comes from the user record. An app the window server started
 /// has no environment worth reading, and `chsh` writes to the record.
 @Test func theLoginShellIsAnExecutableTheUserRecordNames() {
@@ -292,6 +318,25 @@ private func waitUntilBusy(_ session: Session) throws -> Bool {
         try waitUntilBusy(busy),
         "nothing ever took the terminal in front of the shell"
     )
+}
+
+/// The third answer, which is neither of the two above: a window whose shell
+/// has already gone has nothing running in it. Nothing is left that closing
+/// the window would take down, so a warning would be one nobody could act on.
+///
+/// A terminal in that state may have no foreground group at all, which the
+/// system reports as 0 rather than as a failure. Whether that number is read
+/// as a process group is the core's own test to catch — the round after a
+/// short-lived child's output is where it turns up. This one is the app's
+/// side of the answer.
+@Test func aSessionWhoseChildHasGoneSaysNothingIsRunning() throws {
+    let (session, woken) = try spawn(["/bin/sh", "-c", "exit 0"])
+    let gone = try settle(session, wokenBy: woken) { snapshot -> Bool? in
+        snapshot.childState == .exited(code: 0) ? true : nil
+    }
+    #expect(gone == true)
+
+    #expect(try session.foregroundBusy() == false)
 }
 
 /// What a child is told about the terminal it was started in.
