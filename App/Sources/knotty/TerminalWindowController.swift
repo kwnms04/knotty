@@ -54,9 +54,12 @@ final class TerminalWindowController: NSWindowController {
             height: Double(Int32(rows) * metrics.height) / scale
         )
 
+        // Nowhere in particular: this app opens every window in its own
+        // working directory. What a restored window opens in is the directory
+        // it was saved with, which is the milestone's next step.
         let host = try SessionHost(
             columns: columns, rows: rows, scrollback: scrollback,
-            metrics: metrics, font: font, theme: config.theme
+            metrics: metrics, font: font, theme: config.theme, directory: nil
         )
 
         let window = NSWindow(

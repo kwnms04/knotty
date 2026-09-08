@@ -190,6 +190,11 @@ public struct Snapshot {
     /// Window title as UTF-8, control characters already removed.
     public let title: UnsafeBufferPointer<UInt8>
     /// Working directory as an absolute path in UTF-8.
+    ///
+    /// Filled whether or not the child reports one: a shell that sends OSC 7
+    /// is taken at its word, and one that sends nothing — which is every
+    /// shell knotty names itself to — has it read off the process instead.
+    /// cf. adr/0020.
     public let pwd: UnsafeBufferPointer<UInt8>
     /// What the session said of its child as this frame was taken.
     public let childState: ChildState

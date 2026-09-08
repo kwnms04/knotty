@@ -55,15 +55,26 @@ public final class Session {
     ///
     /// `command` is what to run: the first element is the program and the
     /// rest are its arguments. The child starts knowing the size given here,
-    /// so its first frame is already the right shape, and it inherits this
-    /// process's working directory — the boundary has no argument for one.
+    /// so its first frame is already the right shape.
+    ///
+    /// `directory` is where to start it. Nil names none, and then the child
+    /// inherits this process's working directory — which is what a window
+    /// with nothing saved for it wants. A directory that cannot be entered is
+    /// a spawn that throws rather than one that lands somewhere else.
     ///
     /// The session gets a thread of its own that reads the terminal and
     /// publishes, which is why ``feed(_:)`` is refused on one of these.
-    public init(command: [String], cols: UInt16, rows: UInt16, scrollback: Int) throws {
+    public init(
+        command: [String], cols: UInt16, rows: UInt16, scrollback: Int, directory: String?
+    ) throws {
         var handle: OpaquePointer?
         let status = Self.withArgv(command) { argv in
-            kt_session_new_pty(cols, rows, scrollback, argv.baseAddress, argv.count, &handle)
+            Array((directory ?? "").utf8).withUnsafeBufferPointer { directory in
+                kt_session_new_pty(
+                    cols, rows, scrollback, argv.baseAddress, argv.count,
+                    directory.baseAddress, directory.count, &handle
+                )
+            }
         }
         guard status == KT_STATUS_OK.rawValue, let handle else {
             throw SessionError(call: "kt_session_new_pty", status: status)

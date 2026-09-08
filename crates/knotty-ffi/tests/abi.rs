@@ -1623,13 +1623,40 @@ const PATIENCE: Duration = Duration::from_secs(10);
 
 /// A command as a consumer passes one: borrowed runs of text, program first.
 fn pty(cols: u16, rows: u16, argv: &[&str]) -> *mut KtSession {
+    pty_in(cols, rows, argv, "")
+}
+
+/// The same, started where the caller says. An empty `directory` names none,
+/// which is this process's own.
+fn pty_in(cols: u16, rows: u16, argv: &[&str], directory: &str) -> *mut KtSession {
     let argv: Vec<KtText> = argv.iter().copied().map(KtText::from).collect();
     let mut session = ptr::null_mut();
-    let status =
-        unsafe { kt_session_new_pty(cols, rows, 0, argv.as_ptr(), argv.len(), &mut session) };
+    let status = unsafe {
+        kt_session_new_pty(
+            cols,
+            rows,
+            0,
+            argv.as_ptr(),
+            argv.len(),
+            directory.as_ptr(),
+            directory.len(),
+            &mut session,
+        )
+    };
     assert_eq!(status, KtStatus::Ok);
     assert!(!session.is_null());
     session
+}
+
+/// A directory that is its own real path, so that what a child reports of it
+/// can be compared with what was asked for. `/tmp` is a symlink on macOS and
+/// `/private/tmp` is what anything asking the system comes back with.
+fn real_tmp() -> String {
+    std::fs::canonicalize("/tmp")
+        .expect("a real path for /tmp")
+        .to_str()
+        .expect("a UTF-8 path")
+        .to_owned()
 }
 
 fn write(session: *mut KtSession, bytes: &[u8]) {
@@ -1734,6 +1761,129 @@ fn a_child_starts_knowing_the_size_of_the_window_it_is_in() {
 
     // What `stty size` prints is rows then columns.
     wait_for(session, "9 37");
+
+    unsafe { kt_session_free(session) };
+}
+
+/// Without an argument for it, every window inherits the one working
+/// directory this process has — and a restored window is one that has to open
+/// somewhere else. cf. `docs/adr/0020-restore-windows-ourselves.md`
+#[test]
+fn a_child_starts_in_the_directory_it_was_given() {
+    let directory = real_tmp();
+    // The program rather than the shell builtin: `pwd` in a shell may answer
+    // out of the inherited `PWD`, which still names where this process is.
+    let session = pty_in(24, 4, &["/bin/pwd"], &directory);
+
+    wait_for(session, &directory);
+
+    unsafe { kt_session_free(session) };
+}
+
+/// A directory that is not one is a session that is not made. The window that
+/// asked for it hears so, rather than quietly opening somewhere else — which
+/// for a restored window would be the wrong place with no sign of it.
+#[test]
+fn a_directory_that_cannot_be_entered_is_refused() {
+    let argv = [KtText::from("/bin/sh")];
+    let directory = "/knotty/no/such/directory";
+    let mut nowhere = ptr::null_mut();
+
+    assert_eq!(
+        unsafe {
+            kt_session_new_pty(
+                4,
+                1,
+                0,
+                argv.as_ptr(),
+                argv.len(),
+                directory.as_ptr(),
+                directory.len(),
+                &mut nowhere,
+            )
+        },
+        KtStatus::Io,
+    );
+    assert!(nowhere.is_null());
+}
+
+/// The field the app restores windows from, filled with no shell
+/// configuration whatever: `/bin/sh` reports no directory, and knotty naming
+/// itself to zsh is what keeps zsh from reporting one either. Read off the
+/// process instead. cf. `docs/adr/0020-restore-windows-ourselves.md`
+#[test]
+fn the_working_directory_is_filled_in_for_a_shell_that_reports_none() {
+    let directory = real_tmp();
+    // A child that stays: the read is what keeps it there once it has
+    // printed, so the frame under test is not one from a session on its way
+    // out.
+    let session = pty_in(
+        24,
+        4,
+        &["/bin/sh", "-c", "printf ready; read line"],
+        &directory,
+    );
+
+    let reported = wait_for_snapshot(session, "a working directory", |view| {
+        Some(text(view.pwd)).filter(|pwd| !pwd.is_empty())
+    });
+
+    assert_eq!(reported, directory);
+
+    unsafe { kt_session_free(session) };
+}
+
+/// What a child says about itself beats what the system says about it: OSC 7
+/// is the child reporting where it is, and nothing read off the process
+/// outside it can be newer than that.
+#[test]
+fn a_reported_working_directory_beats_the_one_read_off_the_process() {
+    let session = pty_in(
+        24,
+        4,
+        &[
+            "/bin/sh",
+            "-c",
+            "printf '\\033]7;file:///usr\\007ready'; read line",
+        ],
+        &real_tmp(),
+    );
+
+    let reported = wait_for_snapshot(session, "the reported working directory", |view| {
+        Some(text(view.pwd)).filter(|pwd| pwd == "/usr")
+    });
+
+    assert_eq!(reported, "/usr");
+
+    unsafe { kt_session_free(session) };
+}
+
+/// A shell moves without saying so, and the window that comes back has to come
+/// back where the shell was left rather than where it started.
+#[test]
+fn the_working_directory_follows_a_child_that_moves() {
+    let session = pty_in(
+        24,
+        4,
+        &[
+            "/bin/sh",
+            "-c",
+            "printf ready; read line; cd /usr; printf moved; read line",
+        ],
+        &real_tmp(),
+    );
+    wait_for(session, "ready");
+
+    // The echo of the return comes back in a round of its own, before the
+    // shell has moved — so what is waited for is the directory and not the
+    // next frame.
+    write(session, b"\r");
+
+    let reported = wait_for_snapshot(session, "the directory moved to", |view| {
+        Some(text(view.pwd)).filter(|pwd| pwd == "/usr")
+    });
+
+    assert_eq!(reported, "/usr");
 
     unsafe { kt_session_free(session) };
 }
@@ -2242,14 +2392,14 @@ fn null_arguments_are_reported_rather_than_dereferenced() {
         KtStatus::NullArgument,
     );
     assert_eq!(
-        unsafe { kt_session_new_pty(4, 1, 0, ptr::null(), 0, ptr::null_mut()) },
+        unsafe { kt_session_new_pty(4, 1, 0, ptr::null(), 0, ptr::null(), 0, ptr::null_mut()) },
         KtStatus::NullArgument,
     );
     // A command of no words names nothing to run, which is the same missing
     // argument as a null one.
     let mut nothing_to_run = ptr::null_mut();
     assert_eq!(
-        unsafe { kt_session_new_pty(4, 1, 0, ptr::null(), 0, &mut nothing_to_run) },
+        unsafe { kt_session_new_pty(4, 1, 0, ptr::null(), 0, ptr::null(), 0, &mut nothing_to_run) },
         KtStatus::NullArgument,
     );
     assert!(nothing_to_run.is_null());
@@ -2269,12 +2419,34 @@ fn null_arguments_are_reported_rather_than_dereferenced() {
                 0,
                 missing_argument.as_ptr(),
                 missing_argument.len(),
+                ptr::null(),
+                0,
                 &mut nothing_to_run,
             )
         },
         KtStatus::NullArgument,
     );
     assert!(nothing_to_run.is_null());
+    // A directory that says it has bytes and points at none, which is the
+    // same missing argument the command's own words are checked for.
+    let mut nowhere_to_start = ptr::null_mut();
+    let argv = [KtText::from("/bin/sh")];
+    assert_eq!(
+        unsafe {
+            kt_session_new_pty(
+                4,
+                1,
+                0,
+                argv.as_ptr(),
+                argv.len(),
+                ptr::null(),
+                1,
+                &mut nowhere_to_start,
+            )
+        },
+        KtStatus::NullArgument,
+    );
+    assert!(nowhere_to_start.is_null());
     assert_eq!(
         unsafe { kt_session_feed(ptr::null_mut(), b"x".as_ptr(), 1) },
         KtStatus::NullArgument,

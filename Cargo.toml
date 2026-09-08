@@ -24,6 +24,10 @@ libghostty-vt-sys = "=0.2.1"
 # build-time dependency, so nothing new is pulled in for it; cf. the M1 spec,
 # `kwnms04/knotty#10`.
 rustix = { version = "1.1", features = ["event", "pipe", "process", "pty", "termios"] }
+# The one call rustix does not wrap: `proc_pidinfo`, which is how the working
+# directory of a process is read on a system with no `/proc`. Already in the
+# graph under rustix, so nothing new is pulled in for it either.
+libc = "0.2"
 
 # Permanent, not a stopgap. The branch is one commit on top of 0.2.1 and it
 # touches `build.rs` alone — the hooks `ZIG` and `ZIG_SYSROOT`, which AGENTS.md

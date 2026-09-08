@@ -236,27 +236,97 @@ impl Foreground {
     /// "running" for as long as the shell lives, which is every window there
     /// has ever been. cf. `05-swift-app.md` 8
     ///
-    /// Read on our end of the terminal and not the far one, which is the
-    /// opposite of what [`set_size`] does: this ioctl is answered for the
-    /// terminal the asking process controls, and the far end is the
-    /// *child's* controlling terminal rather than ours — asking there is
-    /// `ENOTTY`. A pseudoterminal's own end answers it for the far end's
-    /// foreground group, which is the number wanted here.
-    ///
-    /// A terminal with no foreground group at all — the moment between the
-    /// fork and the child's `setsid`, and a terminal already torn down —
-    /// reads as quiet. Nothing is running that closing the window would take
-    /// down, and a warning nobody can act on is the one that teaches people
-    /// to click through the one that matters.
-    ///
-    /// [`set_size`]: Pty::set_size
+    /// A terminal with no foreground group at all reads as quiet. Nothing is
+    /// running that closing the window would take down, and a warning nobody
+    /// can act on is the one that teaches people to click through the one
+    /// that matters.
     #[must_use]
     pub fn busy(&self) -> bool {
-        let Ok(foreground) = rustix::termios::tcgetpgrp(&self.terminal) else {
-            return false;
-        };
-        foreground.as_raw_nonzero().get() != self.shell
+        foreground_group(&self.terminal).is_some_and(|group| group != self.shell)
     }
+}
+
+/// Which process group holds the terminal's foreground, or none where it has
+/// none to name.
+///
+/// Read on our end of the terminal and not the far one, which is the opposite
+/// of what [`Pty::set_size`] does: this ioctl is answered for the terminal the
+/// asking process controls, and the far end is the *child's* controlling
+/// terminal rather than ours — asking there is `ENOTTY`. A pseudoterminal's
+/// own end answers it for the far end's foreground group, which is the number
+/// wanted here.
+///
+/// None in the moment between the fork and the child's `setsid`, and for a
+/// terminal whose child has gone.
+///
+/// Asked of `libc` rather than through the wrapper rustix has for it. A
+/// pseudoterminal that has lost its session leader answers 0, which is no
+/// process group — and rustix guards against that answer on Linux alone, so
+/// here the 0 goes into a `NonZero` unchecked. Asking directly is what keeps
+/// a terminal outliving its child from being undefined behaviour.
+fn foreground_group(terminal: &OwnedFd) -> Option<i32> {
+    // SAFETY: the descriptor is ours and open for the length of the call.
+    #[allow(unsafe_code, reason = "no safe spelling of a C call")]
+    let group = unsafe { libc::tcgetpgrp(terminal.as_raw_fd()) };
+    (group > 0).then_some(group)
+}
+
+/// Where a process has its working directory, or none where the system would
+/// not say — a path that is not UTF-8 among them, since a snapshot has no way
+/// to carry one.
+///
+/// What the snapshot's `pwd` falls back on. A shell reports it with OSC 7 and
+/// one knotty named itself to does not report it at all — `/etc/zshrc` sources
+/// the integration for `Apple_Terminal` and for nothing else — so asking the
+/// process is what fills the field in with no shell configuration whatever.
+/// cf. `docs/adr/0020-restore-windows-ourselves.md`
+///
+/// The one call in this module that is written twice: macOS keeps no `/proc`
+/// to read a process out of and answers this through `libproc` instead. Which
+/// of the two is the release platform's is `docs/adr/0001-portable-core.md`'s
+/// answer, and this module is where a difference like it belongs.
+#[cfg(target_os = "macos")]
+fn directory_of(pid: i32) -> Option<String> {
+    let mut info = std::mem::MaybeUninit::<libc::proc_vnodepathinfo>::zeroed();
+    let wanted = i32::try_from(size_of::<libc::proc_vnodepathinfo>()).ok()?;
+    // SAFETY: the buffer is a whole `proc_vnodepathinfo` and `wanted` is its
+    // length, which is what this flavour writes into it.
+    #[allow(unsafe_code, reason = "no safe spelling of a C call taking a buffer")]
+    let written = unsafe {
+        libc::proc_pidinfo(
+            pid,
+            libc::PROC_PIDVNODEPATHINFO,
+            0,
+            info.as_mut_ptr().cast(),
+            wanted,
+        )
+    };
+    // The call answers with how much it wrote, and anything short of the whole
+    // struct is a process that could not be asked — one that has ended, or one
+    // this process is not allowed to look into.
+    if written != wanted {
+        return None;
+    }
+    // SAFETY: every byte of it was written, which is what the length above
+    // settled.
+    #[allow(unsafe_code, reason = "the buffer the call above filled in")]
+    let info = unsafe { info.assume_init() };
+
+    // A path shorter than the field is terminated inside it; one that filled
+    // the field is not a path this can answer with.
+    let path = info.pvi_cdir.vip_path.as_flattened();
+    let end = path.iter().position(|byte| *byte == 0)?;
+    String::from_utf8(path[..end].iter().map(|byte| *byte as u8).collect()).ok()
+}
+
+/// The same, where a process is itself a directory to read it out of.
+#[cfg(not(target_os = "macos"))]
+fn directory_of(pid: i32) -> Option<String> {
+    std::fs::read_link(format!("/proc/{pid}/cwd"))
+        .ok()?
+        .into_os_string()
+        .into_string()
+        .ok()
 }
 
 /// The sending end of a [`Pty`]'s nudge pipe.
@@ -287,8 +357,19 @@ impl Waker {
 
 impl Pty {
     /// Open a terminal of `cols` by `rows`, and start `program` on the far
-    /// side of it.
-    pub fn spawn(program: &[u8], args: &[Vec<u8>], cols: u16, rows: u16) -> Result<(Self, Waker)> {
+    /// side of it in `directory`.
+    ///
+    /// An empty `directory` is the caller naming none, and then the child
+    /// inherits this process's — which is what every session had before there
+    /// was an argument for one, and what a window with nothing saved still
+    /// wants.
+    pub fn spawn(
+        program: &[u8],
+        args: &[Vec<u8>],
+        directory: &[u8],
+        cols: u16,
+        rows: u16,
+    ) -> Result<(Self, Waker)> {
         // Opened before the terminal so that no child of ours can inherit it,
         // and marked close-on-exec so that no other thread's can either.
         let (nudge, sender) = rustix::pipe::pipe()?;
@@ -342,8 +423,11 @@ impl Pty {
             .env("TERM", TERM)
             .env("COLORTERM", COLORTERM)
             .env("TERM_PROGRAM", TERM_PROGRAM);
-        // The crate's other exception to the ban on `unsafe`, and the smaller
-        // one: there is no safe way to ask for work between fork and exec.
+        if !directory.is_empty() {
+            command.current_dir(OsStr::from_bytes(directory));
+        }
+        // Another exception to the crate's ban on `unsafe`: there is no safe
+        // way to ask for work between fork and exec.
         //
         // SAFETY: both calls are async-signal-safe, which is the whole of what
         // a child between fork and exec may make.
@@ -408,6 +492,22 @@ impl Pty {
             // which is every window warning for ever.
             shell: i32::try_from(self.child.process.id()).expect("a process id is an i32"),
         })
+    }
+
+    /// Where whatever holds the terminal's foreground has its working
+    /// directory, or none where nothing could be read.
+    ///
+    /// The process asked is the one its foreground group is led by, which at a
+    /// prompt is the shell and under a job is the job — so this follows a
+    /// child that moved without the shell having to be told. None is not an
+    /// empty directory: it says the question went unanswered, and the caller
+    /// keeps what it last had rather than putting nothing in place of a path.
+    ///
+    /// **Inside tmux this is where tmux was started**, since the process in
+    /// front is the tmux client. A documented limit, and the one OSC 7 has
+    /// too. cf. `06-integration.md`
+    pub fn foreground_directory(&self) -> Option<String> {
+        directory_of(foreground_group(&self.terminal)?)
     }
 
     /// Block until the terminal has something, has room, a nudge arrives, or
@@ -604,13 +704,32 @@ pub(crate) fn run(
         let mut ended = ready.ended;
         if ready.readable {
             match terminal.read(&mut arrived)? {
-                Chunk::Bytes(read) => match session.feed(&arrived[..read]) {
-                    // This loop is the only drain a PTY session's writer queue
-                    // has, so a full one is ours to shed rather than anyone's
-                    // to be told about.
-                    Ok(()) | Err(Error::WriteQueueFull) => {}
-                    Err(error) => return Err(error),
-                },
+                Chunk::Bytes(read) => {
+                    // Read after the child's bytes and before they are fed: a
+                    // shell moves and then prints its prompt, so the frame
+                    // this feed is about to publish is the one that has to
+                    // carry where it moved to. Asked at all because the
+                    // terminal knows only what the child reported, and a
+                    // shell knotty named itself to reports nothing. cf.
+                    // `docs/adr/0020-restore-windows-ourselves.md`
+                    //
+                    // ponytail: two syscalls and a short allocation on every
+                    // round that read something, which under a flood is every
+                    // 64KiB. Beside the parse of that same chunk it is noise;
+                    // if B4 or B5 ever says otherwise, the way out is asking
+                    // only on the rounds that publish — which means moving
+                    // the question inside the capture, where that is known.
+                    if let Some(directory) = terminal.foreground_directory() {
+                        session.set_foreground_pwd(directory);
+                    }
+                    match session.feed(&arrived[..read]) {
+                        // This loop is the only drain a PTY session's writer
+                        // queue has, so a full one is ours to shed rather than
+                        // anyone's to be told about.
+                        Ok(()) | Err(Error::WriteQueueFull) => {}
+                        Err(error) => return Err(error),
+                    }
+                }
                 Chunk::Empty => {}
                 Chunk::Ended => ended = true,
             }
@@ -669,9 +788,14 @@ mod tests {
         // Outliving the test on purpose: the release under test is the one
         // that has a live child to put down, and a child that ended on its own
         // would be collected before the terminal ever mattered.
-        let (terminal, _waker) =
-            Pty::spawn(b"/bin/sh", &[b"-c".to_vec(), b"sleep 300".to_vec()], 4, 1)
-                .expect("a terminal with a child on it");
+        let (terminal, _waker) = Pty::spawn(
+            b"/bin/sh",
+            &[b"-c".to_vec(), b"sleep 300".to_vec()],
+            b"",
+            4,
+            1,
+        )
+        .expect("a terminal with a child on it");
 
         // Never read back, so the echo of it stays in the terminal's output
         // queue — which is what a child on its way out waits to see drained.
@@ -712,7 +836,7 @@ mod tests {
     #[test]
     fn a_resize_fills_in_the_size_in_pixels() {
         let (terminal, _waker) =
-            Pty::spawn(b"/bin/echo", &[b"knotty".to_vec()], 80, 24).expect("a terminal");
+            Pty::spawn(b"/bin/echo", &[b"knotty".to_vec()], b"", 80, 24).expect("a terminal");
 
         terminal.set_size(100, 30, 8, 16).expect("a resize");
 
@@ -738,7 +862,7 @@ mod tests {
     /// nothing. cf. `kwnms04/knotty#43`
     #[test]
     fn a_child_that_prints_once_and_stops_keeps_its_output() {
-        let (terminal, _waker) = Pty::spawn(b"/bin/echo", &[b"knotty".to_vec()], 80, 24)
+        let (terminal, _waker) = Pty::spawn(b"/bin/echo", &[b"knotty".to_vec()], b"", 80, 24)
             .expect("a terminal with a child on it");
 
         thread::sleep(LATER_THAN_THE_TEARDOWN);

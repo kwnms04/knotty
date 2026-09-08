@@ -68,6 +68,7 @@ fn flooding() -> PtySession {
     let session = PtySession::new(
         b"/bin/sh",
         &[b"-c".to_vec(), child.into_bytes()],
+        b"",
         COLS,
         ROWS,
         SCROLLBACK,

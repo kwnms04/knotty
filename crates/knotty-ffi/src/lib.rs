@@ -255,7 +255,7 @@ impl Userdata {
 /// A caller reads the constant from the header it compiled against and
 /// compares it with [`kt_abi_version`]. Mismatch means header and library
 /// disagree about layouts, and the caller must not proceed.
-pub const KT_ABI_VERSION: u32 = 9;
+pub const KT_ABI_VERSION: u32 = 10;
 
 /// How many colours a theme names.
 ///
@@ -685,6 +685,12 @@ pub unsafe extern "C" fn kt_session_new_detached(
 /// The child starts knowing the size it was given here, so its first frame is
 /// already the right shape.
 ///
+/// `directory` is where to start it, as `directory_len` bytes of path. A
+/// length of 0 names none, and then the child inherits the calling process's
+/// working directory — which is what a window with nothing saved for it wants.
+/// A directory that cannot be entered is reported as `KT_STATUS_IO`: the
+/// session is not created, rather than created somewhere else.
+///
 /// The session gets a thread of its own, which reads the terminal, feeds the
 /// engine, publishes, and hands the child what [`kt_session_write`] queued. A
 /// call that reaches past that thread to what it owns — [`kt_session_feed`],
@@ -696,8 +702,10 @@ pub unsafe extern "C" fn kt_session_new_detached(
 /// # Safety
 ///
 /// `argv` must point at `argc` readable `KtText`s, each of which must point at
-/// its own `len` readable bytes — null only where that length is 0. `out` must
-/// be a valid, writable pointer to a `KtSession *`.
+/// its own `len` readable bytes — null only where that length is 0.
+/// `directory` must point at `directory_len` readable bytes, null only where
+/// that length is 0. `out` must be a valid, writable pointer to a
+/// `KtSession *`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kt_session_new_pty(
     cols: u16,
@@ -705,6 +713,8 @@ pub unsafe extern "C" fn kt_session_new_pty(
     max_scrollback: usize,
     argv: *const KtText,
     argc: usize,
+    directory: *const u8,
+    directory_len: usize,
     out: *mut *mut KtSession,
 ) -> KtStatus {
     entry::answer(|| {
@@ -712,6 +722,7 @@ pub unsafe extern "C" fn kt_session_new_pty(
         if argv.is_null() || argc == 0 {
             return Err(KtStatus::NullArgument);
         }
+        let directory = unsafe { entry::borrowed(directory, directory_len) }?;
 
         // Copied rather than borrowed: the thread that runs the command
         // outlives this call, and what the caller lent does not have to.
@@ -723,7 +734,7 @@ pub unsafe extern "C" fn kt_session_new_pty(
         let (program, args) = argv.split_first().expect("argc is not zero");
 
         Ok(guarded(KtStatus::Panicked, || {
-            match PtySession::new(program, args, cols, rows, max_scrollback) {
+            match PtySession::new(program, args, directory, cols, rows, max_scrollback) {
                 Ok(session) => {
                     *out = handle(Driver::Pty(session));
                     KtStatus::Ok

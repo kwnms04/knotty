@@ -89,8 +89,11 @@ final class SessionHost {
     /// where the frame was taken, which is the main thread. cf. 05-swift-app 4.
     var onTitle: ((String) -> Void)?
 
-    /// Spawn the user's login shell behind a terminal of this size, drawn at
-    /// these metrics and in these colours.
+    /// Spawn the user's login shell in `directory` behind a terminal of this
+    /// size, drawn at these metrics and in these colours.
+    ///
+    /// Nil for `directory` leaves the shell wherever this process is, which is
+    /// what a window with nothing saved for it opens in.
     ///
     /// The theme goes down to the core before anything is drawn: the palette
     /// is the terminal's own state and every cell's colours are resolved
@@ -98,10 +101,11 @@ final class SessionHost {
     /// the wrong colours. cf. 02-ffi.
     init(
         columns: UInt16, rows: UInt16, scrollback: Int, metrics: CellMetrics,
-        font: Config.Font, theme: Config.Theme
+        font: Config.Font, theme: Config.Theme, directory: String?
     ) throws {
         session = try Session(
-            command: LoginShell.command, cols: columns, rows: rows, scrollback: scrollback
+            command: LoginShell.command, cols: columns, rows: rows, scrollback: scrollback,
+            directory: directory
         )
         renderer = Renderer(metrics: metrics, faces: Faces(metrics: metrics, name: font.family))
         self.metrics = metrics

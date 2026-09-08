@@ -9,7 +9,7 @@
 
 /* Golden snapshot comparison depends on these layouts, so a change here is an
  * ABI change and must come with a version bump. */
-_Static_assert(KT_ABI_VERSION == 9, "ABI version moved without updating this consumer");
+_Static_assert(KT_ABI_VERSION == 10, "ABI version moved without updating this consumer");
 
 _Static_assert(sizeof(KtCell) == 16, "KtCell grew or shrank");
 _Static_assert(offsetof(KtCell, codepoint) == 0, "KtCell fields moved");
@@ -145,11 +145,13 @@ int kt_consumer_exit_code(const KtSnapshotView *view, int *out_code) {
  * refused rather than answered wrongly. */
 _Static_assert(KT_STATUS_NOT_DETACHED == 8, "the PTY refusal moved");
 
-/* Starting a shell: the command is words of borrowed text, program first, and
- * the size the child is born knowing comes with it. */
+/* Starting a shell: the command is words of borrowed text, program first, the
+ * size the child is born knowing comes with it, and so does where to start it
+ * — a length of 0 leaving the child this process's own directory. */
 KtStatus kt_consumer_open_a_shell(KtSession **out) {
     KtText argv[2] = {{(const uint8_t *)"/bin/sh", 7}, {(const uint8_t *)"-l", 2}};
-    return kt_session_new_pty(80, 24, 1000, argv, 2, out);
+    const uint8_t *directory = (const uint8_t *)"/tmp";
+    return kt_session_new_pty(80, 24, 1000, argv, 2, directory, 4, out);
 }
 
 /* Typing: queued for the child, never waited on. */

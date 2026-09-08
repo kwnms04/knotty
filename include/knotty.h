@@ -14,7 +14,7 @@
  * compares it with [`kt_abi_version`]. Mismatch means header and library
  * disagree about layouts, and the caller must not proceed.
  */
-#define KT_ABI_VERSION 9
+#define KT_ABI_VERSION 10
 
 /**
  * Outcome of a call across the boundary.
@@ -1220,6 +1220,12 @@ KtStatus kt_session_new_detached(uint16_t cols,
  * The child starts knowing the size it was given here, so its first frame is
  * already the right shape.
  *
+ * `directory` is where to start it, as `directory_len` bytes of path. A
+ * length of 0 names none, and then the child inherits the calling process's
+ * working directory — which is what a window with nothing saved for it wants.
+ * A directory that cannot be entered is reported as `KT_STATUS_IO`: the
+ * session is not created, rather than created somewhere else.
+ *
  * The session gets a thread of its own, which reads the terminal, feeds the
  * engine, publishes, and hands the child what [`kt_session_write`] queued. A
  * call that reaches past that thread to what it owns — [`kt_session_feed`],
@@ -1231,14 +1237,18 @@ KtStatus kt_session_new_detached(uint16_t cols,
  * # Safety
  *
  * `argv` must point at `argc` readable `KtText`s, each of which must point at
- * its own `len` readable bytes — null only where that length is 0. `out` must
- * be a valid, writable pointer to a `KtSession *`.
+ * its own `len` readable bytes — null only where that length is 0.
+ * `directory` must point at `directory_len` readable bytes, null only where
+ * that length is 0. `out` must be a valid, writable pointer to a
+ * `KtSession *`.
  */
 KtStatus kt_session_new_pty(uint16_t cols,
                             uint16_t rows,
                             size_t max_scrollback,
                             const KtText *argv,
                             size_t argc,
+                            const uint8_t *directory,
+                            size_t directory_len,
                             KtSession **out);
 
 /**
