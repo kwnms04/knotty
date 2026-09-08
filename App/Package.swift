@@ -39,7 +39,10 @@ let package = Package(
         ),
         .testTarget(
             name: "KnottyTests",
-            dependencies: ["KnottySession", "KnottyRender"],
+            // The app target too, for the one thing in it that can be checked
+            // without a window: what a window's frame and directory survive as
+            // between two runs. cf. 05-swift-app 9.
+            dependencies: ["KnottySession", "KnottyRender", "knotty"],
             // The renderer goldens are read by path, the way the recordings
             // they are made from are, and so is the one ligature face the
             // tests register for themselves. SwiftPM would otherwise ask to be
