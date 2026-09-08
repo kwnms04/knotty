@@ -34,10 +34,11 @@ struct WindowStore {
     /// Whether the last run's windows are wanted at all.
     ///
     /// The system setting "close windows when quitting an application" writes
-    /// this, and it is absent until someone touches it — so absent has to mean
-    /// restore, which is what the unticked box means. Reading it with
-    /// ``UserDefaults/bool(forKey:)`` alone would answer `false` on a machine
-    /// nobody ever set it on, and no window would ever come back.
+    /// this, and it is absent until someone touches it. Absent is read as
+    /// restore — see `AppDelegate.openSaved(config:)` for why — and reading it
+    /// with ``UserDefaults/bool(forKey:)`` alone could not say the two apart:
+    /// that answers `false` for a key nobody ever set, and no window would
+    /// ever come back on any machine.
     var restoresWindows: Bool {
         defaults.object(forKey: "NSQuitAlwaysKeepsWindows") as? Bool ?? true
     }
@@ -87,7 +88,10 @@ struct WindowStore {
     /// **On the frame it was saved at, unless no screen is under it any more.**
     /// A display that was unplugged leaves its windows somewhere nobody can
     /// reach, so those come back the size they were, in the middle of the
-    /// screen there is. Any overlap at all is enough to be left alone — a
+    /// screen there is. Overlap is asked of the whole screen and the middle is
+    /// taken of the part of it a window may have — a frame across the menu bar
+    /// is still on that screen, and a window put back should not open under
+    /// one. Any overlap at all is enough to be left alone — a
     /// window the user parked mostly off the side is where they put it — and
     /// a frame that only shares an edge with a screen has none of itself on
     /// one, which is what `intersects` already says.

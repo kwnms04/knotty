@@ -150,7 +150,7 @@ final class TerminalWindowController: NSWindowController {
     /// a frame saved smaller than a single cell is worth one cell rather than
     /// a refusal.
     private static func cells(_ pixels: Double, per size: Int32) -> UInt16 {
-        UInt16(min(max(Int(pixels) / Int(size), 1), Int(UInt16.max)))
+        UInt16(clamping: max(1, Int(pixels) / Int(size)))
     }
 
     /// The view under the window, while there is one.

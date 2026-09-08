@@ -46,11 +46,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.mainMenu = Self.mainMenu()
 
-        // The child inherits this, and there is no working directory in the
-        // call that spawns one — so the app process moves to where the shell
-        // should start rather than wherever it was launched from. Process-wide,
-        // which is what the window restoration of M4 cannot be built on; the
-        // defect is recorded in open-questions.
+        // What a window with no directory saved for it opens in: the app
+        // process moves to where a shell should start rather than staying
+        // wherever it was launched from, and the child inherits that. A
+        // restored window does not come through here — it is spawned in the
+        // directory it was saved with, which is per session and not
+        // process-wide. cf. adr/0020.
         FileManager.default.changeCurrentDirectoryPath(NSHomeDirectory())
 
         // ⌘W closes a window and nothing else hears about it, so this is
@@ -68,7 +69,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // cf. 05-swift-app 9, adr/0020.
         for moved in [NSWindow.didMoveNotification, NSWindow.didResizeNotification] {
             NotificationCenter.default.addObserver(
-                self, selector: #selector(windowDidMove(_:)), name: moved, object: nil
+                self, selector: #selector(windowMovedOrResized(_:)), name: moved, object: nil
             )
         }
 
@@ -192,9 +193,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// **`NSQuitAlwaysKeepsWindows` is honoured although none of this is macOS
     /// state restoration.** What that setting says is whether windows come
     /// back, not which machinery is to bring them; a user who turned it off
-    /// and got windows anyway would be right to call it broken. Turning it off
-    /// leaves what was saved where it is — it is the reading that stops, so
-    /// turning it back on is not starting from nothing. cf. adr/0020.
+    /// and got windows anyway would be right to call it broken.
+    ///
+    /// It is the reading that stops and not the writing. A run with the
+    /// setting off still saves what it has, so turning it back on comes back
+    /// to the windows of the last run rather than to whichever ones were
+    /// standing when it was turned off. cf. adr/0020.
+    ///
+    /// **Absent is not off.** The key is missing on a machine where nobody has
+    /// touched the setting, and a missing key is nobody having said — so what
+    /// stands there is knotty's own answer, which is that windows come back.
+    /// Reading absent as off would mean the headline of this feature never
+    /// happening until the user went looking for a checkbox.
     @MainActor private func openSaved(config: Config) throws {
         let saved = store.restoresWindows ? store.load() : []
         guard !saved.isEmpty else { return try open(config: config) }
@@ -205,7 +215,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Spawn a shell, put a window around it and keep the controller.
     @MainActor private func open(config: Config, state: WindowState? = nil) throws {
-        let terminal = try TerminalWindowController.spawningShell(config: config, state: state)
+        var state = state
+        let terminal: TerminalWindowController
+        do {
+            terminal = try TerminalWindowController.spawningShell(config: config, state: state)
+        } catch {
+            // **A saved directory that is not there any more opens the window
+            // anyway.** Moved, deleted, on a volume nobody mounted this
+            // morning — the spawn throws, and this runs at launch, so the
+            // window that cannot be opened is the app that cannot start. The
+            // store would still hold the same directory on the next launch and
+            // on every one after it, with nothing but `defaults delete` to get
+            // out of: an app that talks itself out of starting is worse than a
+            // window that came up in the wrong place. The next frame writes
+            // where the shell really is, so it mends itself.
+            guard state?.directory != nil else { throw error }
+            state?.directory = nil
+            terminal = try TerminalWindowController.spawningShell(config: config, state: state)
+        }
         // A window opened exactly over the last one is one the user cannot
         // tell is there, and every fresh window opens centred. AppKit steps it
         // down and right from the one opened before it. A restored window has
@@ -233,11 +260,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// A window was dragged or resized.
     ///
+    /// Named for both, because it is registered for both — and not
+    /// `windowDidMove(_:)`, which is an `NSWindowDelegate` method this object
+    /// does not implement and would be read as implementing.
+    ///
     /// A drag posts this the whole way across the screen and each one is a
     /// write; that is a user with a window in their hand, not an idle app.
     /// A window nothing here opened — a sheet, an alert — writes the same list
     /// back, which is why it is not worth telling them apart.
-    @MainActor @objc private func windowDidMove(_ notification: Notification) {
+    @MainActor @objc private func windowMovedOrResized(_ notification: Notification) {
         saveWindows()
     }
 
