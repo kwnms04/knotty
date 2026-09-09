@@ -98,6 +98,14 @@ private func loading(_ text: String) throws -> Config.Loaded {
     #expect(loaded.config.font.size == 13.0)
 }
 
+/// The bell is the one event policy 05-swift-app 8 leaves as a setting, so
+/// the file is what says which — and what nobody wrote is the visual one,
+/// because macOS has no sound that would be the obvious default.
+@Test func theBellIsWhatTheFileSaysAndOtherwiseVisual() throws {
+    #expect(try loading("[bell]\nmode = \"sound\"\n").config.bell.mode == .sound)
+    #expect(try loading("[font]\nsize = 16.0\n").config.bell.mode == .visual)
+}
+
 /// The file the app reads without being told where, which is the one the
 /// user is told to write.
 @Test func theFileIsUnderTheUsersConfigDirectory() {

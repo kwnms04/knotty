@@ -112,17 +112,39 @@ private func text(of snapshot: Snapshot, row: Int) -> String {
     #expect(try session.withSnapshot { _ in true } == nil)
 }
 
-/// The queue empties and says what overflowed it, which is all M2 owes it.
-@Test func theEventQueueEmptiesAndSaysWhatItDropped() throws {
+/// The queue empties, and what comes out of it is what the child did.
+///
+/// The text of a clipboard write above all: it is borrowed from the run the
+/// boundary lent, so a copy that was not made would be read after the next
+/// take had written over it. cf. 05-swift-app 8.
+@Test func theEventQueueComesBackWithWhatTheChildDid() throws {
     let session = try replaySynthetic()
 
     // The recording rings the bell and copies to the clipboard, in that
     // order, and nothing else it does is an event.
     let drained = try session.drainEvents()
-    #expect(drained.taken == 2)
+    #expect(drained.events == [.bell, .clipboardWrite("hi there")])
     #expect(drained.dropped == 0)
 
-    #expect(try session.drainEvents().taken == 0)
+    #expect(try session.drainEvents().events.isEmpty)
+}
+
+/// The exit code a window reads is the event's, and it is what says whether
+/// the window closes on it — 0 closes and anything else stays.
+/// cf. 05-swift-app 8.
+@Test func aChildThatEndedBadlyComesBackAsAnEventCarryingItsCode() throws {
+    let (session, woken) = try spawn(["/bin/sh", "-c", "exit 3"])
+
+    // Drained on every wake, the way the app drains it: which wake carries the
+    // exit is not promised, only that some wake does.
+    var taken: [Event] = []
+    let deadline = Date().addingTimeInterval(10)
+    while Date() < deadline, !taken.contains(.childExited(code: 3)) {
+        guard woken.wait(timeout: .now() + 1) == .success else { continue }
+        taken += try session.drainEvents().events
+    }
+
+    #expect(taken.contains(.childExited(code: 3)), "what came back was \(taken)")
 }
 
 /// Sessions come and go without leaving anything behind.

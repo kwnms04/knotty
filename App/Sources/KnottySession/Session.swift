@@ -14,6 +14,29 @@ public struct SessionError: Error, CustomStringConvertible {
     public static let unidentifiedKey = Int32(KT_STATUS_UNIDENTIFIED_KEY.rawValue)
 }
 
+/// One thing that happened, whose happening is the whole of its meaning.
+///
+/// The three the boundary names, and nothing here says what to do about one:
+/// the policy is the app's, and it needs a window to carry it out.
+/// cf. 05-swift-app 8.
+public enum Event: Equatable {
+    /// The child rang the bell.
+    case bell
+    /// The child asked for this text to be put on the clipboard.
+    ///
+    /// Which of the three clipboards it named is not carried across. macOS
+    /// has one pasteboard and the other two selectors are X11's, so all three
+    /// end in the same place — and a consumer that branched on the name would
+    /// be branching towards a clipboard this system does not have.
+    ///
+    /// Nothing has been taken out of the text — it is what the child asked to
+    /// copy, control characters and all. cf. adr/0007.
+    case clipboardWrite(String)
+    /// The child is gone, by this code or by 128 plus the signal that ended
+    /// it — the one number a shell reports either by.
+    case childExited(code: Int32)
+}
+
 /// A session, and the only way to reach the handle behind one.
 ///
 /// The boundary is written for calls that are serialized per session. This is
@@ -475,18 +498,18 @@ public final class Session {
         return try body(Snapshot(view))
     }
 
-    /// Empty the event queue, answering how many events came out of it and
-    /// how many had been dropped for want of room since the last time.
+    /// Empty the event queue, answering what came out of it and how many had
+    /// been dropped for want of room since the last time.
     ///
     /// One call takes the whole queue, so this is the drain-until-empty the
-    /// boundary asks for on every wake. What to do with an event is a policy
-    /// M4 writes; what M2 owes is an emptied queue, and events are dropped
-    /// here rather than kept.
+    /// boundary asks for on every wake. What comes back is copied out of the
+    /// run the boundary lent, which the next take is free to write over.
     @discardableResult
-    public func drainEvents() throws -> (taken: Int, dropped: UInt64) {
+    public func drainEvents() throws -> (events: [Event], dropped: UInt64) {
         var events = KtEvents()
         try check("kt_session_take_events", kt_session_take_events(handle, &events))
-        return (events.len, events.dropped)
+        let taken = UnsafeBufferPointer(start: events.events, count: events.len)
+        return (taken.map(Event.init), events.dropped)
     }
 
     /// Lend `command` to `body` as the run of texts the boundary spawns from.
@@ -512,6 +535,23 @@ public final class Session {
         }
     }
 
+}
+
+// The header numbers the kinds into a byte the way it does a child's state,
+// and there is no arm to meet for a kind this header does not name: the ABI
+// handshake has already refused a library that names one.
+extension Event {
+    init(_ event: KtEvent) {
+        switch event.kind {
+        case UInt8(KT_EVENT_KIND_BELL.rawValue): self = .bell
+        case UInt8(KT_EVENT_KIND_CLIPBOARD_WRITE.rawValue):
+            let text = UnsafeBufferPointer(start: event.text.bytes, count: event.text.len)
+            self = .clipboardWrite(String(decoding: text, as: UTF8.self))
+        case UInt8(KT_EVENT_KIND_CHILD_EXITED.rawValue):
+            self = .childExited(code: event.exit_code)
+        default: preconditionFailure("the boundary named event kind \(event.kind)")
+        }
+    }
 }
 
 /// Turn what a boundary call answered into a thrown error, or nothing.
