@@ -22,6 +22,18 @@ final class TerminalWindowController: NSWindowController {
     /// off the view AppKit holds.
     private var host: SessionHost?
 
+    /// What a bell does, out of the configuration file. The one event policy
+    /// that is a setting. cf. 05-swift-app 8.
+    private var bellMode = Config.Bell.Mode.visual
+
+    /// Whether this session may write the clipboard, or nil while nobody has
+    /// been asked yet.
+    ///
+    /// The whole of the policy: asked once, and the answer stands until the
+    /// window goes. It hangs off the controller because the window is what the
+    /// answer is about — another window asks again. cf. 05-swift-app 8.
+    private var clipboardWrites: Bool?
+
     /// Whether a program is running in front of this window's shell.
     ///
     /// A window whose session has already been released has nothing running
@@ -133,6 +145,12 @@ final class TerminalWindowController: NSWindowController {
 
         let controller = TerminalWindowController(window: window)
         controller.host = host
+        controller.bellMode = config.bell.mode
+        // The window's own, for the reason 05-swift-app 8 makes them policy:
+        // every one of the three answers is a window's to give. Weak, because
+        // the controller is what owns the session the closure hangs off.
+        host.onEvent = { [weak controller] event in controller?.answer(event) }
+        host.onChildExit = { [weak controller] code in controller?.finish(code: code) }
         // A `cd` is the one thing in the saved state that moves without AppKit
         // saying so. Weak, because the controller is what owns the session the
         // closure hangs off.
@@ -179,6 +197,106 @@ final class TerminalWindowController: NSWindowController {
     func apply(theme: Config.Theme) {
         host?.apply(theme: theme)
         view?.use(theme: theme)
+    }
+
+    /// Take a bell the file changed. Nothing is redrawn for it — it is read
+    /// on the next bell and not before.
+    func apply(bell: Config.Bell) {
+        bellMode = bell.mode
+    }
+
+    /// Answer one event the session queued. cf. 05-swift-app 8.
+    private func answer(_ event: Event) {
+        switch event {
+        case .bell:
+            ring()
+        case .clipboardWrite(let text):
+            copy(text)
+        case .childExited:
+            // Nothing, and not because there is nothing to do. The exit goes
+            // out both ways and the queue is the losable one, so what the
+            // window is closed on is the frame — ``SessionHost/onChildExit``.
+            // cf. 02-ffi.
+            break
+        }
+    }
+
+    /// What a bell comes to: the mode the file names, and the Dock on top of
+    /// it when this is not the window being looked at — a flash nobody can see
+    /// is a bell nobody was told about.
+    ///
+    /// The badge is cleared where the looking happens, which is `AppDelegate`:
+    /// the Dock has one icon for all the windows, and clearing it is about the
+    /// app coming forward rather than about this window.
+    private func ring() {
+        switch bellMode {
+        case .off: return
+        case .visual: view?.flash()
+        case .sound: NSSound.beep()
+        case .bounce: NSApp.requestUserAttention(.informationalRequest)
+        }
+        guard !(NSApp.isActive && window?.isKeyWindow == true) else { return }
+        NSApp.dockTile.badgeLabel = "●"
+    }
+
+    /// Put what the child asked to copy on the pasteboard, having asked the
+    /// user once.
+    ///
+    /// A remote tmux's `OSC 52` is what this is for: the copy happens on the
+    /// far side of the ssh and the clipboard it is bound for is this one.
+    /// Asked because a program that can write the clipboard unasked can empty
+    /// it, and asked once because a question per copy is one that gets
+    /// clicked through. cf. 05-swift-app 8.
+    private func copy(_ text: String) {
+        if let allowed = clipboardWrites {
+            if allowed { Self.put(text) }
+            return
+        }
+        // A window with a sheet already up is one whose question has not been
+        // answered yet, and a write nobody has said yes to is not one to make.
+        // Dropping it is the answer that can be taken back.
+        guard let window, window.attachedSheet == nil else { return }
+
+        let alert = NSAlert()
+        alert.messageText = "Let this terminal write to the clipboard?"
+        alert.informativeText = """
+            A program in this window asked to put text on the clipboard. \
+            The answer is kept until the window closes.
+            """
+        // Refusing first, which is the button ⏎ presses: the clipboard is
+        // something the user has in hand, and overwriting it is the answer a
+        // stray keystroke should not give.
+        alert.addButton(withTitle: "Don't Allow")
+        alert.addButton(withTitle: "Allow")
+        alert.beginSheetModal(for: window) { [weak self] response in
+            let allowed = response == .alertSecondButtonReturn
+            self?.clipboardWrites = allowed
+            if allowed { Self.put(text) }
+        }
+    }
+
+    private static func put(_ text: String) {
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(text, forType: .string)
+    }
+
+    /// The child is gone: the window goes with it on a clean exit, and stays
+    /// on any other saying what ended it.
+    ///
+    /// ⌃D at a prompt is the first of those and the reason it is not a
+    /// setting — a window left standing on a shell that is not there any more
+    /// is one the user closes by hand every time. cf. 05-swift-app 8.
+    private func finish(code: Int32) {
+        guard code == 0 else {
+            // Nothing more will be published, so what the title says now is
+            // what it goes on saying.
+            window?.title = "\(host?.title ?? "knotty") — exited \(code)"
+            return
+        }
+        // Not from here: this is answered from inside the frame the view is
+        // taking, and closing the window takes that view out of it mid-tick.
+        DispatchQueue.main.async { [weak self] in self?.window?.close() }
     }
 
     /// Say what is wrong with the configuration file, or take it back.

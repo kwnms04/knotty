@@ -48,8 +48,29 @@ public struct Config: Decodable, Equatable, Sendable {
         public let palette: [Color]
     }
 
+    /// What the bell does.
+    ///
+    /// The one event policy 05-swift-app 8 leaves as a setting: macOS has no
+    /// sound that would be the obvious default, so whoever wants one says so.
+    public struct Bell: Decodable, Equatable, Sendable {
+        /// The four the file may name.
+        public enum Mode: String, Decodable, Sendable {
+            /// The screen inverts for a moment. The default.
+            case visual
+            /// The system beep.
+            case sound
+            /// The Dock icon jumps.
+            case bounce
+            /// Nothing at all.
+            case off
+        }
+
+        public let mode: Mode
+    }
+
     public let font: Font
     public let theme: Theme
+    public let bell: Bell
 
     /// What a load came to.
     ///

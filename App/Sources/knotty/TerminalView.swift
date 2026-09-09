@@ -57,6 +57,24 @@ final class TerminalView: NSView {
     /// resizing the terminal to make room would reflow the screen for the
     /// sake of a sentence about a font. cf. 05-swift-app 10.
     private let banner = NSTextField(labelWithString: "")
+    /// The screen gone the colour of its own text, which is what the visual
+    /// bell shows.
+    ///
+    /// A view over the grid rather than a pass through the renderer: it covers
+    /// every cell at once and there is nothing about a rectangle the size of
+    /// the window for the drawing side to say. It takes the foreground colour
+    /// for the reason the banner does — standing the two colours on their
+    /// heads is the one way of standing out that cannot clash with a palette
+    /// the user chose. cf. 05-swift-app 8.
+    ///
+    /// ponytail: an opaque cover, so the letters go with the background for as
+    /// long as the flash lasts. A true inversion that left them readable is
+    /// the renderer's to draw, and it wants a pass this milestone has no other
+    /// use for.
+    private let inversion = NSView()
+    /// The taking back of that, still waiting to happen. A second bell before
+    /// it does puts it off rather than letting it end the flash early.
+    private var uninvert: DispatchWorkItem?
     /// One cell in points, which is what places anything AppKit lays out.
     private var cellSize = NSSize.zero
     /// What watches the window becoming, and ceasing to be, the one typed
@@ -213,6 +231,10 @@ final class TerminalView: NSView {
         banner.isHidden = true
         addSubview(banner)
 
+        inversion.wantsLayer = true
+        inversion.isHidden = true
+        addSubview(inversion)
+
         // What both of them are drawn in, from the one place that says so.
         use(theme: theme)
 
@@ -300,7 +322,25 @@ final class TerminalView: NSView {
         // user chose.
         banner.backgroundColor = Self.color(theme.foreground)
         banner.textColor = Self.color(theme.background)
+        inversion.layer?.backgroundColor = Self.color(theme.foreground).cgColor
     }
+
+    /// Turn the screen over for a moment, which is the visual bell.
+    ///
+    /// **Longer than the one frame the milestone spec calls it.** One frame at
+    /// 120Hz is eight milliseconds, which is under what an eye reads as a
+    /// flash at all — the number below is what makes it something the user
+    /// sees rather than something the screen did.
+    func flash() {
+        uninvert?.cancel()
+        inversion.isHidden = false
+        let work = DispatchWorkItem { [weak self] in self?.inversion.isHidden = true }
+        uninvert = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.flashHeld, execute: work)
+    }
+
+    /// How long the inversion stands.
+    private static let flashHeld = 0.1
 
     /// Say what is wrong with the configuration file, or take the saying back
     /// with nil.
@@ -379,6 +419,7 @@ final class TerminalView: NSView {
         }
 
         placeBanner()
+        inversion.frame = bounds
         host?.resize(columns: grid.columns, rows: grid.rows, metrics: metrics)
     }
 

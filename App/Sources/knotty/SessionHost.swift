@@ -99,6 +99,27 @@ final class SessionHost {
     /// running.
     var isBusy: Bool { (try? session.foregroundBusy()) ?? false }
 
+    /// What to call for each event one wake left in the queue.
+    ///
+    /// A closure for the reason ``onTitle`` is one: what to do about a bell or
+    /// a child's exit is the window's — a flash, a sheet, a window that closes
+    /// — and none of that is reachable from here. It runs where the events
+    /// were taken, which is the main thread. cf. 05-swift-app 4, 8.
+    var onEvent: ((Event) -> Void)?
+
+    /// What to call when the child is gone, with what it ended by.
+    ///
+    /// **Read off the frame and not taken out of the queue**, though it is an
+    /// event as well: the queue is finite and drops what will not fit, and
+    /// this is the one thing in it that cannot be lost. The event is the
+    /// immediate word and the frame is the truth, so the frame is what a
+    /// window is closed on. cf. 02-ffi.
+    var onChildExit: ((Int32) -> Void)?
+
+    /// Whether that has already been said. Every frame after the exit carries
+    /// it, and a redraw reads one of those again.
+    private var childHasGone = false
+
     /// What to call when that name changed, which is the window being
     /// renamed.
     ///
@@ -237,7 +258,14 @@ final class SessionHost {
     /// values — so it outlives the borrow the way a drawer needs it to.
     func takeFrame() -> Frame? {
         do {
-            try session.drainEvents()
+            let drained = try session.drainEvents()
+            // Nobody can act on an overrun and no screen is wrong for one —
+            // everything that has to be true is in the snapshot. Saying how
+            // many is the whole of what the count is for. cf. 02-ffi.
+            if drained.dropped > 0 {
+                report("\(drained.dropped) events were dropped for want of room")
+            }
+            drained.events.forEach { onEvent?($0) }
             return try session.withSnapshot { frame(of: $0) }
         } catch {
             report(error)
@@ -276,6 +304,10 @@ final class SessionHost {
         if directory != workingDirectory {
             workingDirectory = directory
             onWorkingDirectory?()
+        }
+        if case .exited(let code) = snapshot.childState, !childHasGone {
+            childHasGone = true
+            onChildExit?(code)
         }
         // The one place a screen is scanned, and only while ⌘ asks — which is
         // what makes the feature free the rest of the time. cf. adr/0006.
@@ -463,6 +495,12 @@ final class SessionHost {
     /// quietly stops moving. cf. 05-swift-app 8 for the policy that arrives in
     /// M4.
     private func report(_ error: Error) {
-        FileHandle.standardError.write(Data("knotty: \(error)\n".utf8))
+        report("\(error)")
+    }
+
+    /// The same for what is not an error but is nobody's to act on either,
+    /// which is a queue that overflowed.
+    private func report(_ message: String) {
+        FileHandle.standardError.write(Data("knotty: \(message)\n".utf8))
     }
 }

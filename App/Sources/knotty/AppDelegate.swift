@@ -72,6 +72,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self, selector: #selector(windowMovedOrResized(_:)), name: moved, object: nil
             )
         }
+        // A window becoming the one being typed into is the bell in it being
+        // seen, which is what the badge was there to say. Watched here rather
+        // than in `applicationDidBecomeActive(_:)`, which would leave the
+        // badge standing while the user walked from one window of an app they
+        // were already in to another. cf. 05-swift-app 8.
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(windowBecameKey(_:)),
+            name: NSWindow.didBecomeKeyNotification, object: nil
+        )
 
         do {
             // A file that will not parse is not a reason not to start: what
@@ -178,6 +187,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let next = loaded.config
         if next.font != current.font { terminals.forEach { $0.apply(font: next.font) } }
         if next.theme != current.theme { terminals.forEach { $0.apply(theme: next.theme) } }
+        if next.bell != current.bell { terminals.forEach { $0.apply(bell: next.bell) } }
         config = next
     }
 
@@ -270,6 +280,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// back, which is why it is not worth telling them apart.
     @MainActor @objc private func windowMovedOrResized(_ notification: Notification) {
         saveWindows()
+    }
+
+    /// A window became the one being typed into, which takes the Dock's badge
+    /// back.
+    ///
+    /// One badge for all the windows, because the Dock has one icon: what it
+    /// says is that a bell rang somewhere nobody was looking, and arriving in
+    /// any of them is the looking. cf. 05-swift-app 8.
+    @MainActor @objc private func windowBecameKey(_ notification: Notification) {
+        NSApp.dockTile.badgeLabel = nil
     }
 
     /// Let go of a window that closed, which is what puts its child down.
